@@ -64,10 +64,14 @@ flow.
       any methods.
 - [ ] **EC identity.** Check `dmidecode`, `/sys/firmware/acpi/tables` and `ec_sys` (read-only,
       `write_support=0`) to identify the ITE chip model and EC firmware version.
-- [ ] **Windows driver analysis.** Get the Huawei fingerprint driver package for `HVY-WXX9`. Unpack
+- [x] **Windows driver analysis.** Get the Huawei fingerprint driver package for `HVY-WXX9`. Unpack
       it and look for the firmware name (`GF_ITE_EC_*`), command tables and any embedded firmware
-      images.
-- [ ] **Windows USB capture** (best source, if Windows can run on this machine, e.g. on a spare disk or
+      images. 2026-09-19: `gfusb.dll` 1.1.122.127, strings plus its ETW debug log, which records every
+      frame of 8 inits. No firmware images; the driver skips firmware updates for EC projects. See
+      `docs/protocol.md`, "Vendor driver, Windows".
+- [x] **Windows USB capture** (2026-09-19: WbioSrvc restart plus a capture session, steady state only; the
+      EC keeps TLS up, so no init was on the wire. The init sequence came from the driver log instead.
+      Replay fixtures still to do.) (best source, if Windows can run on this machine, e.g. on a spare disk or
       a live Windows To Go install). Use USBPcap + Wireshark on `27c6:5120` during driver load,
       enrollment and verification. Convert the capture into replay fixtures, so the exact expected
       sequence is tested offline. Step by step: [`docs/windows-capture-runbook.md`](docs/windows-capture-runbook.md).
@@ -95,8 +99,10 @@ builds and tests the tooling offline; the user runs it.
 - [x] `0xe4` reclassified to `ClassStateChanging` and removed from `steps`; the probe now sends only
       `nop` and `0xa8`.
 - [x] Live check of the fixed probe (Run 3, 2026-09-19 20:33): attach, `nop`, `0xa8` all passed.
-- [ ] Optional: confirm `0xe4` alone. This needs a code change first (bisect refuses it now) and
-      costs another power cycle.
+- [x] Tooling to confirm `0xe4` alone: `--bisect --allow-e4 --steps e4`, the only path that can send
+      `0xe4` (an exact `transport.Options.Allow` exception). Tested offline.
+- [ ] Optional: confirm `0xe4` alone, live, per the runbook's "Confirming `0xe4` alone" section. Costs a
+      cold power cycle, so run it right before booting Windows for the capture.
 
 ---
 

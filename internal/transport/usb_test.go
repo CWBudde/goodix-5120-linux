@@ -159,10 +159,10 @@ func TestErrorSentinelsAreDistinct(t *testing.T) {
 		t.Error("wrapped ErrPermission does not satisfy errors.Is")
 	}
 
-	if err := checkOpcode(opReset, proto.ClassSafe); !errors.Is(err, ErrRefused) {
+	if err := checkOpcode(opReset, proto.ClassSafe, nil); !errors.Is(err, ErrRefused) {
 		t.Errorf("ceiling refusal %v does not wrap ErrRefused", err)
 	}
-	if err := checkOpcode(opUnknwn, proto.ClassDestructive); !errors.Is(err, ErrRefused) {
+	if err := checkOpcode(opUnknwn, proto.ClassDestructive, nil); !errors.Is(err, ErrRefused) {
 		t.Errorf("unregistered refusal %v does not wrap ErrRefused", err)
 	}
 

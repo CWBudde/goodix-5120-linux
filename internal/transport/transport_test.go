@@ -145,9 +145,35 @@ func TestCheckOpcodeCeilings(t *testing.T) {
 		{"unregistered under destructive", opUnknwn, proto.ClassDestructive, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkOpcode(tc.op, tc.ceiling)
+			err := checkOpcode(tc.op, tc.ceiling, nil)
 			if gotOK := err == nil; gotOK != tc.wantOK {
 				t.Fatalf("checkOpcode = %v, want ok=%v", err, tc.wantOK)
+			}
+		})
+	}
+}
+
+// Allow is an exact exception: it admits the named opcode above the ceiling and
+// nothing else, and it can never admit an unregistered opcode.
+func TestCheckOpcodeAllow(t *testing.T) {
+	allow := []proto.Opcode{opReset, opUnknwn}
+	for _, tc := range []struct {
+		name   string
+		op     proto.Opcode
+		wantOK bool
+	}{
+		{"allowed state-changing", opReset, true},
+		{"other state-changing", 0x20, false},
+		{"allowed but unregistered", opUnknwn, false},
+		{"safe, not listed", opNOP, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkOpcode(tc.op, proto.ClassSafe, allow)
+			if gotOK := err == nil; gotOK != tc.wantOK {
+				t.Fatalf("checkOpcode = %v, want ok=%v", err, tc.wantOK)
+			}
+			if err != nil && !errors.Is(err, ErrRefused) {
+				t.Fatalf("refusal %v does not wrap ErrRefused", err)
 			}
 		})
 	}

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"goodix5120/internal/proto"
@@ -46,6 +47,12 @@ type Options struct {
 	// of an opcode above this class is refused. The zero value is
 	// proto.ClassSafe, i.e. read-only commands only.
 	Ceiling proto.Class
+
+	// Allow names registered opcodes that may be transmitted although their
+	// class is above Ceiling. It is an exact, per-opcode exception for one
+	// deliberate experiment (confirming that preset_psk_read wedges the EC). It
+	// never admits an unregistered or a destructive opcode. Nil admits nothing.
+	Allow []proto.Opcode
 
 	// Timeout bounds a single transfer. Zero means DefaultTimeout.
 	Timeout time.Duration
@@ -89,19 +96,20 @@ var ErrRefused = errors.New("command refused by the transport safety gate")
 var ErrTimeout = errors.New("no data before the receive timeout")
 
 // checkOpcode is the single safety gate shared by every Transport
-// implementation. It reports why cmd may not be transmitted under ceiling, or
-// nil if transmitting it is permitted.
+// implementation. It reports why cmd may not be transmitted under ceiling and
+// allow, or nil if transmitting it is permitted.
 //
-// Two rules, in order:
+// Three rules, in order:
 //  1. An opcode not registered in the proto command table is refused outright.
 //     An unknown byte has unknown consequences, so it is never passed through.
-//  2. A registered opcode whose class ranks above the ceiling is refused.
-func checkOpcode(cmd proto.Opcode, ceiling proto.Class) error {
+//  2. A destructive opcode above the ceiling is refused, whatever allow says.
+//  3. Any other opcode above the ceiling is refused unless allow names it.
+func checkOpcode(cmd proto.Opcode, ceiling proto.Class, allow []proto.Opcode) error {
 	class, ok := cmd.Class()
 	if !ok {
 		return fmt.Errorf("%w: unregistered opcode 0x%02x is not in the proto command table, so its effect on the device is unknown", ErrRefused, byte(cmd))
 	}
-	if class > ceiling {
+	if class > ceiling && (class >= proto.ClassDestructive || !slices.Contains(allow, cmd)) {
 		return fmt.Errorf("%w: %s (0x%02x) is %s, which exceeds the configured ceiling %s", ErrRefused, cmd.Name(), byte(cmd), class, ceiling)
 	}
 	return nil
@@ -122,7 +130,7 @@ type sender struct {
 
 // Send applies the safety gate, then encodes and transmits the frame.
 func (s *sender) Send(cmd proto.Opcode, payload []byte) error {
-	if err := checkOpcode(cmd, s.opts.Ceiling); err != nil {
+	if err := checkOpcode(cmd, s.opts.Ceiling, s.opts.Allow); err != nil {
 		return err
 	}
 

@@ -70,6 +70,47 @@ If it does, note that in the log and run again.
 4. **Cold power cycle:** `systemctl poweroff`, unplug the charger, hold the power button ~30 s, then boot.
 5. After booting: `journalctl -k -b -1 | grep -E "goodix-probe|i8042|atkbd|usb 1-4"`.
 
+## Confirming `0xe4` alone (`--allow-e4`)
+
+Run 2 sent `0xe4` after `nop` and `0xa8`, so it is still open whether `0xe4` wedges the EC **on its own**,
+or only after `0xa8`. This run sends attach and then `0xe4` only. It is expected to kill the internal
+keyboard, so plan it right before a shutdown you need anyway, e.g. before booting Windows for
+[`windows-capture-runbook.md`](windows-capture-runbook.md). The cold power cycle then does double duty.
+
+`0xe4` is not a probe step and the transport refuses it. `--allow-e4` is the only way to send it: it works
+only with `--bisect`, admits `0xe4` in `--steps` and nothing else, and lets the transport pass exactly that
+opcode above the safe ceiling. The log header says `allowed above it: preset_psk_read (0xe4)`.
+
+1. Do "Before" steps 1–3 above (external keyboard, nothing unsaved, build).
+2. Rehearse with the real keyboard and no USB:
+   `sudo ./goodix-probe --bisect --replay --allow-e4 --steps e4`. It should show the replayed ACK for
+   `0xe4` and pass every check when you press Shift. Delete the rehearsal log.
+3. Strongly recommended: start the usbmon capture from "Before" step 5. It shows whether *anything*
+   arrives after the ACK, which the probe can only report up to its timeout.
+4. Run:
+
+   ```sh
+   sudo ./goodix-probe --bisect --allow-e4 --steps e4 --timeout 30s
+   ```
+
+   `--timeout 30s` gives the EC 30 s instead of 5 s to send data after the ACK, to tell "slow" from
+   "never". The keyboard prompt comes after that wait, so be patient.
+5. Press Shift on the **internal** keyboard at each prompt.
+
+What the outcome means:
+
+- **Keyboard dead after step 1 (expected):** `0xe4` wedges the EC on its own; `0xa8` is not a
+  precondition. Follow "If the keyboard stops" below. The cold power cycle there is also the clean
+  shutdown before Windows.
+- **Keyboard alive after step 1:** `0xe4` alone is survivable, and the wedge in Run 2 needed something
+  before it (`nop`, `0xa8`, or both). That's a real surprise, so stop there. Don't try other
+  combinations in the same boot. Note it, and still do a cold power cycle before Windows, so the capture
+  starts from a fresh EC.
+- **Data after the ACK:** whatever it is, it's new. Keep the log and the usbmon file.
+
+Record the result as Run 4 in `docs/protocol.md`, noting whether the boot before it was cold or warm and
+whether attach produced the unsolicited `0x32`.
+
 ## Afterwards
 
 - Append the run to `docs/protocol.md` as "Run 2" (and so on). Include the log and the step that failed,

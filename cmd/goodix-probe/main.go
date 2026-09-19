@@ -18,6 +18,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,10 +63,16 @@ func main() {
 		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
 		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
+		allowE4    = flag.Bool("allow-e4", false, "bisect: also accept preset_psk_read (0xe4) in --steps. It wedged the EC in Runs 1 and 2 (see docs/bisect-runbook.md)")
 	)
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", 0)
+
+	if *allowE4 && !*bisect {
+		logger.Print("--allow-e4 only works with --bisect")
+		os.Exit(1)
+	}
 
 	if *dryRun {
 		dryRunFrames(logger)
@@ -73,7 +80,7 @@ func main() {
 	}
 
 	if *bisect {
-		os.Exit(mainBisect(*replay, *assumeKeys, *stepList, *logPath, *timeout, *keyWait))
+		os.Exit(mainBisect(*replay, *assumeKeys, *allowE4, *stepList, *logPath, *timeout, *keyWait))
 	}
 
 	opts := transport.Options{
@@ -106,13 +113,13 @@ func main() {
 // mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
 // survived every step, 2 if it stopped (or was not working to begin with), 1
 // on any other failure.
-func mainBisect(replay, assumeKeys bool, stepList, logPath string, timeout, keyWait time.Duration) int {
+func mainBisect(replay, assumeKeys, allowE4 bool, stepList, logPath string, timeout, keyWait time.Duration) int {
 	stderr := log.New(os.Stderr, "", 0)
 	if assumeKeys && !replay {
 		stderr.Print(errAssumeKeysLive)
 		return 1
 	}
-	ops, err := parseSteps(stepList)
+	ops, err := parseSteps(stepList, allowE4)
 	if err != nil {
 		stderr.Printf("--steps: %v", err)
 		return 1
@@ -145,6 +152,12 @@ func mainBisect(replay, assumeKeys bool, stepList, logPath string, timeout, keyW
 		Verbose: true, // the raw bytes are the point of a bisect run
 		Logger:  logger,
 	}
+	allowed := "none"
+	if slices.Contains(ops, opPSKRead) {
+		// The one exception above the ceiling, and only when it is a step.
+		opts.Allow = []proto.Opcode{opPSKRead}
+		allowed = "preset_psk_read (0xe4)"
+	}
 	open := func() (transport.Transport, error) {
 		if replay {
 			return transport.NewReplay(scriptFor(ops), opts), nil
@@ -156,7 +169,8 @@ func mainBisect(replay, assumeKeys bool, stepList, logPath string, timeout, keyW
 	if replay {
 		mode = "replay (no USB)"
 	}
-	logger.Printf("goodix-probe bisect — %s, ceiling=%s, steps=%s, log=%s", mode, proto.ClassSafe, stepList, logPath)
+	logger.Printf("goodix-probe bisect — %s, ceiling=%s, allowed above it: %s, steps=%s, log=%s",
+		mode, proto.ClassSafe, allowed, stepList, logPath)
 
 	err = runBisect(logger, host, open, ops, timeout, keyWait)
 	switch {

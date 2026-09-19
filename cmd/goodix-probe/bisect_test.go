@@ -37,7 +37,7 @@ func (h *fakeHost) Mark(msg string)     { h.marks = append(h.marks, msg) }
 // bisectReplay runs bisect over the Run 1 capture with the given key presses.
 func bisectReplay(t *testing.T, presses ...bool) (string, *fakeHost, replayCounters, bool, error) {
 	t.Helper()
-	ops, err := parseSteps(defaultBisectSteps())
+	ops, err := parseSteps(defaultBisectSteps(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestBisectAttachFailure(t *testing.T) {
 }
 
 func TestParseSteps(t *testing.T) {
-	got, err := parseSteps(" 0xA8, 00 ,")
+	got, err := parseSteps(" 0xA8, 00 ,", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,15 +133,61 @@ func TestParseSteps(t *testing.T) {
 	// junk are all refused: bisect can only send what the probe's own step list
 	// contains.
 	for _, bad := range []string{"a6", "e4", "f0", "e0", "zz", "100"} {
-		if _, err := parseSteps(bad); err == nil {
+		if _, err := parseSteps(bad, false); err == nil {
 			t.Errorf("parseSteps(%q) accepted", bad)
+		}
+	}
+
+	// --allow-e4 admits preset_psk_read and nothing else.
+	if got, err := parseSteps("e4", true); err != nil || len(got) != 1 || got[0] != opPSKRead {
+		t.Errorf("parseSteps(e4, allowE4) = %v, %v", got, err)
+	}
+	for _, bad := range []string{"a6", "f0", "e0", "a2", "20"} {
+		if _, err := parseSteps(bad, true); err == nil {
+			t.Errorf("parseSteps(%q, allowE4) accepted", bad)
 		}
 	}
 }
 
-// Everything bisect may send must be ClassSafe.
+// With --allow-e4, preset_psk_read reaches the device through the transport's
+// Allow exception while the ceiling stays safe; without it, the transport
+// still refuses it. The replay answers with the ACK Runs 1 and 2 saw.
+func TestBisectAllowE4(t *testing.T) {
+	ops, err := parseSteps("e4", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	refusing := transport.NewReplay(scriptFor(ops), transport.Options{Ceiling: proto.ClassSafe})
+	if err := refusing.Send(opPSKRead, nil); !errors.Is(err, transport.ErrRefused) {
+		t.Fatalf("0xe4 without Allow: err = %v, want ErrRefused", err)
+	}
+
+	var buf bytes.Buffer
+	tr := transport.NewReplay(scriptFor(ops), transport.Options{
+		Ceiling: proto.ClassSafe,
+		Allow:   []proto.Opcode{opPSKRead},
+	})
+	open := func() (transport.Transport, error) { return tr, nil }
+	// baseline ok, attach ok, 0xe4 dead — what Run 2 saw.
+	host := &fakeHost{presses: []bool{true, true, false}}
+
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second)
+	out := buf.String()
+	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "preset_psk_read") {
+		t.Fatalf("err = %v, want errKeyboardLost after preset_psk_read\n%s", err, out)
+	}
+	if !strings.Contains(out, "ACK for preset_psk_read (0xe4), status 0x01") {
+		t.Errorf("ACK not decoded:\n%s", out)
+	}
+	if rt := tr.(replayCounters); rt.Remaining() != 0 {
+		t.Errorf("remaining=%d, want 0", rt.Remaining())
+	}
+}
+
+// Everything bisect may send without --allow-e4 must be ClassSafe.
 func TestBisectStepsAreSafe(t *testing.T) {
-	ops, err := parseSteps(defaultBisectSteps())
+	ops, err := parseSteps(defaultBisectSteps(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

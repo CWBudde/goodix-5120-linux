@@ -48,8 +48,10 @@ The safety guarantee is structural, and changes must preserve it:
   Tests assert a default build cannot name them.
 - **`internal/transport` is the single chokepoint.** Both the gousb transport (`usb.go`) and the replay fake (`replay.go`)
   embed `sender`, whose `Send` runs `checkOpcode` before any byte is written: unregistered opcodes are always refused,
-  and any class above `Options.Ceiling` (zero value = `ClassSafe`) is refused. Refusals wrap `ErrRefused`. Don't add a
-  write path that bypasses `sender`.
+  and any class above `Options.Ceiling` (zero value = `ClassSafe`) is refused unless `Options.Allow` names that exact
+  opcode (never a destructive one). Refusals wrap `ErrRefused`. Don't add a write path that bypasses `sender`.
+- The only `Allow` user is `--bisect --allow-e4`, which admits `preset_psk_read` (`0xe4`) as a bisect step to confirm
+  that it wedges the EC; see `docs/bisect-runbook.md`.
 - **`cmd/goodix-probe`** runs a fixed `steps` sequence; `safety_test.go` fails if any step is not `ClassSafe` and checks
   the ceiling end to end through the replay transport.
 - **`internal/tlspsk`, `internal/image`** are Tier 2 scaffolds with no call sites. TLS-PSK goes through an

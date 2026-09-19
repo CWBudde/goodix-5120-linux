@@ -304,15 +304,121 @@ The probe now reads until the data message arrives or the device goes quiet, dra
 before exiting, and no longer sends `read_otp`. The Run 1 transfers, regrouped by the command they
 answer, are the `--replay` fixture (`run1Script` in `cmd/goodix-probe/main.go`). Verified offline only.
 
-### Unidentified — unsolicited `0x32`
+### Resolved — unsolicited `0x32`
 
-Arrived before any command could have caused it, so the EC likely emits it on attach:
+Arrived before any command could have caused it:
 
 ```
 32 11 00 | 02 00 2f 00 1e 01 38 01 ff 00 f7 00 3f 01 34 01 | 73
 ```
 
-As little-endian `uint16`: `2, 47, 286, 312, 255, 247, 319, 308`. Plausibly sensor or DAC
-configuration. Unknown.
+It is an **FDT-down event** (finger-detect, see "Vendor driver, Windows" below). It has the same format as the
+`0x32` events the vendor driver receives: `02 00 <flags> 00` followed by six little-endian `uint16`
+FDT samples. The Windows driver leaves the EC armed in FDT-down mode when it goes idle and never disarms it.
+So after a reboot into Linux, the EC was still armed and reported a touch (or noise) as soon as someone
+read the endpoint. Runs 2 and 3 saw no `0x32`, probably because nothing touched the sensor in between.
+
+## Vendor driver, Windows (observed, 2026-09-19)
+
+Sources:
+
+- **Driver package** `gfusb.inf` (Goodix, DriverVer `10/27/2020,1.1.122.127`), found in the Windows
+  DriverStore at `gfusb.inf_amd64_4652ced462eef64a`. The protocol lives in **`gfusb.dll`**, a UMDF driver.
+  Also in the package: `EngineAdapter.dll` (WinBio engine), `AlgoChicago.dll`/`AlgoMilan.dll` (matching),
+  `GoodixEventLog.dll`, and `SessionService.exe`. `SessionService.exe` is a small session-detection service,
+  not the protocol driver. The PDB path names the build `Milan_Watt\MilanSpi\x64\Release_GF3658`.
+- **Driver debug log.** The INF enables the ETW channel `Goodix-FingerprintProvider/Debug`, and the driver
+  logs every frame it sends and receives in hex. It is at
+  `Windows\System32\winevt\Logs\Goodix-FingerprintProvider%4Debug.evtx`, 20 MB, covering 2026-08-11 to
+  2026-09-19, with **8 complete driver inits**. The init sequence below comes from this log, not
+  from USB captures. Read offline from Linux with `strings -el`.
+- **USBPcap captures** (`restart.pcapng`: `Restart-Service WbioSrvc`; `dump.pcapng`: 43 finger
+  captures). Both show steady-state traffic only. No init runs, because the EC keeps its TLS session
+  (see "Power"). Every pack and message checksum in both captures verifies. The driver doesn't zero the
+  padding of its 64-byte OUT transfers (stack bytes leak into it), so ignore everything after the pack length.
+
+Device facts, from the log: **chip ID `0x2504`**, "ChicagoHS", sensor type 12, **80 × 64 pixels**
+(not upstream's 80 × 88). The OTP begins with ASCII `S2A755.`. The driver treats this as an
+"ITE EC project": it sends **no `nop`** ("not to send nop for ITE EC projects") and does **no firmware
+update** ("no firmware update for EC projects"). None of the 8 inits sends `0xe0`, `0xf0`, `0xf2`, `0xf4` or `0xf6`.
+
+### Init sequence
+
+Identical in all 8 inits. Payloads are message payloads (checksum omitted). ACK means a `b0` message
+`[cmd] 01`. The `0x90` config (224 bytes) is truncated in the log.
+
+| # | TX | payload | reply |
+|---|---|---|---|
+| 1 | `96` enable_chip | `01 02` | none; the driver doesn't wait for one |
+| 2 | `a8` firmware_version | `00 00` | ACK, `GF_ITE_EC_20063` |
+| 3 | `ae` get MCU state | `55` + `uint32` LE timestamp (ms, low bits) | **no ACK**, 20-byte state (below) |
+| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes: type `0xbb020003`, len `0x20`, 32-byte PSK hash |
+| 5 | `a2` reset | `01 14` | ACK, `01 00 08` |
+| 6 | `82` read register | `00 00 00 04 00` | ACK, `a2 04 25 00` (driver: chip ID `0x2504`) |
+| 7 | `a6` read_otp | `00 00` | ACK, 64-byte OTP (~35 ms) |
+| 8 | `a2` reset | `01 14` | ACK, `01 00 08` |
+| 9 | `70` idle | `14 00` | ACK |
+| 10 | `98` set DAC | `c8 0b be 00 bc 00 bc 00` (from OTP) | ACK, `01 01` |
+| 11 | `90` upload config | 224 bytes | ACK, `01 01` |
+| 12 | `d0` request TLS | `00 00` | no ACK; the EC starts the TLS handshake |
+| 13 | `d4` TLS established | `00 00` | ACK |
+| 14 | `ae` get MCU state | as above | state with `isTlsConnected=1` |
+| 15 | `36`, `50`, `36`, `82 00 82 00 02 00`, `20`, `36` | calibration | — |
+| 16 | `32` FDT down | armed; the driver now waits for a finger | ACK, then an event on touch |
+
+**`0xe4` is not what wedges the EC. An `0xe4` with an empty payload is.** The vendor sends it with an 8-byte
+argument (`data_type = 0xbb020003` LE, then a `uint32` length of 0) in every init and gets ACK plus data.
+The probe sent `e4 01 00 c5`, which has no payload, in Run 1 and Run 2, and the EC hung after the ACK.
+Hypothesis: the EC's handler reads the missing argument and blocks. The same pattern fits `read_otp`:
+Run 1's empty `a6` got nothing back, while the vendor's `a6 00 00` gets ACK plus 64 bytes. Our `a8` with
+no payload still worked. Not confirmed live, and not worth confirming: stay on the vendor's payloads.
+
+The `0xe4` reply carries a hash of the device's PSK, so don't record it here.
+
+### TLS
+
+- Pack flag `0xb0` carries raw TLS records in both directions. After `d0`, the **EC is the TLS client**:
+  it sends ClientHello, and the host (mbedTLS inside `gfusb.dll`) is the server.
+- TLS 1.2, one cipher suite offered: **`0x00ae` = `TLS_PSK_WITH_AES_128_CBC_SHA256`**. PSK
+  identity `Client_identity`. No certificates.
+- The PSK is **not** the upstream zero key. It is 32 random bytes that the driver generated during
+  provisioning, sealed on the host (`gf_seal_data`; the log says "read 332 bytes", and
+  `C:\ProgramData\Goodix\Goodix_Cache.bin` is exactly 332 bytes, dated 2021-03-16) and written to the
+  EC with `0xe0`. The sealing key derives from host entropy (`generate_entropy2: generate rootkey`);
+  how is unknown. At each init the driver unseals it, hashes it and compares with the
+  hash from `0xe4` ("hash equal"). A Linux driver therefore needs either that PSK, unsealed from the
+  Windows side, or its own `0xe0` provisioning, which would break Windows Hello and is destructive.
+  Tier 2 question; nothing to do now.
+- Images arrive as a single `b0` pack of 7749 bytes holding one TLS application-data record
+  (`17 03 03 1e 40`, 7744 bytes). They are only readable with the PSK.
+
+### Capture loop (steady state, `dump.pcapng`)
+
+```
+TX 32 FDT down  [0c 01 + 6 × (80 xx) + uint16 timestamp]  → ACK … RX 32 event [02 00 ff 00 + 6 × u16]
+TX 20 get image [01 00]                                   → ACK, RX b0 pack (TLS image)
+TX 34 FDT up    [0e 01 + 6 × (80 xx)]                     → ACK … RX 34 event on lift [00 02 00 00 + 6 × u16]
+   (optionally: TX 36 FDT manual [0d 01 + 6 × (80 xx)]    → ACK, RX 36 [00 01 ff 00 + 6 × u16]; TX 20 again)
+```
+
+`ff` is a flags byte (seen: `2f`, `37`, `3d`, `3e`, `3f`), probably a touched-zone mask.
+
+The driver's own legend: FDT mode "1Down2Up3Manual" = `0x32`/`0x34`/`0x36`. The six `80 xx` pairs are
+per-zone thresholds derived from the last FDT readings (hypothesis). An `0x32` event starting with
+`80` (not `02`) comes back ~30 ms after an arm whose thresholds were far from the base, and the driver
+re-arms at once with fresh thresholds. Hypothesis: "base invalid". `0x50` (payload `01 00`) is "nav" mode,
+sent after each finger-up.
+
+`0xae` state reply, byte 1: `0x11` = POV image valid, TLS down (the only cold init); `0x13` = both
+valid; `0x02` = TLS up, no POV image. The driver skips re-init and the handshake when TLS is still up.
+
+### Power
+
+- **D0Exit (S0 idle, after 10 s idle) sends nothing to the EC.** The driver stops its read pipe and
+  leaves the EC armed in FDT-down mode with its TLS session up. On D0Entry it sends only `ae` and
+  re-arms `32` if needed. No shutdown or D3Final sequence appears anywhere in the log. The driver has
+  no quiesce command; the host just stops reading.
+- So the EC tolerates the host going away, which fits Run 2: the keyboard died right after the empty
+  `0xe4`, not at exit.
 
 [dump]: https://github.com/goodix-fp-linux-dev/goodix-fp-dump

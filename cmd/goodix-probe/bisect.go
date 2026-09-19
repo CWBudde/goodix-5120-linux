@@ -45,10 +45,18 @@ var errKeyboardLost = errors.New("internal keyboard stopped responding")
 // done, so a bisect run would prove nothing.
 var errBaseline = errors.New("internal keyboard not responding before the run")
 
+// opPSKRead is preset_psk_read. It wedged the EC in Run 1 and Run 2, so it is
+// not a probe step. --allow-e4 admits it to a bisect run, and only there, to
+// confirm that it wedges the EC on its own (docs/bisect-runbook.md).
+const opPSKRead proto.Opcode = 0xe4
+
+const pskReadPurpose = "wedged the EC in Runs 1 and 2; expect an ACK, then a dead keyboard"
+
 // parseSteps turns a comma-separated opcode list (hex, e.g. "00,a8") into
 // steps. Only opcodes in the default steps list are accepted, so bisect can
-// never send something the probe itself would not.
-func parseSteps(list string) ([]proto.Opcode, error) {
+// never send something the probe itself would not. The one exception is
+// preset_psk_read, accepted only when allowE4 is set.
+func parseSteps(list string, allowE4 bool) ([]proto.Opcode, error) {
 	var out []proto.Opcode
 	for field := range strings.SplitSeq(list, ",") {
 		field = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(field)), "0x")
@@ -60,6 +68,9 @@ func parseSteps(list string) ([]proto.Opcode, error) {
 			return nil, fmt.Errorf("bad opcode %q: %w", field, err)
 		}
 		op := proto.Opcode(v)
+		if op == opPSKRead && !allowE4 {
+			return nil, fmt.Errorf("opcode 0xe4 wedges the EC; it needs --allow-e4 (see docs/bisect-runbook.md)")
+		}
 		if purpose(op) == "" {
 			return nil, fmt.Errorf("opcode 0x%02x is not in the probe's step list", byte(op))
 		}
@@ -68,8 +79,12 @@ func parseSteps(list string) ([]proto.Opcode, error) {
 	return out, nil
 }
 
-// purpose returns the step description of op, or "" if op is not a step.
+// purpose returns the step description of op, or "" if op is neither a step
+// nor preset_psk_read.
 func purpose(op proto.Opcode) string {
+	if op == opPSKRead {
+		return pskReadPurpose
+	}
 	for _, s := range steps {
 		if s.cmd == op {
 			return s.purpose
@@ -161,9 +176,15 @@ func checkKeyboard(logger *log.Logger, host bisectHost, after string, keyWait ti
 }
 
 // scriptFor returns the Run 1 exchanges for ops, in the order given, so
-// --bisect --replay accepts any --steps selection.
+// --bisect --replay accepts any --steps selection. preset_psk_read gets the
+// ACK that Runs 1 and 2 both saw; nothing came after it.
 func scriptFor(ops []proto.Opcode) []transport.Exchange {
-	byCmd := map[proto.Opcode]transport.Exchange{}
+	byCmd := map[proto.Opcode]transport.Exchange{
+		opPSKRead: {Cmd: opPSKRead, Responses: [][]byte{
+			// ACK for preset_psk_read, status 01.
+			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xe4, 0x01, 0x12},
+		}},
+	}
 	for _, ex := range run1Script() {
 		byCmd[ex.Cmd] = ex
 	}
