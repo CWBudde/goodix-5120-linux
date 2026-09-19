@@ -76,7 +76,7 @@ func TestTransportRefusesUnsafeCommands(t *testing.T) {
 // added without a corresponding scripted response, --replay would silently stop
 // covering the full sequence.
 func TestReplayScriptMatchesSteps(t *testing.T) {
-	script := replayScript()
+	script := run1Script()
 	if len(script) != len(steps) {
 		t.Fatalf("replay script has %d exchanges for %d steps", len(script), len(steps))
 	}

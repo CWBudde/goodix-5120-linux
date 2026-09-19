@@ -129,11 +129,33 @@ func DecodeMessage(b []byte) (cmd Opcode, payload []byte, err error) {
 	return Opcode(b[0]), payload, nil
 }
 
-// IsAck reports whether received is the acknowledgement of sent. The device
-// acknowledges a command by echoing its command byte with bit 0 set before it
-// sends the actual response.
-func IsAck(sent, received Opcode) bool {
-	return byte(received) == byte(sent)|0x01 && received != sent
+// AckCmd is the command byte of an acknowledgement. The device acknowledges a
+// command with a separate message whose payload is [acknowledged cmd][status],
+// then sends the data response as a further message (docs/protocol.md, "the
+// ACK convention"). It is a receive-only value, deliberately absent from the
+// opcode registry, so the transport gate refuses to send it.
+//
+// Not to be confused with FlagTLSData, which has the same value at the pack
+// layer.
+const AckCmd Opcode = 0xb0
+
+// ackPayloadLen is the size of an acknowledgement payload.
+const ackPayloadLen = 2
+
+// ErrNotAck means a message is not a well-formed acknowledgement.
+var ErrNotAck = errors.New("proto: not an acknowledgement")
+
+// DecodeAck interprets a decoded message as an acknowledgement and returns the
+// command it acknowledges and the status byte. The meaning of the status byte
+// is unknown; 0x01 is the only value observed.
+func DecodeAck(cmd Opcode, payload []byte) (acked Opcode, status byte, err error) {
+	if cmd != AckCmd {
+		return 0, 0, fmt.Errorf("%w: cmd %#02x, want %#02x", ErrNotAck, byte(cmd), byte(AckCmd))
+	}
+	if len(payload) != ackPayloadLen {
+		return 0, 0, fmt.Errorf("%w: payload is %d bytes, want %d", ErrNotAck, len(payload), ackPayloadLen)
+	}
+	return Opcode(payload[0]), payload[1], nil
 }
 
 // packChecksum sums the flags and length bytes.

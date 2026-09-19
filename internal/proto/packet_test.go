@@ -350,27 +350,64 @@ func TestDecodeMessageAcceptsNoChecksumMarker(t *testing.T) {
 	}
 }
 
-func TestIsAck(t *testing.T) {
+// The two acknowledgements captured in Run 1 (docs/protocol.md), as full frames.
+func TestDecodeAckCaptured(t *testing.T) {
 	tests := []struct {
-		name     string
-		sent     Opcode
-		received Opcode
-		want     bool
+		name  string
+		frame []byte
+		acked Opcode
 	}{
-		{name: "nop ack", sent: 0x00, received: 0x01, want: true},
-		{name: "firmware_version ack", sent: 0xa8, received: 0xa9, want: true},
-		{name: "reset ack", sent: 0xa2, received: 0xa3, want: true},
-		{name: "mcu_get_image ack", sent: 0x20, received: 0x21, want: true},
-		{name: "echo of sent command is not an ack", sent: 0xa8, received: 0xa8, want: false},
-		{name: "unrelated opcode", sent: 0xa8, received: 0xb0, want: false},
-		{name: "ack of a different command", sent: 0xa8, received: 0x21, want: false},
+		{"firmware_version", []byte{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xa8, 0x01, 0x4e}, 0xa8},
+		{"preset_psk_read", []byte{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xe4, 0x01, 0x12}, 0xe4},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsAck(tt.sent, tt.received); got != tt.want {
-				t.Fatalf("IsAck(%#x, %#x) = %v, want %v", byte(tt.sent), byte(tt.received), got, tt.want)
+			_, pack, err := DecodePack(tt.frame)
+			if err != nil {
+				t.Fatalf("DecodePack: %v", err)
+			}
+			cmd, payload, err := DecodeMessage(pack)
+			if err != nil {
+				t.Fatalf("DecodeMessage: %v", err)
+			}
+			acked, status, err := DecodeAck(cmd, payload)
+			if err != nil {
+				t.Fatalf("DecodeAck: %v", err)
+			}
+			if acked != tt.acked || status != 0x01 {
+				t.Fatalf("DecodeAck = %#x, %#x; want %#x, 0x01", byte(acked), status, byte(tt.acked))
 			}
 		})
+	}
+}
+
+func TestDecodeAckRejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmd     Opcode
+		payload []byte
+	}{
+		{"data message", 0xa8, []byte{0xa8, 0x01}},
+		{"old cmd|1 convention", 0xa9, nil},
+		{"empty payload", AckCmd, nil},
+		{"short payload", AckCmd, []byte{0xa8}},
+		{"long payload", AckCmd, []byte{0xa8, 0x01, 0x00}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := DecodeAck(tt.cmd, tt.payload); !errors.Is(err, ErrNotAck) {
+				t.Fatalf("DecodeAck(%#x, % x) = %v, want ErrNotAck", byte(tt.cmd), tt.payload, err)
+			}
+		})
+	}
+}
+
+// AckCmd must never be sendable: the registry is the allow-list the transport
+// gate consults.
+func TestAckCmdIsNotRegistered(t *testing.T) {
+	if _, ok := AckCmd.Class(); ok {
+		t.Fatalf("AckCmd %#x is registered; it is receive-only", byte(AckCmd))
 	}
 }

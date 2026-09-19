@@ -228,6 +228,9 @@ func (t *usbTransport) Recv(timeout time.Duration) ([]byte, error) {
 	buf := make([]byte, readBufferSize)
 	n, err := t.in.ReadContext(ctx, buf)
 	if err != nil && n == 0 {
+		if ctx.Err() != nil || errors.Is(err, gousb.TransferTimedOut) {
+			return nil, fmt.Errorf("reading from %s: %w", t.in.Desc.Address, ErrTimeout)
+		}
 		return nil, fmt.Errorf("reading from %s: %w", t.in.Desc.Address, err)
 	}
 

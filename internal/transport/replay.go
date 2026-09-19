@@ -11,27 +11,31 @@ import (
 	"goodix5120/internal/proto"
 )
 
-// Exchange is one scripted request/response pair for the replay transport.
+// Exchange is one scripted command and the transfers the device sends back.
 type Exchange struct {
 	// Cmd is the opcode the caller is expected to send at this step.
 	Cmd proto.Opcode
 	// Payload is the expected outbound payload. Nil means "do not check".
 	Payload []byte
-	// Response is the raw byte slice the matching Recv will return.
-	Response []byte
+	// Responses are the raw transfers the device sends after Cmd, in order.
+	// Each one satisfies one Recv. Empty means the device stays silent.
+	Responses [][]byte
 }
 
 // replayTransport plays a fixed script, letting the probe run with no hardware
 // attached. It enforces exactly the same safety rules as the USB transport,
 // because both funnel Send through the shared sender/checkOpcode pair.
+//
+// Responses go into a FIFO that outlives the Send that queued them, as on the
+// real device: a caller that reads too little falls behind instead of losing
+// data, and a Recv on an empty queue times out.
 type replayTransport struct {
 	sender
 
-	script  []Exchange
-	next    int    // index of the next expected exchange
-	pending []byte // response queued by the last Send, awaiting Recv
-	armed   bool   // whether pending holds a response
-	closed  bool
+	script []Exchange
+	next   int      // index of the next expected exchange
+	queue  [][]byte // transfers sent by the device and not yet read
+	closed bool
 }
 
 // NewReplay returns a Transport that replays script.
@@ -42,7 +46,7 @@ func NewReplay(script []Exchange, opts Options) Transport {
 }
 
 // record is the frameWriter half of the replay: it checks the outbound command
-// against the script and queues the scripted response for the next Recv.
+// against the script and queues the scripted responses.
 func (t *replayTransport) record(_ context.Context, cmd proto.Opcode, payload, _ []byte) error {
 	if t.closed {
 		return errors.New("replay transport is closed")
@@ -63,22 +67,22 @@ func (t *replayTransport) record(_ context.Context, cmd proto.Opcode, payload, _
 	}
 
 	t.next++
-	t.pending, t.armed = want.Response, true
+	t.queue = append(t.queue, want.Responses...)
 	return nil
 }
 
-// Recv returns the response scripted for the most recent Send. The timeout is
-// accepted for interface compatibility and ignored: nothing here can block.
+// Recv returns the oldest unread transfer, or ErrTimeout if none is queued.
+// The timeout itself is ignored: nothing here can block.
 func (t *replayTransport) Recv(time.Duration) ([]byte, error) {
 	if t.closed {
 		return nil, errors.New("replay transport is closed")
 	}
-	if !t.armed {
-		return nil, fmt.Errorf("replay has no queued response at exchange %d: Recv was called without a preceding successful Send", t.next)
+	if len(t.queue) == 0 {
+		return nil, fmt.Errorf("replay has nothing queued after exchange %d: %w", t.next, ErrTimeout)
 	}
 
-	out := t.pending
-	t.pending, t.armed = nil, false
+	out := t.queue[0]
+	t.queue = t.queue[1:]
 	t.opts.logf("transport: RX (replay) %d bytes: %s", len(out), hex.EncodeToString(out))
 	return out, nil
 }
@@ -86,7 +90,7 @@ func (t *replayTransport) Recv(time.Duration) ([]byte, error) {
 // Close marks the transport unusable. It is safe to call more than once.
 func (t *replayTransport) Close() error {
 	t.closed = true
-	t.pending, t.armed = nil, false
+	t.queue = nil
 	return nil
 }
 
@@ -94,4 +98,10 @@ func (t *replayTransport) Close() error {
 // use it to assert a script ran to completion.
 func (t *replayTransport) Remaining() int {
 	return len(t.script) - t.next
+}
+
+// Unread reports how many transfers are queued but not yet read. Tests use it
+// to assert a caller drained the device.
+func (t *replayTransport) Unread() int {
+	return len(t.queue)
 }

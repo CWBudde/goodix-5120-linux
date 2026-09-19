@@ -192,7 +192,7 @@ The only live run. It wedged the embedded controller and killed the internal key
 transport: opened 27c6:5120 interface 1 (in 0x83, out 0x01)
 
 TX nop (0x00)               a0 04 00 a4 00 01 00 a9
-RX 24 bytes                 a0 14 00 b4 32 11 00 02 00 2f 00 1e 01 38 01 ff 00 f7 00 3f 01 34 01
+RX 24 bytes                 a0 14 00 b4 32 11 00 02 00 2f 00 1e 01 38 01 ff 00 f7 00 3f 01 34 01 73
 
 TX firmware_version (0xa8)  a0 04 00 a4 a8 01 00 01
 RX 10 bytes                 a0 06 00 a6 b0 03 00 a8 01 4e
@@ -236,6 +236,10 @@ Each command yields an ACK first, then a separate data response. The probe read 
 so ran one transfer behind: the firmware string arrived while it was reading for `read_otp`.
 `read_otp` (`0xa6`) itself produced neither ACK nor data — either unimplemented on the EC, or still
 queued. Unresolved.
+
+The probe now reads until the data message arrives or the device goes quiet, drains the IN endpoint
+before exiting, and no longer sends `read_otp`. The Run 1 transfers, regrouped by the command they
+answer, are the `--replay` fixture (`run1Script` in `cmd/goodix-probe/main.go`). Verified offline only.
 
 ### Unidentified — unsolicited `0x32`
 

@@ -33,6 +33,7 @@ type Transport interface {
 
 	// Recv returns the raw bytes read from the IN endpoint. A short read is
 	// normal and is not an error. A zero timeout means "use Options.Timeout".
+	// If nothing arrives in time the error wraps ErrTimeout.
 	Recv(timeout time.Duration) ([]byte, error)
 
 	// Close releases all resources. It is safe to call more than once.
@@ -81,6 +82,11 @@ func (o Options) logf(format string, args ...any) {
 // with errors.Is instead of inspecting message text. The wrapped message
 // carries the specific reason.
 var ErrRefused = errors.New("command refused by the transport safety gate")
+
+// ErrTimeout reports that the device sent nothing before a Recv timed out. It
+// is the normal way to learn that the device has gone quiet, so callers match
+// it with errors.Is rather than treating it as a failure.
+var ErrTimeout = errors.New("no data before the receive timeout")
 
 // checkOpcode is the single safety gate shared by every Transport
 // implementation. It reports why cmd may not be transmitted under ceiling, or

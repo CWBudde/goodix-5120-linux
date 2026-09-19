@@ -138,17 +138,13 @@ func TestNilPayloadIsAccepted(t *testing.T) {
 		t.Error("a nil-payload frame does not pad to a whole packet")
 	}
 
-	tr := NewReplay([]Exchange{{Cmd: opNOP, Payload: []byte{}, Response: nil}}, Options{})
+	tr := NewReplay([]Exchange{{Cmd: opNOP, Payload: []byte{}}}, Options{})
 	defer tr.Close()
 	if err := tr.Send(opNOP, nil); err != nil {
 		t.Fatalf("replay Send with nil payload against an empty scripted payload: %v", err)
 	}
-	got, err := tr.Recv(0)
-	if err != nil {
-		t.Fatalf("replay Recv: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("Recv = %x, want empty", got)
+	if _, err := tr.Recv(0); !errors.Is(err, ErrTimeout) {
+		t.Errorf("replay Recv after a silent exchange = %v, want ErrTimeout", err)
 	}
 }
 

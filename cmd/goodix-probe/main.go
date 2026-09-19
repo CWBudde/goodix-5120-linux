@@ -27,15 +27,26 @@ import (
 // The read-only interrogation sequence. Order matters: nop is the cheapest
 // liveness check, so a device that fails there tells us to stop before trying
 // anything more elaborate.
+//
+// read_otp (0xa6) is left out: in Run 1 it produced neither an ACK nor data,
+// and nobody knows what it does to the EC (FINDINGS.md).
 var steps = []struct {
 	cmd     proto.Opcode
 	purpose string
 }{
-	{0x00, "liveness check — expect an ACK with bit 0 set"},
-	{0xa8, "firmware version — THE go/no-go signal"},
-	{0xa6, "OTP calibration data"},
+	{0x00, "liveness check — Run 1 saw no ACK for it"},
+	{0xa8, "firmware version — expect an ACK, then the version string"},
 	{0xe4, "stored PSK metadata (read, never write)"},
 }
+
+// maxReadsPerStep bounds the receive loop for one command: an ACK, a data
+// message and the odd unsolicited message. Anything beyond it is left to the
+// final drain.
+const maxReadsPerStep = 4
+
+// maxDrainReads bounds the final drain, so a device that never goes quiet
+// cannot hold the probe forever.
+const maxDrainReads = 8
 
 func main() {
 	var (
@@ -62,7 +73,7 @@ func main() {
 
 	var tr transport.Transport
 	if *replay {
-		tr = transport.NewReplay(replayScript(), opts)
+		tr = transport.NewReplay(run1Script(), opts)
 	} else {
 		opened, err := transport.OpenUSB(opts)
 		if err != nil {
@@ -93,57 +104,132 @@ func run(logger *log.Logger, tr transport.Transport, timeout time.Duration) erro
 		if err := tr.Send(step.cmd, nil); err != nil {
 			return fmt.Errorf("send %s: %w", name, err)
 		}
-
-		raw, err := tr.Recv(timeout)
-		if err != nil {
-			// A timeout on the very first step is the signal that this device
-			// does not speak the 51x0 protocol at all — report it as such
-			// rather than as a generic I/O error.
+		if err := collect(logger, tr, step.cmd, timeout); err != nil {
 			return fmt.Errorf("recv after %s: %w", name, err)
 		}
-		if len(raw) == 0 {
-			logger.Printf("  no response (device stayed silent)")
-			continue
-		}
-
-		logger.Printf("  raw  %s", hexdump(raw))
-		describe(logger, step.cmd, raw)
 	}
+
+	drain(logger, tr, timeout)
 
 	logger.Printf("\ndone. Record anything notable in docs/protocol.md under \"Observed exchanges\".")
 	return nil
 }
 
+// collect reads the responses to one command. The device answers with an ACK
+// and then a separate data message, so it keeps reading until the data message
+// arrives, the device goes quiet, or maxReadsPerStep is reached. Run 1 read
+// once per command and so ran one transfer behind.
+func collect(logger *log.Logger, tr transport.Transport, sent proto.Opcode, timeout time.Duration) error {
+	acked := false
+	for range maxReadsPerStep {
+		raw, err := tr.Recv(timeout)
+		if errors.Is(err, transport.ErrTimeout) {
+			if acked {
+				logger.Printf("  device went quiet after the ACK — no data message")
+			} else {
+				logger.Printf("  device went quiet — no ACK")
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			logger.Printf("  empty transfer")
+			continue
+		}
+
+		logger.Printf("  raw  %s", hexdump(raw))
+		switch describe(logger, sent, raw) {
+		case replyAck:
+			acked = true
+		case replyData:
+			return nil
+		}
+	}
+	logger.Printf("  stopped after %d reads; the drain will collect anything left", maxReadsPerStep)
+	return nil
+}
+
+// drain reads until the device goes quiet, so the probe never exits with a
+// response left queued in the EC. Run 1 did exit that way; whether it
+// contributed to the wedge is unknown (FINDINGS.md), so this is hygiene, not a
+// safety guarantee.
+func drain(logger *log.Logger, tr transport.Transport, timeout time.Duration) {
+	logger.Printf("\n--- drain")
+	for i := range maxDrainReads {
+		raw, err := tr.Recv(timeout)
+		if errors.Is(err, transport.ErrTimeout) {
+			logger.Printf("  device quiet after %d leftover transfer(s)", i)
+			return
+		}
+		if err != nil {
+			logger.Printf("  drain stopped: %v", err)
+			return
+		}
+		logger.Printf("  leftover raw  %s", hexdump(raw))
+		if len(raw) > 0 {
+			describe(logger, 0, raw)
+		}
+	}
+	logger.Printf("  device still sending after %d reads; giving up", maxDrainReads)
+}
+
+// reply classifies one received transfer relative to the command just sent.
+type reply int
+
+const (
+	replyOther reply = iota // undecodable, unsolicited, or for another command
+	replyAck                // the ACK for the command just sent
+	replyData               // the data message for the command just sent
+)
+
 // describe decodes a response as far as it can, reporting honestly at the point
 // it stops making sense rather than inventing structure.
-func describe(logger *log.Logger, sent proto.Opcode, raw []byte) {
+func describe(logger *log.Logger, sent proto.Opcode, raw []byte) reply {
 	flags, packPayload, err := proto.DecodePack(raw)
 	if err != nil {
 		logger.Printf("  outer frame did not decode: %v", err)
 		logger.Printf("  (this is itself informative — the 5120 may not use 51x0 framing)")
-		return
+		return replyOther
 	}
 	logger.Printf("  pack flags=0x%02x payload=%d bytes", flags, len(packPayload))
 
 	cmd, msgPayload, err := proto.DecodeMessage(packPayload)
 	if err != nil {
 		logger.Printf("  inner message did not decode: %v", err)
-		return
+		return replyOther
 	}
 
-	switch {
-	case proto.IsAck(sent, cmd):
-		logger.Printf("  ACK for 0x%02x — 51x0 ACK convention holds", byte(sent))
-	default:
-		logger.Printf("  message cmd=0x%02x (%s)", byte(cmd), cmd.Name())
+	if cmd == proto.AckCmd {
+		acked, status, err := proto.DecodeAck(cmd, msgPayload)
+		switch {
+		case err != nil:
+			logger.Printf("  malformed ACK: %v", err)
+			return replyOther
+		case acked == sent:
+			logger.Printf("  ACK for %s (0x%02x), status 0x%02x", acked.Name(), byte(acked), status)
+			return replyAck
+		default:
+			logger.Printf("  stray ACK for 0x%02x (%s), status 0x%02x", byte(acked), acked.Name(), status)
+			return replyOther
+		}
 	}
 
+	kind := replyData
+	if cmd == sent {
+		logger.Printf("  data for %s (0x%02x)", cmd.Name(), byte(cmd))
+	} else {
+		kind = replyOther
+		logger.Printf("  unsolicited message cmd=0x%02x (%s)", byte(cmd), cmd.Name())
+	}
 	if len(msgPayload) > 0 {
 		logger.Printf("  payload %s", hexdump(msgPayload))
 		if s := printable(msgPayload); s != "" {
 			logger.Printf("  as text %q", s)
 		}
 	}
+	return kind
 }
 
 func dryRunFrames(logger *log.Logger) {
@@ -161,16 +247,34 @@ func dryRunFrames(logger *log.Logger) {
 	logger.Printf("\n%d frames. Verify the framing by hand against docs/protocol.md before running live.", len(steps))
 }
 
-// replayScript exercises the full decode path with no hardware attached. The
-// responses are synthesised, not captured — they prove the plumbing works, and
-// deliberately prove nothing about the real device.
-func replayScript() []transport.Exchange {
-	out := make([]transport.Exchange, 0, len(steps))
-	for _, step := range steps {
-		ack := proto.Encode(proto.Opcode(byte(step.cmd)|0x01), nil)
-		out = append(out, transport.Exchange{Cmd: step.cmd, Response: ack})
+// run1Script replays the transfers captured in Run 1 (docs/protocol.md), so
+// --replay and the tests decode real device bytes rather than synthesised ones.
+//
+// Run 1 read once per command, so which command each transfer answers is an
+// interpretation: the 0x32 message arrived first and is attributed to nop,
+// and the version string that arrived while read_otp was being read belongs to
+// firmware_version. read_otp itself is omitted, as it is from steps. The data
+// message for preset_psk_read was never read, so it is absent here rather than
+// invented.
+func run1Script() []transport.Exchange {
+	return []transport.Exchange{
+		{Cmd: 0x00, Responses: [][]byte{
+			// Unsolicited 0x32, probably emitted on attach.
+			{0xa0, 0x14, 0x00, 0xb4, 0x32, 0x11, 0x00, 0x02, 0x00, 0x2f, 0x00, 0x1e, 0x01,
+				0x38, 0x01, 0xff, 0x00, 0xf7, 0x00, 0x3f, 0x01, 0x34, 0x01, 0x73},
+		}},
+		{Cmd: 0xa8, Responses: [][]byte{
+			// ACK for firmware_version, status 01.
+			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xa8, 0x01, 0x4e},
+			// "GF_ITE_EC_20063".
+			{0xa0, 0x14, 0x00, 0xb4, 0xa8, 0x11, 0x00, 0x47, 0x46, 0x5f, 0x49, 0x54, 0x45,
+				0x5f, 0x45, 0x43, 0x5f, 0x32, 0x30, 0x30, 0x36, 0x33, 0x00, 0xe2},
+		}},
+		{Cmd: 0xe4, Responses: [][]byte{
+			// ACK for preset_psk_read, status 01.
+			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xe4, 0x01, 0x12},
+		}},
 	}
-	return out
 }
 
 func explainOpenError(logger *log.Logger, err error) {

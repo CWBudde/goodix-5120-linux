@@ -198,14 +198,14 @@ cycle recovery known in advance, and with no work open elsewhere on the machine.
 All packages build, vet and test clean. `go list -deps ./cmd/goodix-probe` shows the probe links only
 `proto` and `transport` — the Tier 2 packages are not compiled into it.
 
-**The probe as it stands is one transfer behind.** Fixing that means reading twice per command, ACK
-then data, and recognising `0xb0` acknowledgements. That change is *not* made, deliberately: it would
-invite another run, and the recommendation is not to run it.
+**The "one transfer behind" defect is fixed in code (2026-09-19), offline only.** The probe decodes
+`0xb0` acknowledgements, reads ACK then data per command, skips unsolicited messages, drains the IN
+endpoint before exiting and no longer sends `read_otp`. It is tested against the Run 1 capture through
+the replay transport. **This is not a recommendation to run it.** The advice above still stands, and
+`PLAN.md` Phase 4 gates any live run on a capture from the vendor driver.
 
 ### Known issues
 
-- `/mnt/Projekte` is NTFS (fuseblk). `git init` fails there on `chmod`, so builds use
-  `-buildvcs=false`. Version control needs the repository on ext4.
 - Live runs need root; there is deliberately no udev rule.
 
 ---
