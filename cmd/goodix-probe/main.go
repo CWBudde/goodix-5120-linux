@@ -12,6 +12,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -227,7 +228,13 @@ func collect(logger *log.Logger, tr transport.Transport, sent proto.Opcode, time
 		switch describe(logger, sent, raw) {
 		case replyAck:
 			acked = true
-		case replyData:
+		case replyData, replyTLS:
+			// get_mcu_state (0xae) and request_tls_connection (0xd0) answer
+			// without acknowledging first, so a missing ACK here is normal
+			// rather than a fault. Say which it was.
+			if !acked {
+				logger.Printf("  data arrived with no ACK — normal for 0xae and 0xd0")
+			}
 			return nil
 		}
 	}
@@ -266,6 +273,7 @@ const (
 	replyOther reply = iota // undecodable, unsolicited, or for another command
 	replyAck                // the ACK for the command just sent
 	replyData               // the data message for the command just sent
+	replyTLS                // a TLS record, opaque without the PSK
 )
 
 // describe decodes a response as far as it can, reporting honestly at the point
@@ -278,6 +286,15 @@ func describe(logger *log.Logger, sent proto.Opcode, raw []byte) reply {
 		return replyOther
 	}
 	logger.Printf("  pack flags=0x%02x payload=%d bytes", flags, len(packPayload))
+
+	// A 0xb0 or 0xb2 pack carries a raw TLS record, not a message. Handing one
+	// to DecodeMessage would report "inner message did not decode", which is
+	// true but misleading: the frame is fine, it is simply encrypted. After
+	// 0xd0 the EC opens a handshake, and every image arrives this way.
+	if flags == proto.FlagTLSData || flags == proto.FlagTLSAlt {
+		logger.Printf("  TLS record, %d bytes%s — opaque without the PSK", len(packPayload), tlsRecordSummary(packPayload))
+		return replyTLS
+	}
 
 	cmd, msgPayload, err := proto.DecodeMessage(packPayload)
 	if err != nil {
@@ -314,6 +331,27 @@ func describe(logger *log.Logger, sent proto.Opcode, raw []byte) reply {
 		}
 	}
 	return kind
+}
+
+// tlsRecordSummary names a TLS record's type and length from its five-byte
+// header. Only the header is reported: the body is ciphertext of a fingerprint
+// image, and nothing here may print it.
+func tlsRecordSummary(b []byte) string {
+	if len(b) < 5 {
+		return ""
+	}
+	kind := "type " + fmt.Sprintf("0x%02x", b[0])
+	switch b[0] {
+	case 0x14:
+		kind = "change cipher spec"
+	case 0x15:
+		kind = "alert"
+	case 0x16:
+		kind = "handshake"
+	case 0x17:
+		kind = "application data"
+	}
+	return fmt.Sprintf(" (%s, TLS 1.%d, %d-byte record)", kind, int(b[2])-1, binary.BigEndian.Uint16(b[3:5]))
 }
 
 func dryRunFrames(logger *log.Logger) {
