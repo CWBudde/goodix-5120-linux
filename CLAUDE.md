@@ -29,11 +29,15 @@ go build -buildvcs=false ./cmd/goodix-probe   # -buildvcs=false is used througho
 go test ./...
 go vet ./...
 go test ./internal/transport -run TestReplayHappyPath   # single test
-go test -tags goodix_destructive ./internal/proto   # tag-aware tests; cmd/goodix-probe safety tests intentionally fail under this tag
+go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-aware tests; cmd/goodix-probe safety tests intentionally fail under this tag
 
 ./goodix-probe --dry-run   # print the frames it would send; opens no USB device
 ./goodix-probe --replay    # full decode path against the scripted fake
 ./goodix-probe --bisect --replay --assume-keys   # bisect flow offline (no root, no USB)
+
+go build -buildvcs=false ./cmd/goodix-pcap
+./goodix-pcap -in dump.pcapng                   # counts only, no payload bytes; reads a file, opens nothing
+go test ./internal/capture -capture "$PWD/dump.pcapng"   # checks the payload rules against real vendor traffic
 ```
 
 ## Architecture
@@ -47,11 +51,23 @@ The safety guarantee is structural, and changes must preserve it:
   `opcode_destructive.go` behind the `goodix_destructive` build tag (`opcode_safe.go` is the default-build counterpart).
   Tests assert a default build cannot name them.
 - **`internal/transport` is the single chokepoint.** Both the gousb transport (`usb.go`) and the replay fake (`replay.go`)
-  embed `sender`, whose `Send` runs `checkOpcode` before any byte is written: unregistered opcodes are always refused,
-  and any class above `Options.Ceiling` (zero value = `ClassSafe`) is refused unless `Options.Allow` names that exact
-  opcode (never a destructive one). Refusals wrap `ErrRefused`. Don't add a write path that bypasses `sender`.
-- The only `Allow` user is `--bisect --allow-e4`, which admits `preset_psk_read` (`0xe4`) as a bisect step to confirm
-  that it wedges the EC; see `docs/bisect-runbook.md`.
+  embed `sender`, whose `Send` runs `check` before any byte is written: unregistered opcodes are always refused,
+  any class above `Options.Ceiling` (zero value = `ClassSafe`) is refused unless `Options.Allow` names that exact
+  opcode (never a destructive one), **and a payload that violates the opcode's registered `PayloadRule` is refused
+  too** (class first, so a refusal names the worst reason). Refusals wrap `ErrRefused`; a payload refusal also wraps
+  `proto.ErrPayload`. Don't add a write path that bypasses `sender`.
+- **Every opcode needs a payload rule**, as a required argument to `register`. An empty-payload `0xe4` wedged the EC
+  three times because nothing in the code knew it took an argument. `PayloadUnknown()` is the honest value for an
+  opcode the vendor never sends; `TestPayloadRulesAreEvidenceBased` pins that set so it can only shrink.
+- **`cmd/goodix-probe/vendor.go` is the single source of truth for payloads.** `vendorInit` is the driver's 14-frame
+  init sequence; `steps` (one command, `a8 [00 00]`) is the subset cleared for live hardware. Growing `steps` is a
+  Phase 4 decision, one command per run. `nop` is deliberately not a step.
+- **`internal/capture` + `cmd/goodix-pcap`** read USBPcap captures offline. They may import `internal/proto` and
+  nothing else from the repo — never `internal/transport`, never gousb — and purity tests parse the source to enforce
+  it. `goodix-pcap` prints counts by default and refuses to print `0xe4` or `0xa6` payloads at all.
+- The only `Allow` user is `--bisect --allow-e4`, which admits `preset_psk_read` (`0xe4`) as a bisect step. It now
+  sends the vendor's 8-byte payload; the empty frame that wedged the EC is refused by the payload rule. See
+  `docs/bisect-runbook.md`.
 - **`cmd/goodix-probe`** runs a fixed `steps` sequence; `safety_test.go` fails if any step is not `ClassSafe` and checks
   the ceiling end to end through the replay transport.
 - **`internal/tlspsk`, `internal/image`** are Tier 2 scaffolds with no call sites. TLS-PSK goes through an

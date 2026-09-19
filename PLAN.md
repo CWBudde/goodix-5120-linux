@@ -37,10 +37,10 @@ What we know, with details in [`docs/protocol.md`](docs/protocol.md):
 
 What is ahead, in order:
 
-1. **Phase 3c:** bring the code in line with the vendor sequence, offline.
+1. ~~**Phase 3c:** bring the code in line with the vendor sequence, offline.~~ **Done 2026-09-19.**
 2. **Phase 3:** get the missing pieces. That means a real init on the wire (the full `0x90` config),
    the ACPI and EC identity, and a first look at how the PSK is sealed.
-3. **Phase 2:** publish. The findings now include the vendor sequence and the `0xe4` payload.
+3. **Phase 2:** publish. The findings now include the vendor sequence, the `0xe4` payload and Run 4.
 4. **Phase 4:** live plaintext runs that follow the vendor sequence, one step at a time.
 5. **Phase 5:** solve the PSK, then TLS and images.
 
@@ -124,36 +124,44 @@ confirmed that the probe without `0xe4` is safe to repeat. `0xe4` is now `ClassS
 
 ---
 
-## Phase 3c — Align the code with the vendor sequence (no hardware)
+## Phase 3c — Align the code with the vendor sequence (no hardware) — done
 
-Goal: the probe sends exactly what the vendor driver sends, byte for byte, verified offline.
+Goal was: the probe sends exactly what the vendor driver sends, byte for byte, verified offline.
+Done 2026-09-19, all of it against the replay transport and the two captures. No hardware touched.
 
-- [ ] **Vendor payloads in `steps`:** `a8 [00 00]` instead of an empty payload. Drop `nop` from the
-      steps: the vendor never sends it to an ITE EC, and it gets no reply. Keep it registered for tests.
-- [ ] **Refuse payload-less commands that expect an argument.** At least `e4` and `a6`: the transport
-      or the step table should reject an empty payload for them, so the Run 1/2 frame can't be sent
-      again by accident.
-- [ ] **Register the new opcodes, with classes decided by the user** (this changes the safety boundary):
-      `ae` get MCU state (likely `ClassSafe`, a read with a timestamp), `82` read register (likely safe),
-      `d2`/`d4` (TLS state, state-changing), `98` set DAC, `50` nav, `32`/`34`/`36` FDT modes
-      (state-changing). Don't add a sensor-register *write*: the vendor init has none.
-      `0xae`'s reply has **no ACK**; the `collect` logic must accept that.
-- [ ] **Decoders** for the `0xae` state (version, TLS-connected and POV flags) and the FDT event
-      payloads (`02 00 <flags> 00 + 6 × u16`, `00 02 …`, `00 01 …`, `80 …`).
-- [ ] **Replay fixture of the vendor init** from the debug log (like `run1Script`), from `96` through
-      `d0`, with the TLS records as opaque `b0` packs. Leave out the `e4` reply's PSK hash and the OTP;
-      use synthetic bytes of the same length and flag them as such.
-- [ ] **Replay fixture of the capture loop** from `dump.pcapng` (`32`/`20`/`34`/`36`), with the image
-      packs as random bytes of the right length. No real ciphertext in the repo.
-- [ ] Tests: the default `steps` stay `ClassSafe`, and a default build still can't name `0xe0`/`0xf0`.
+- [x] **Vendor payloads in `steps`:** `cmd/goodix-probe/vendor.go` holds `vendorInit`, the driver's
+      14-frame init sequence, and is the single source of truth for every payload in the binary.
+      `steps` is now one command, `a8 [00 00]`. `nop` is dropped and stays registered for the tests.
+- [x] **Refuse payload-less commands that expect an argument.** Every opcode carries a `PayloadRule`,
+      a *required* argument to `register`, and `sender.Send` refuses a violation before a byte is
+      written. **The frame that killed the keyboard can no longer be built**, including on the
+      `--allow-e4` path, which now sends the vendor's 8-byte argument.
+- [x] **Register the new opcodes:** `ae` and `82` `ClassSafe`; `98`, `d4`, `50`, `32`, `34`, `36`
+      `ClassStateChanging`. `0xd2` was **not** registered — it appears in neither the driver log nor
+      either capture. No sensor-register write was added. `TestRegisteredSetIsExact` replaced a subset
+      check, so the registry can no longer grow unnoticed.
+- [x] **Decoders** for the `0xae` state and the FDT event and arm frames, written against bytes read
+      out of the captures. Only `isTlsConnected` could be pinned to a bit; see the correction in
+      `docs/protocol.md`.
+- [x] **Replay fixture of the vendor init**, `96` through the second `ae`. Secrets and unknowns are
+      synthetic and named, so a real byte pasted in fails a test.
+- [x] **Replay fixture of the capture loop**, with the image packs as scrubbed bytes.
+- [x] **`cmd/goodix-pcap`**, an offline USBPcap reader (`internal/capture`). It imports only
+      `internal/proto`, prints counts rather than bytes by default, and refuses `0xe4` and `0xa6`
+      payloads outright. Purity tests parse the source to prove it cannot reach hardware.
+- [x] Tests: default `steps` stay `ClassSafe` **and** match `vendorInit` byte for byte; a default
+      build still cannot name `0xe0`/`0xf0`.
 
----
+Also fixed on the way: `describe` used to hand TLS packs to `DecodeMessage` and report "inner message
+did not decode"; it now reports the record type and length and never the body.
 
 ## Phase 4 — Live runs (only if the gate is met)
 
-**Gate:** Phase 3c is complete, **and** each planned command matches the vendor sequence byte for byte
-(opcode *and* payload). The plaintext part of the gate can now be met, from the driver log. `d0` and
-beyond can't be, until the PSK is solved.
+**Gate:** Phase 3c is complete (2026-09-19), **and** each planned command matches the vendor sequence
+byte for byte (opcode *and* payload). Both halves are now enforced in code rather than checked by hand:
+`TestStepPayloadsMatchVendorInit` fails if a step is not a vendor frame, and `./goodix-probe --dry-run`
+prints the probe's frames next to the whole vendor sequence for a human to compare. `d0` and beyond
+still can't be met, until the PSK is solved.
 
 Setup for every run:
 
@@ -208,9 +216,11 @@ Then:
 
 ## Recommended order
 
-1. Phase 3c: align the code with the vendor sequence, offline.
+1. ~~Phase 3c: align the code with the vendor sequence, offline.~~ Done 2026-09-19.
 2. Phase 3: capture an init on the wire (Disable/Enable), look at the PSK sealing, ACPI and EC identity.
-3. Phase 2: publish, now including the `0xe4` payload warning.
+   The Disable/Enable capture is the only thing still blocking a complete vendor-init fixture, since
+   the `0x90` config is the one outbound frame nobody has the bytes for.
+3. Phase 2: publish, now including the `0xe4` payload warning and Run 4's confirmation in isolation.
 4. Phase 4: steps 1–4 above, one per run.
 5. Phase 5 only once the PSK question has an answer.
 

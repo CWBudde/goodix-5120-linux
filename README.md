@@ -73,7 +73,14 @@ So the guarantee here is structural, not a promise to be careful:
 3. **Destructive opcodes are not in the binary.** `write_firmware` (`0xf0`) and `preset_psk_write`
    (`0xe0`) are registered only behind the `goodix_destructive` build tag. A unit test asserts the
    default build cannot name them.
-4. **No firmware blob is vendored** into this repository.
+4. **Opcodes carry a payload rule, and the transport enforces it.** Each opcode records the payload
+   length the Windows driver was observed to send; `Send` refuses anything else, before a byte is
+   written. This is not theoretical tidiness. An `0xe4` with an *empty* payload wedged the embedded
+   controller and killed the laptop's internal keyboard three times, while the vendor's `0xe4` with
+   its 8-byte argument is answered normally. That frame can no longer be built.
+5. **No firmware blob is vendored** into this repository.
+6. **Nothing but the probe can reach the device.** `cmd/goodix-pcap` reads capture files and imports
+   only `internal/proto`; a test parses the source to prove it cannot import a USB library.
 
 ## Requirements
 
@@ -125,9 +132,11 @@ Tier 2 would need `mcu_get_image` and a TLS session against that same controller
 ## Layout
 
 ```
-cmd/goodix-probe/     Tier 1 entry point
-internal/proto/       packet framing, checksums, opcode registry + safety classes
-internal/transport/   gousb USB transport, replay fake, ceiling enforcement
+cmd/goodix-probe/     Tier 1 entry point — the only thing that opens a device
+cmd/goodix-pcap/      offline reader for USBPcap captures; cannot reach hardware
+internal/proto/       packet framing, checksums, opcode registry, safety classes, payload rules
+internal/transport/   gousb USB transport, replay fake, ceiling + payload enforcement
+internal/capture/     pcapng and USBPcap decoding (stdlib + proto only)
 internal/tlspsk/      Tier 2 scaffold — TLS-PSK via openssl subprocess (no call sites)
 internal/image/       Tier 2 scaffold — PGM writer (no call sites)
 docs/protocol.md      observed wire format, appended as we learn

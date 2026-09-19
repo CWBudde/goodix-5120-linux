@@ -87,26 +87,41 @@ original **with bit 0 set** (`cmd | 0x01`), before the actual response payload f
 
 Classification is this project's own, and drives the enforcement described in the README.
 
+Each opcode also carries a **payload rule**: the length the vendor driver was observed to send. The
+transport refuses a payload that violates it, before a byte is written, because a payload-less `0xe4`
+is what wedged the EC three times. `nop` and `check_firmware` carry no rule, because the vendor driver
+never sends them and a guessed rule would read like evidence.
+
 ### `ClassSafe` — read-only, in the default allowlist
 
-| Opcode | Name | Notes |
-|---|---|---|
-| `0x00` | `nop` | cheapest liveness check; the first thing the probe sends |
-| `0xa8` | `firmware_version` | **the go/no-go signal** — a plausible string means the family assumption holds |
-| `0xa6` | `read_otp` | one-time-programmable calibration data |
+| Opcode | Name | Payload | Notes |
+|---|---|---|---|
+| `0x00` | `nop` | none recorded | the vendor never sends it to an ITE EC; **not** a probe step any more |
+| `0xa8` | `firmware_version` | 2 (`00 00`) | **the go/no-go signal** — the one command the probe sends |
+| `0xa6` | `read_otp` | 2 (`00 00`) | calibration data; the empty form got no reply in Run 1 |
+| `0xae` | `get_mcu_state` | 5 (`55` + `uint32`) | answers with 20 bytes and **no ACK** |
+| `0x82` | `read_register` | 5 | the vendor's only use returns the chip ID `0x2504` |
 
 ### `ClassStateChanging` — alters runtime state, no flash write; opt-in only
 
-| Opcode | Name |
-|---|---|
-| `0x96` | `enable_chip` |
-| `0xa2` | `reset` |
-| `0x70` | `mcu_switch_to_idle_mode` |
-| `0x90` | `upload_config_mcu` |
-| `0xd0` | `request_tls_connection` |
-| `0x20` | `mcu_get_image` |
-| `0xf4` | `check_firmware` |
-| `0xe4` | `preset_psk_read` |
+| Opcode | Name | Payload |
+|---|---|---|
+| `0x96` | `enable_chip` | 2 (`01 02`) |
+| `0xa2` | `reset` | 2 (`01 14`) |
+| `0x70` | `mcu_switch_to_idle_mode` | 2 (`14 00`) |
+| `0x98` | `set_dac` | 8, from the OTP |
+| `0x90` | `upload_config_mcu` | 224, **not on record** |
+| `0xd0` | `request_tls_connection` | 2 (`00 00`); no ACK |
+| `0xd4` | `tls_successfully_established` | 2 (`00 00`) |
+| `0x20` | `mcu_get_image` | 2 (`01 00`) |
+| `0x50` | `nav_mode` | 2 (`01 00`); driver log only |
+| `0x32`/`0x34`/`0x36` | `fdt_down`/`fdt_up`/`fdt_manual` | 16/14/14 — they arm the EC to emit events unprompted, so none is a read |
+| `0xf4` | `check_firmware` | none recorded |
+| `0xe4` | `preset_psk_read` | 8 (`03 00 02 bb 00 00 00 00`) |
+
+`0xd2` is **not** registered. It is named in `PLAN.md`, but appears in neither the eight driver inits
+nor either USB capture, and registering an opcode nobody has observed widens the boundary for nothing.
+No sensor-register *write* is registered either: the vendor init contains none.
 
 `0xf4` is classified conservatively: it reads state, but it appears in upstream's IAP flow, and being
 wrong in that direction is cheap while being wrong in the other could cost the sensor.
@@ -114,7 +129,8 @@ wrong in that direction is cheap while being wrong in the other could cost the s
 `0xe4` reads the stored PSK metadata and writes nothing, and was `ClassSafe` until 2026-09-19. It moved
 here because **an `0xe4` with an empty payload** wedges this device's EC (Runs 1, 2 and 4 below; Run 4
 showed it needs no other command before it). The probe no longer sends it, and bisect refuses it unless
-`--allow-e4` is given, in which case it goes out with the vendor's 8-byte argument.
+`--allow-e4` is given, in which case it goes out with the vendor's 8-byte argument. The empty frame
+itself can no longer be built: the payload rule refuses it at the transport.
 
 ### `ClassDestructive` — never compiled into a default build
 
@@ -392,7 +408,7 @@ Identical in all 8 inits. Payloads are message payloads (checksum omitted). ACK 
 | 1 | `96` enable_chip | `01 02` | none; the driver doesn't wait for one |
 | 2 | `a8` firmware_version | `00 00` | ACK, `GF_ITE_EC_20063` |
 | 3 | `ae` get MCU state | `55` + `uint32` LE timestamp (ms, low bits) | **no ACK**, 20-byte state (below) |
-| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes: type `0xbb020003`, len `0x20`, 32-byte PSK hash |
+| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes: type `0xbb020003`, len `0x20`, 32-byte PSK hash (that is 40; the 41st byte is unaccounted for) |
 | 5 | `a2` reset | `01 14` | ACK, `01 00 08` |
 | 6 | `82` read register | `00 00 00 04 00` | ACK, `a2 04 25 00` (driver: chip ID `0x2504`) |
 | 7 | `a6` read_otp | `00 00` | ACK, 64-byte OTP (~35 ms) |
@@ -450,10 +466,58 @@ The driver's own legend: FDT mode "1Down2Up3Manual" = `0x32`/`0x34`/`0x36`. The 
 per-zone thresholds derived from the last FDT readings (hypothesis). An `0x32` event starting with
 `80` (not `02`) comes back ~30 ms after an arm whose thresholds were far from the base, and the driver
 re-arms at once with fresh thresholds. Hypothesis: "base invalid". `0x50` (payload `01 00`) is "nav" mode,
-sent after each finger-up.
+sent after each finger-up — **according to the driver log only; `0x50` does not appear anywhere in
+either USB capture.**
 
 `0xae` state reply, byte 1: `0x11` = POV image valid, TLS down (the only cold init); `0x13` = both
 valid; `0x02` = TLS up, no POV image. The driver skips re-init and the handshake when TLS is still up.
+
+**Correction (2026-09-19, from the captures):** only `isTlsConnected` can be pinned to a bit. It is
+bit 1 (`0x02`), which the driver logs as 1 for `0x13` and `0x02` and 0 for `0x11`. "POV image valid"
+cannot be attributed: bit 0 (`0x01`) and bit 4 (`0x10`) are set together in `0x11` and `0x13` and clear
+together in `0x02`, so the evidence cannot separate them, and they may be one two-bit field.
+`internal/proto.DecodeMCUState` offers bit 0 under that caveat and keeps all 20 bytes raw.
+
+### Read back from the captures (observed, 2026-09-19)
+
+`cmd/goodix-pcap` decodes a USBPcap file offline — it imports only `internal/proto`, cannot reach a
+device, and prints counts rather than payload bytes by default. Run it on `dump.pcapng` to reproduce
+the following. These facts come from the wire, independently of the driver's debug log.
+
+```
+2937 USB transfers, 382 on the device (bus 2, device 2, found via its device descriptor)
+382 frames decoded, 0 failed — every pack and message checksum verifies
+```
+
+| TX | count | payload length |
+|---|---|---|
+| `0x20` mcu_get_image | 43 | 2 |
+| `0x32` fdt_down | 26 | 16 |
+| `0x34` fdt_up | 43 | 14 |
+| `0x36` fdt_manual | 22 | 14 |
+| `0xae` get_mcu_state | 1 | 5 |
+
+Every one of those lengths matches the vendor payloads transcribed above, which is what the opcode
+payload rules in `internal/proto` are built on. 43 TLS packs, all exactly 7749 bytes of pack payload.
+`0x34` was armed 43 times but produced only 21 events; `0x50` appears zero times.
+
+Event headers actually seen, with counts:
+
+```
+0x32   02 00 3f 00  x15    02 00 2f 00  x4    02 00 3d 00  x1    02 00 37 00  x1    80 00 00 00  x5
+0x34   00 02 00 00  x21
+0x36   00 01 3f 00  x21    00 01 2f 00  x1
+```
+
+Arm payloads confirm the documented shape: `0c 01`/`0e 01`/`0d 01`, then six `80 xx` pairs, then a
+`uint16` that only `0x32` carries and that changes between arms (a timestamp). The `0x80` before each
+threshold is constant in all 91 arms.
+
+The `0xae` reply is byte-identical in both captures, with `isTlsConnected` set:
+
+```
+02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 04 04
+```
 
 ### Power
 

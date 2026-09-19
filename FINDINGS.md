@@ -214,14 +214,22 @@ cycle recovery known in advance, and with no work open elsewhere on the machine.
 
 | Package | Role |
 |---|---|
-| `internal/proto` | framing, checksums, opcode registry and safety classes |
+| `internal/proto` | framing, checksums, opcode registry, safety classes, payload rules, decoders |
 | `internal/transport` | gousb transport, replay fake, the enforcement chokepoint |
+| `internal/capture` | pcapng and USBPcap decoding; stdlib and `proto` only, so it cannot reach a device |
+| `cmd/goodix-pcap` | offline reader for the vendor captures; prints counts, not payload bytes |
 | `internal/tlspsk` | Tier 2 scaffold — TLS-PSK via an `openssl s_server` subprocess |
 | `internal/image` | Tier 2 scaffold — PGM writer and 12-bit unpacker |
 | `cmd/goodix-probe` | the read-only probe |
 
 All packages build, vet and test clean. `go list -deps ./cmd/goodix-probe` shows the probe links only
-`proto` and `transport` — the Tier 2 packages are not compiled into it.
+`proto` and `transport` — the Tier 2 packages are not compiled into it. `go list -deps ./cmd/goodix-pcap`
+shows `proto` and `capture` and no USB library at all, and a test parses the source to keep it that way.
+
+**The empty-payload frame is now unbuildable (2026-09-19).** Every opcode carries the payload length the
+vendor driver sends, and the transport refuses a violation before a byte is written, so `Send(0xe4, nil)`
+— the frame behind this whole report — fails with `ErrRefused`. The probe sends the vendor's payloads,
+and `nop` is gone from its sequence because the vendor never sends it to an ITE EC.
 
 **The "one transfer behind" defect is fixed in code (2026-09-19), offline only.** The probe decodes
 `0xb0` acknowledgements, reads ACK then data per command, skips unsolicited messages, drains the IN
