@@ -74,21 +74,21 @@ func TestBisectAllStepsAlive(t *testing.T) {
 // A dead keyboard after a step must stop the run there: nothing further may be
 // sent to the EC.
 func TestBisectStopsAtFirstDeadCheck(t *testing.T) {
-	// baseline ok, attach ok, nop ok, firmware_version dead.
-	out, host, rt, _, err := bisectReplay(t, true, true, true, false)
+	// baseline ok, attach ok, nop dead.
+	out, host, rt, _, err := bisectReplay(t, true, true, false)
 	if !errors.Is(err, errKeyboardLost) {
 		t.Fatalf("err = %v, want errKeyboardLost\n%s", err, out)
 	}
-	if !strings.Contains(err.Error(), "firmware_version") {
+	if !strings.Contains(err.Error(), "nop") {
 		t.Errorf("error does not name the step: %v", err)
 	}
 	if rt.Remaining() != 1 {
-		t.Errorf("remaining=%d, want 1: preset_psk_read must not be sent after the keyboard died", rt.Remaining())
+		t.Errorf("remaining=%d, want 1: firmware_version must not be sent after the keyboard died", rt.Remaining())
 	}
-	if strings.Contains(out, "preset_psk_read (0xe4) —") {
-		t.Errorf("preset_psk_read was attempted:\n%s", out)
+	if strings.Contains(out, "firmware_version (0xa8) —") {
+		t.Errorf("firmware_version was attempted:\n%s", out)
 	}
-	if last := host.marks[len(host.marks)-1]; !strings.HasPrefix(last, "NO KEY after step 2") {
+	if last := host.marks[len(host.marks)-1]; !strings.HasPrefix(last, "NO KEY after step 1") {
 		t.Errorf("last kernel marker = %q", last)
 	}
 }
@@ -121,17 +121,18 @@ func TestBisectAttachFailure(t *testing.T) {
 }
 
 func TestParseSteps(t *testing.T) {
-	got, err := parseSteps(" 0xA8, e4 ,")
+	got, err := parseSteps(" 0xA8, 00 ,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != 0xa8 || got[1] != 0xe4 {
+	if len(got) != 2 || got[0] != 0xa8 || got[1] != 0x00 {
 		t.Errorf("got %v", got)
 	}
 
-	// read_otp, the destructive opcodes and junk are all refused: bisect can
-	// only send what the probe's own step list contains.
-	for _, bad := range []string{"a6", "f0", "e0", "zz", "100"} {
+	// read_otp, preset_psk_read (wedges the EC), the destructive opcodes and
+	// junk are all refused: bisect can only send what the probe's own step list
+	// contains.
+	for _, bad := range []string{"a6", "e4", "f0", "e0", "zz", "100"} {
 		if _, err := parseSteps(bad); err == nil {
 			t.Errorf("parseSteps(%q) accepted", bad)
 		}

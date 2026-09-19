@@ -5,6 +5,9 @@ Run 1 (2026-08-17) killed the internal keyboard, but the kernel logged nothing w
 `firmware_version` (`0xa8`) or `preset_psk_read` (`0xe4`) did it. `goodix-probe --bisect` finds out:
 it performs one step at a time and asks for a key press on the internal keyboard after each.
 
+**Answered by Run 2 (2026-09-19): `0xe4`.** See `docs/protocol.md`. `0xe4` has been removed from the
+steps since then, so a bisect run now covers only attach, `nop` and `0xa8`.
+
 This is a **live hardware run**. It is the user's decision (made 2026-09-19) to run it before a
 vendor-driver capture exists, which departs from the Phase 4 gate in PLAN.md. Claude does not run it.
 
@@ -16,7 +19,7 @@ vendor-driver capture exists, which departs from the Phase 4 gate in PLAN.md. Cl
 | 0 attach | open + claim the USB interface, drain | nothing |
 | 1 | `nop` (`0x00`), collect, drain | 1 frame |
 | 2 | `firmware_version` (`0xa8`), collect, drain | 1 frame |
-| 3 | `preset_psk_read` (`0xe4`), collect, drain | 1 frame |
+| ~~3~~ | ~~`preset_psk_read` (`0xe4`)~~ — removed after Run 2 wedged the EC on it | — |
 
 After each step it logs the i8042 interrupt counts, the ACPI SCI count and whether `27c6:5120` is still
 enumerated, and then waits (30 s by default) for a key press on the **internal** keyboard. The first

@@ -4,7 +4,7 @@ Working notes. Two kinds of statement appear here and they are deliberately kept
 
 - **Transcribed** — read from the upstream [goodix-fp-dump][dump] Python source (`goodix.py`,
   `protocol.py`, `driver_51x0.py`). Believed accurate for the 5110; *assumed* to hold for the 5120.
-- **Observed** — measured against this machine's actual hardware. Nothing is observed yet.
+- **Observed** — measured against this machine's actual hardware (Run 1, Run 2 below).
 
 Anything not marked observed is a hypothesis. The point of the probe is to move lines from the first
 category to the second.
@@ -94,7 +94,6 @@ Classification is this project's own, and drives the enforcement described in th
 | `0x00` | `nop` | cheapest liveness check; the first thing the probe sends |
 | `0xa8` | `firmware_version` | **the go/no-go signal** — a plausible string means the family assumption holds |
 | `0xa6` | `read_otp` | one-time-programmable calibration data |
-| `0xe4` | `preset_psk_read` | reads the stored PSK metadata; does *not* write |
 
 ### `ClassStateChanging` — alters runtime state, no flash write; opt-in only
 
@@ -107,9 +106,14 @@ Classification is this project's own, and drives the enforcement described in th
 | `0xd0` | `request_tls_connection` |
 | `0x20` | `mcu_get_image` |
 | `0xf4` | `check_firmware` |
+| `0xe4` | `preset_psk_read` |
 
 `0xf4` is classified conservatively: it reads state, but it appears in upstream's IAP flow, and being
 wrong in that direction is cheap while being wrong in the other could cost the sensor.
+
+`0xe4` reads the stored PSK metadata and writes nothing, and was `ClassSafe` until 2026-09-19. It moved
+here because it wedges this device's EC (Run 1, Run 2 below). The probe no longer sends it, and bisect
+refuses it.
 
 ### `ClassDestructive` — never compiled into a default build
 
@@ -185,7 +189,7 @@ Whether this 5120 accepts the zero key is unverified and is a Tier 2 question.
 
 ### Run 1 — 2026-08-17, `sudo ./goodix-probe -v`
 
-The only live run. It wedged the embedded controller and killed the internal keyboard; see
+The first live run. It wedged the embedded controller and killed the internal keyboard; see
 [`../FINDINGS.md`](../FINDINGS.md) before considering another.
 
 ```
@@ -206,6 +210,45 @@ RX 10 bytes                 a0 06 00 a6 b0 03 00 e4 01 12
 
 **Every checksum verifies.** Worked by hand: `0x4e`, `0xe2`, `0x73`, `0x12` — all four match. The
 framing above is therefore confirmed against hardware, not merely transcribed.
+
+### Run 2 — 2026-09-19, `sudo ./goodix-probe --bisect` (observed)
+
+Run by the user per [`bisect-runbook.md`](bisect-runbook.md), with an external keyboard attached. No usbmon
+capture. **Result: the internal keyboard stopped after step 3, `preset_psk_read` (`0xe4`).** Baseline,
+attach, `nop` and `0xa8` each passed their keyboard check.
+
+```
+step          TX                          RX                                        i8042 irq1  keyboard
+baseline      —                           —                                         16458       alive
+0 attach      —                           nothing (5 s drain)                       16460       alive
+1 nop         a0 04 00 a4 00 01 00 a9     nothing — no ACK, no data                 16462       alive
+2 0xa8        a0 04 00 a4 a8 01 00 01     ACK a8/01, then "GF_ITE_EC_20063"         16464       alive
+3 0xe4        a0 04 00 a4 e4 01 00 c5     ACK e4/01, then nothing                   16465       DEAD
+```
+
+- **`0xa8` in isolation behaves as predicted:** ACK, then data, byte-identical to Run 1's regrouped
+  transfers. This confirms the two-transfer and `0xb0` ACK corrections against hardware.
+- **`nop` gets no reply at all**, not even the unsolicited `0x32`. So in Run 1 the `0x32` was not a
+  reply to `nop`: it was probably emitted on the first attach after boot. Attaching again got nothing.
+- **`0xe4` is ACKed, then the EC stops.** The ACK came back 13 ms after TX, then no data came within
+  5 s, and no i8042 interrupt came after that. Run 1 ended the same way: ACK for `0xe4`, then silence,
+  then a dead keyboard.
+- **The EC stopped between key make and key break.** Each Shift press adds 2 to `irq1` (make + break);
+  the press after step 2 added only 1. Its make scancode arrived at 18:27:52.364; `0xe4` was sent at
+  52.384, before the release. The break was never delivered, so Shift stayed logically held (the user
+  saw Shift stuck; the kernel logged `atkbd_event_work hogged CPU` at 18:36 and 18:47). So the EC
+  stopped serving i8042 within about 100 ms of accepting `0xe4`.
+- `27c6:5120` stayed enumerated, and the kernel logged nothing about i8042 or USB, as in Run 1.
+- Recovery: the user rebooted at 18:47.
+
+Interpretation (hypothesis): the EC's `0xe4` handler blocks its main loop, e.g. waiting on a sensor or
+flash read that never completes, after it has queued the ACK. `0xe4` is therefore not safe on this device
+in practice, even though it only reads. Not yet confirmed in isolation, and it is not known whether
+`0xa8` has to come first.
+
+Consequence (2026-09-19): `0xe4` is now `ClassStateChanging` and is no longer in the probe's steps, so the
+default ceiling refuses it and `--bisect --steps e4` is rejected. Confirming it in isolation would take a
+deliberate code change.
 
 ### Device identity — observed
 

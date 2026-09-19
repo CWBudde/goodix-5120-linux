@@ -70,11 +70,6 @@ func TestRun1CaptureDecodes(t *testing.T) {
 		}
 	}
 
-	psk := section(t, out, "preset_psk_read")
-	if !strings.Contains(psk, "ACK for preset_psk_read") || !strings.Contains(psk, "no data message") {
-		t.Errorf("preset_psk_read section should show an ACK and no data:\n%s", psk)
-	}
-
 	if n := rt.Remaining(); n != 0 {
 		t.Errorf("%d scripted exchanges not sent", n)
 	}
@@ -88,8 +83,9 @@ func TestRun1CaptureDecodes(t *testing.T) {
 func TestDrainEmptiesQueue(t *testing.T) {
 	script := run1Script()
 	extra := proto.Encode(0x32, []byte{0x01, 0x02})
+	// The last step already gets its data, so extra arrives after it.
 	last := &script[len(script)-1]
-	last.Responses = append(last.Responses, proto.Encode(last.Cmd, []byte{0x00}), extra)
+	last.Responses = append(last.Responses, extra)
 
 	out, rt := runReplay(t, script)
 

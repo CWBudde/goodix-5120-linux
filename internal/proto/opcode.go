@@ -72,9 +72,13 @@ func init() {
 	register(0x00, "nop", ClassSafe)
 	register(0xa8, "firmware_version", ClassSafe)
 	register(0xa6, "read_otp", ClassSafe)
-	register(0xe4, "preset_psk_read", ClassSafe)
 
 	// Commands that alter runtime state but do not write flash.
+	//
+	// preset_psk_read only reads, but on the 27c6:5120 it wedges the embedded
+	// controller (ACK, then silence, then a dead keyboard; Run 1 and Run 2 in
+	// docs/protocol.md). Classed by what it does to the device, not by its name.
+	register(0xe4, "preset_psk_read", ClassStateChanging)
 	register(0x96, "enable_chip", ClassStateChanging)
 	register(0xa2, "reset", ClassStateChanging)
 	register(0x70, "mcu_switch_to_idle_mode", ClassStateChanging)

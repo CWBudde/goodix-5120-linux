@@ -30,14 +30,15 @@ import (
 // anything more elaborate.
 //
 // read_otp (0xa6) is left out: in Run 1 it produced neither an ACK nor data,
-// and nobody knows what it does to the EC (FINDINGS.md).
+// and nobody knows what it does to the EC (FINDINGS.md). preset_psk_read
+// (0xe4) is left out because it wedges the EC and kills the internal keyboard
+// (Run 2 in docs/protocol.md); it is no longer ClassSafe.
 var steps = []struct {
 	cmd     proto.Opcode
 	purpose string
 }{
 	{0x00, "liveness check — Run 1 saw no ACK for it"},
 	{0xa8, "firmware version — expect an ACK, then the version string"},
-	{0xe4, "stored PSK metadata (read, never write)"},
 }
 
 // maxReadsPerStep bounds the receive loop for one command: an ACK, a data
@@ -338,9 +339,8 @@ func dryRunFrames(logger *log.Logger) {
 // Run 1 read once per command, so which command each transfer answers is an
 // interpretation: the 0x32 message arrived first and is attributed to nop,
 // and the version string that arrived while read_otp was being read belongs to
-// firmware_version. read_otp itself is omitted, as it is from steps. The data
-// message for preset_psk_read was never read, so it is absent here rather than
-// invented.
+// firmware_version. read_otp and preset_psk_read are omitted, as they are
+// from steps.
 func run1Script() []transport.Exchange {
 	return []transport.Exchange{
 		{Cmd: 0x00, Responses: [][]byte{
@@ -354,10 +354,6 @@ func run1Script() []transport.Exchange {
 			// "GF_ITE_EC_20063".
 			{0xa0, 0x14, 0x00, 0xb4, 0xa8, 0x11, 0x00, 0x47, 0x46, 0x5f, 0x49, 0x54, 0x45,
 				0x5f, 0x45, 0x43, 0x5f, 0x32, 0x30, 0x30, 0x36, 0x33, 0x00, 0xe2},
-		}},
-		{Cmd: 0xe4, Responses: [][]byte{
-			// ACK for preset_psk_read, status 01.
-			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xe4, 0x01, 0x12},
 		}},
 	}
 }

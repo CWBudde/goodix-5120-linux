@@ -54,6 +54,7 @@ func TestTransportRefusesUnsafeCommands(t *testing.T) {
 	}{
 		{"state-changing reset", 0xa2},
 		{"state-changing mcu_get_image", 0x20},
+		{"preset_psk_read, wedges the EC (Run 2)", 0xe4},
 		{"destructive write_firmware (unregistered here)", 0xf0},
 		{"destructive preset_psk_write (unregistered here)", 0xe0},
 		{"arbitrary unknown byte", 0x7b},

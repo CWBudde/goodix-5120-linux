@@ -34,7 +34,7 @@ func TestOpcodeRegistry(t *testing.T) {
 		{0x00, "nop", ClassSafe},
 		{0xa8, "firmware_version", ClassSafe},
 		{0xa6, "read_otp", ClassSafe},
-		{0xe4, "preset_psk_read", ClassSafe},
+		{0xe4, "preset_psk_read", ClassStateChanging},
 		{0x96, "enable_chip", ClassStateChanging},
 		{0xa2, "reset", ClassStateChanging},
 		{0x70, "mcu_switch_to_idle_mode", ClassStateChanging},

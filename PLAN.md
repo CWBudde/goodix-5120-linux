@@ -88,9 +88,14 @@ builds and tests the tooling offline; the user runs it.
 - [x] `goodix-probe --bisect`: baseline check, attach-only step, then one command per step with drain,
       a keyboard check, host counters, kernel-log markers and an fsync'd log. Tested against the
       replay with a fake keyboard.
-- [ ] Rehearse: `sudo ./goodix-probe --bisect --replay` (real keyboard, no USB).
-- [ ] Live run per [`docs/bisect-runbook.md`](docs/bisect-runbook.md), with an external keyboard attached.
-- [ ] Record it as Run 2 in `docs/protocol.md`; if a step failed, confirm it alone with `--steps`.
+- [x] Rehearse: `sudo ./goodix-probe --bisect --replay` (real keyboard, no USB). 2026-09-19, all passed.
+- [x] Live run per [`docs/bisect-runbook.md`](docs/bisect-runbook.md), with an external keyboard attached.
+      2026-09-19: attach, `nop` and `0xa8` passed; **`0xe4` wedged the EC** (ACK, then silence).
+- [x] Record it as Run 2 in `docs/protocol.md`.
+- [x] `0xe4` reclassified to `ClassStateChanging` and removed from `steps`; the probe now sends only
+      `nop` and `0xa8`.
+- [ ] Optional: confirm `0xe4` alone. This needs a code change first (bisect refuses it now) and
+      costs another power cycle.
 
 ---
 
