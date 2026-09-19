@@ -34,10 +34,19 @@ func (h *fakeHost) SensorPresent() bool { return true }
 func (h *fakeHost) Snapshot() string    { return "fake" }
 func (h *fakeHost) Mark(msg string)     { h.marks = append(h.marks, msg) }
 
-// bisectReplay runs bisect over the Run 1 capture with the given key presses.
+// bisectReplay runs bisect over the Run 1 capture with the given key presses,
+// using the default step list.
 func bisectReplay(t *testing.T, presses ...bool) (string, *fakeHost, replayCounters, bool, error) {
 	t.Helper()
-	ops, err := parseSteps(defaultBisectSteps(), false)
+	return bisectReplaySteps(t, defaultBisectSteps(), presses...)
+}
+
+// bisectReplaySteps is bisectReplay with an explicit --steps string, for tests
+// that need more steps than the default list has. Repeats are legal, which is
+// how a two-step run is built now that the probe sends exactly one command.
+func bisectReplaySteps(t *testing.T, list string, presses ...bool) (string, *fakeHost, replayCounters, bool, error) {
+	t.Helper()
+	ops, err := parseSteps(list, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,19 +83,23 @@ func TestBisectAllStepsAlive(t *testing.T) {
 // A dead keyboard after a step must stop the run there: nothing further may be
 // sent to the EC.
 func TestBisectStopsAtFirstDeadCheck(t *testing.T) {
-	// baseline ok, attach ok, nop dead.
-	out, host, rt, _, err := bisectReplay(t, true, true, false)
+	// Two steps, so there is a second one left to not send. The probe's default
+	// list is a single command now, and a repeat is the cheapest way to get a
+	// second step without naming an opcode the probe would not otherwise send.
+	//
+	// baseline ok, attach ok, step 1 dead.
+	out, host, rt, _, err := bisectReplaySteps(t, "a8,a8", true, true, false)
 	if !errors.Is(err, errKeyboardLost) {
 		t.Fatalf("err = %v, want errKeyboardLost\n%s", err, out)
 	}
-	if !strings.Contains(err.Error(), "nop") {
+	if !strings.Contains(err.Error(), "firmware_version") {
 		t.Errorf("error does not name the step: %v", err)
 	}
 	if rt.Remaining() != 1 {
-		t.Errorf("remaining=%d, want 1: firmware_version must not be sent after the keyboard died", rt.Remaining())
+		t.Errorf("remaining=%d, want 1: step 2 must not be sent after the keyboard died", rt.Remaining())
 	}
-	if strings.Contains(out, "firmware_version (0xa8) —") {
-		t.Errorf("firmware_version was attempted:\n%s", out)
+	if strings.Contains(out, "step 2 ") {
+		t.Errorf("step 2 was attempted:\n%s", out)
 	}
 	if last := host.marks[len(host.marks)-1]; !strings.HasPrefix(last, "NO KEY after step 1") {
 		t.Errorf("last kernel marker = %q", last)
@@ -121,28 +134,38 @@ func TestBisectAttachFailure(t *testing.T) {
 }
 
 func TestParseSteps(t *testing.T) {
-	got, err := parseSteps(" 0xA8, 00 ,", false)
+	got, err := parseSteps(" 0xA8, ae ,", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != 0xa8 || got[1] != 0x00 {
+	if len(got) != 2 || got[0] != 0xa8 || got[1] != 0xae {
 		t.Errorf("got %v", got)
 	}
 
-	// read_otp, preset_psk_read (wedges the EC), the destructive opcodes and
-	// junk are all refused: bisect can only send what the probe's own step list
-	// contains.
-	for _, bad := range []string{"a6", "e4", "f0", "e0", "zz", "100"} {
+	// Every ClassSafe opcode whose vendor payload is on record is bisectable,
+	// which is what lets PLAN.md Phase 4 add one command per live run without
+	// widening the probe's own step list.
+	for _, ok := range []string{"a8", "ae", "82", "a6"} {
+		if _, err := parseSteps(ok, false); err != nil {
+			t.Errorf("parseSteps(%q) refused: %v", ok, err)
+		}
+	}
+
+	// Refused: preset_psk_read (needs --allow-e4), everything above the safe
+	// ceiling, the destructive opcodes, nop (the vendor never sends it, so
+	// there is no payload to copy) and junk.
+	for _, bad := range []string{"e4", "f0", "e0", "a2", "20", "90", "d0", "00", "zz", "100"} {
 		if _, err := parseSteps(bad, false); err == nil {
 			t.Errorf("parseSteps(%q) accepted", bad)
 		}
 	}
 
-	// --allow-e4 admits preset_psk_read and nothing else.
+	// --allow-e4 admits preset_psk_read, and admits nothing else that was
+	// refused without it.
 	if got, err := parseSteps("e4", true); err != nil || len(got) != 1 || got[0] != opPSKRead {
 		t.Errorf("parseSteps(e4, allowE4) = %v, %v", got, err)
 	}
-	for _, bad := range []string{"a6", "f0", "e0", "a2", "20"} {
+	for _, bad := range []string{"f0", "e0", "a2", "20", "90", "d0", "00"} {
 		if _, err := parseSteps(bad, true); err == nil {
 			t.Errorf("parseSteps(%q, allowE4) accepted", bad)
 		}

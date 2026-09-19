@@ -45,17 +45,22 @@ var errKeyboardLost = errors.New("internal keyboard stopped responding")
 // done, so a bisect run would prove nothing.
 var errBaseline = errors.New("internal keyboard not responding before the run")
 
-// opPSKRead is preset_psk_read. It wedged the EC in Run 1 and Run 2, so it is
-// not a probe step. --allow-e4 admits it to a bisect run, and only there, to
-// confirm that it wedges the EC on its own (docs/bisect-runbook.md).
+// opPSKRead is preset_psk_read. An 0xe4 with an EMPTY payload wedged the EC in
+// Runs 1, 2 and 4, so it is not a probe step. --allow-e4 admits it to a bisect
+// run, and only there (docs/bisect-runbook.md).
+//
+// What it sends has changed. Run 4 settled the question the empty frame was
+// there to answer, and the transport now refuses that frame outright, so
+// --allow-e4 sends the vendor's 8-byte argument instead — the form the Windows
+// driver uses in all eight of its inits and gets an ACK plus 41 bytes for.
 const opPSKRead proto.Opcode = 0xe4
 
-const pskReadPurpose = "wedged the EC in Runs 1 and 2; expect an ACK, then a dead keyboard"
-
-// parseSteps turns a comma-separated opcode list (hex, e.g. "00,a8") into
-// steps. Only opcodes in the default steps list are accepted, so bisect can
-// never send something the probe itself would not. The one exception is
-// preset_psk_read, accepted only when allowE4 is set.
+// parseSteps turns a comma-separated opcode list (hex, e.g. "a8,ae") into
+// steps. An opcode is accepted only if it is in the vendor catalogue, so its
+// payload is on record, and ClassSafe, so the transport's default ceiling would
+// pass it. Bisect therefore cannot send a frame the vendor driver has never
+// been observed to send, and cannot get further than the ceiling would allow.
+// The one exception is preset_psk_read, accepted only when allowE4 is set.
 func parseSteps(list string, allowE4 bool) ([]proto.Opcode, error) {
 	var out []proto.Opcode
 	for field := range strings.SplitSeq(list, ",") {
@@ -69,28 +74,14 @@ func parseSteps(list string, allowE4 bool) ([]proto.Opcode, error) {
 		}
 		op := proto.Opcode(v)
 		if op == opPSKRead && !allowE4 {
-			return nil, fmt.Errorf("opcode 0xe4 wedges the EC; it needs --allow-e4 (see docs/bisect-runbook.md)")
+			return nil, fmt.Errorf("opcode 0xe4 wedges the EC when sent empty; it needs --allow-e4 (see docs/bisect-runbook.md)")
 		}
-		if purpose(op) == "" {
-			return nil, fmt.Errorf("opcode 0x%02x is not in the probe's step list", byte(op))
+		if _, ok := stepFor(op); !ok {
+			return nil, fmt.Errorf("opcode 0x%02x is not a safe command with a known vendor payload", byte(op))
 		}
 		out = append(out, op)
 	}
 	return out, nil
-}
-
-// purpose returns the step description of op, or "" if op is neither a step
-// nor preset_psk_read.
-func purpose(op proto.Opcode) string {
-	if op == opPSKRead {
-		return pskReadPurpose
-	}
-	for _, s := range steps {
-		if s.cmd == op {
-			return s.purpose
-		}
-	}
-	return ""
 }
 
 // defaultBisectSteps is every probe step, in order.
@@ -133,11 +124,15 @@ func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Trans
 
 	for i, op := range ops {
 		name := op.Name()
+		st, ok := stepFor(op)
+		if !ok {
+			return fmt.Errorf("step %d: opcode 0x%02x has no catalogue entry", i+1, byte(op))
+		}
 		label := fmt.Sprintf("step %d %s (0x%02x)", i+1, name, byte(op))
-		logger.Printf("\n--- %s — %s", label, purpose(op))
+		logger.Printf("\n--- %s — %s", label, st.purpose)
 		host.Mark(label + ": sending")
 
-		if err := tr.Send(op, nil); err != nil {
+		if err := tr.Send(op, st.payload); err != nil {
 			return fmt.Errorf("send %s: %w", name, err)
 		}
 		if err := collect(logger, tr, op, timeout); err != nil {
@@ -175,24 +170,33 @@ func checkKeyboard(logger *log.Logger, host bisectHost, after string, keyWait ti
 	return nil
 }
 
-// scriptFor returns the Run 1 exchanges for ops, in the order given, so
-// --bisect --replay accepts any --steps selection. preset_psk_read gets the
-// ACK that Runs 1 and 2 both saw; nothing came after it.
+// scriptFor returns the replay exchanges for ops, in the order given, so
+// --bisect --replay accepts any --steps selection.
+//
+// Every exchange asserts the outbound payload as well as the opcode, so a
+// rehearsal fails if the probe sends something other than the vendor's bytes.
+// preset_psk_read gets the ACK that Runs 1, 2 and 4 all saw. Nothing came after
+// it on this device — but those runs sent the empty frame, and what goes out
+// now is the vendor's, which the driver log shows is answered with 41 more
+// bytes. The rehearsal deliberately does not invent them.
 func scriptFor(ops []proto.Opcode) []transport.Exchange {
-	byCmd := map[proto.Opcode]transport.Exchange{
-		opPSKRead: {Cmd: opPSKRead, Responses: [][]byte{
-			// ACK for preset_psk_read, status 01.
-			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xe4, 0x01, 0x12},
-		}},
-	}
+	byCmd := map[proto.Opcode]transport.Exchange{}
 	for _, ex := range run1Script() {
 		byCmd[ex.Cmd] = ex
 	}
+	if st, ok := bisectable(opPSKRead); ok {
+		byCmd[opPSKRead] = transport.Exchange{Cmd: opPSKRead, Payload: st.payload, Responses: [][]byte{
+			// ACK for preset_psk_read, status 01.
+			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xe4, 0x01, 0x12},
+		}}
+	}
+
 	out := make([]transport.Exchange, 0, len(ops))
 	for _, op := range ops {
 		ex, ok := byCmd[op]
 		if !ok {
-			ex = transport.Exchange{Cmd: op}
+			st, _ := stepFor(op)
+			ex = transport.Exchange{Cmd: op, Payload: st.payload}
 		}
 		out = append(out, ex)
 	}

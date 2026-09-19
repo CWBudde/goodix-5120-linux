@@ -115,6 +115,37 @@ func checkOpcode(cmd proto.Opcode, ceiling proto.Class, allow []proto.Opcode) er
 	return nil
 }
 
+// checkPayload is the second half of the safety gate. An opcode's registered
+// PayloadRule records what the vendor driver was observed to send; a payload
+// that violates it is a frame no working driver has ever produced.
+//
+// The one such frame whose effect is known is 0xe4 with an empty payload. It
+// wedged the embedded controller and killed the laptop's internal keyboard in
+// Runs 1, 2 and 4 (docs/protocol.md), and Run 4 sent it alone, so nothing else
+// is required to trigger it. The vendor's 0xe4 carrying eight bytes is answered
+// normally in all eight driver inits.
+func checkPayload(cmd proto.Opcode, payload []byte) error {
+	if err := cmd.CheckPayload(len(payload)); err != nil {
+		return fmt.Errorf("%w: %s (0x%02x) rejected: %w", ErrRefused, cmd.Name(), byte(cmd), err)
+	}
+	return nil
+}
+
+// check is the full gate: class first, then payload, so a refusal names the
+// most serious reason. It is deliberately the only way into the frame writers.
+//
+// The gate lives here, in sender, rather than in the probe's step table,
+// because the frame that wedged the EC was not built from the step table:
+// runBisect called Send directly. A rule in a caller is advice; a rule here is
+// enforced for the USB path and the replay path alike, which is what lets an
+// offline test prove something about the live path.
+func check(cmd proto.Opcode, payload []byte, ceiling proto.Class, allow []proto.Opcode) error {
+	if err := checkOpcode(cmd, ceiling, allow); err != nil {
+		return err
+	}
+	return checkPayload(cmd, payload)
+}
+
 // frameWriter transmits one fully encoded frame. The command and payload are
 // passed alongside the frame so implementations that script or assert on
 // traffic (the replay fake) can inspect them without re-decoding.
@@ -130,7 +161,7 @@ type sender struct {
 
 // Send applies the safety gate, then encodes and transmits the frame.
 func (s *sender) Send(cmd proto.Opcode, payload []byte) error {
-	if err := checkOpcode(cmd, s.opts.Ceiling, s.opts.Allow); err != nil {
+	if err := check(cmd, payload, s.opts.Ceiling, s.opts.Allow); err != nil {
 		return err
 	}
 

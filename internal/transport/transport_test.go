@@ -19,6 +19,15 @@ const (
 	opUnknwn proto.Opcode = 0x7b // deliberately unregistered
 )
 
+// fwVerPayload is the two bytes the vendor driver sends with firmware_version.
+// Since the payload gate landed, an empty one is refused, so tests that expect
+// a Send to succeed have to send what the device is known to accept.
+//
+// opNOP is the stand-in wherever a test needs an opcode it can send with any
+// payload: nop is the only registered opcode with no payload rule, because the
+// vendor driver never sends it to an ITE EC.
+var fwVerPayload = []byte{0x00, 0x00}
+
 func TestOpcodeFixturesMatchProtoRegistry(t *testing.T) {
 	for _, tc := range []struct {
 		op    proto.Opcode

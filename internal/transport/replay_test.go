@@ -11,13 +11,13 @@ import (
 
 func TestReplayHappyPath(t *testing.T) {
 	script := []Exchange{
-		{Cmd: opFWVer, Payload: nil, Responses: [][]byte{{0xa0, 0x01, 0x02}}},
+		{Cmd: opFWVer, Payload: fwVerPayload, Responses: [][]byte{{0xa0, 0x01, 0x02}}},
 		{Cmd: opNOP, Payload: []byte{0x00, 0x00}, Responses: [][]byte{{0xb0}}},
 	}
 	tr := NewReplay(script, Options{})
 	defer tr.Close()
 
-	if err := tr.Send(opFWVer, nil); err != nil {
+	if err := tr.Send(opFWVer, fwVerPayload); err != nil {
 		t.Fatalf("Send(firmware_version): %v", err)
 	}
 	got, err := tr.Recv(0)
@@ -141,7 +141,7 @@ func TestReplayQueueOutlivesSend(t *testing.T) {
 	defer tr.Close()
 	rt := tr.(*replayTransport)
 
-	if err := tr.Send(opFWVer, nil); err != nil {
+	if err := tr.Send(opFWVer, fwVerPayload); err != nil {
 		t.Fatalf("Send(firmware_version): %v", err)
 	}
 	if got, _ := tr.Recv(0); !bytes.Equal(got, ack) {

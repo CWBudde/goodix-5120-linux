@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -26,6 +27,65 @@ func TestStepsAreAllSafe(t *testing.T) {
 		if class != proto.ClassSafe {
 			t.Errorf("step %s (0x%02x) is %s, but the probe must only send read-only commands",
 				step.cmd.Name(), byte(step.cmd), class)
+		}
+		if err := step.cmd.CheckPayload(len(step.payload)); err != nil {
+			t.Errorf("step %s (0x%02x) carries a payload the transport would refuse: %v",
+				step.cmd.Name(), byte(step.cmd), err)
+		}
+	}
+}
+
+// TestStepPayloadsMatchVendorInit is the PLAN.md Phase 4 gate expressed as a
+// test: "each planned command matches the vendor sequence byte for byte
+// (opcode *and* payload)". Every command the probe sends live must be one the
+// Windows driver sends, with identical bytes.
+func TestStepPayloadsMatchVendorInit(t *testing.T) {
+	for _, st := range steps {
+		var found bool
+		for _, v := range vendorInit {
+			if v.cmd == st.cmd && v.known() && bytes.Equal(v.payload, st.payload) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("step %s (0x%02x) payload %x does not match any vendor frame; "+
+				"the probe may only send what the vendor driver sends",
+				st.cmd.Name(), byte(st.cmd), st.payload)
+		}
+	}
+}
+
+// TestVendorInitPayloadsSatisfyTheirRules checks the catalogue against the
+// registry. A mismatch means one of the two transcribed the vendor log wrong,
+// and the payload rules are what stop the EC being handed a frame it cannot
+// survive.
+func TestVendorInitPayloadsSatisfyTheirRules(t *testing.T) {
+	for i, st := range vendorInit {
+		if !st.known() {
+			continue
+		}
+		if err := st.cmd.CheckPayload(len(st.payload)); err != nil {
+			t.Errorf("vendorInit[%d] %s (0x%02x): %v", i, st.cmd.Name(), byte(st.cmd), err)
+		}
+	}
+}
+
+// TestUploadConfigIsNotAStep guards the one outbound frame in the catalogue
+// whose bytes nobody has: the driver log truncates the 224-byte 0x90 config.
+// Until a Disable/Enable capture on Windows records it, no code may send a
+// guessed one.
+func TestUploadConfigIsNotAStep(t *testing.T) {
+	const uploadConfig proto.Opcode = 0x90
+	for _, st := range steps {
+		if st.cmd == uploadConfig {
+			t.Fatal("upload_config_mcu is a probe step, but its payload is not on record")
+		}
+	}
+	for _, st := range vendorInit {
+		if st.cmd == uploadConfig && st.known() {
+			t.Error("vendorInit carries bytes for upload_config_mcu; the driver log truncates them, " +
+				"so any bytes here are invented")
 		}
 	}
 }
@@ -84,6 +144,10 @@ func TestReplayScriptMatchesSteps(t *testing.T) {
 	for i, ex := range script {
 		if ex.Cmd != steps[i].cmd {
 			t.Errorf("script[%d] is 0x%02x, want 0x%02x", i, byte(ex.Cmd), byte(steps[i].cmd))
+		}
+		if !bytes.Equal(ex.Payload, steps[i].payload) {
+			t.Errorf("script[%d] expects payload %x, but the probe sends %x",
+				i, ex.Payload, steps[i].payload)
 		}
 	}
 }

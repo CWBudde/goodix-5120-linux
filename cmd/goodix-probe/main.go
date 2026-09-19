@@ -26,22 +26,6 @@ import (
 	"goodix5120/internal/transport"
 )
 
-// The read-only interrogation sequence. Order matters: nop is the cheapest
-// liveness check, so a device that fails there tells us to stop before trying
-// anything more elaborate.
-//
-// read_otp (0xa6) is left out: in Run 1 it produced neither an ACK nor data,
-// and nobody knows what it does to the EC (FINDINGS.md). preset_psk_read
-// (0xe4) is left out because it wedges the EC and kills the internal keyboard
-// (Run 2 in docs/protocol.md); it is no longer ClassSafe.
-var steps = []struct {
-	cmd     proto.Opcode
-	purpose string
-}{
-	{0x00, "liveness check — Run 1 saw no ACK for it"},
-	{0xa8, "firmware version — expect an ACK, then the version string"},
-}
-
 // maxReadsPerStep bounds the receive loop for one command: an ACK, a data
 // message and the odd unsolicited message. Anything beyond it is left to the
 // final drain.
@@ -63,7 +47,7 @@ func main() {
 		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
 		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
-		allowE4    = flag.Bool("allow-e4", false, "bisect: also accept preset_psk_read (0xe4) in --steps. It wedged the EC in Runs 1 and 2 (see docs/bisect-runbook.md)")
+		allowE4    = flag.Bool("allow-e4", false, "bisect: also accept preset_psk_read (0xe4) in --steps. Sent with the vendor's 8-byte payload; the EMPTY form wedged the EC in Runs 1, 2 and 4 and is now refused outright (see docs/bisect-runbook.md)")
 	)
 	flag.Parse()
 
@@ -201,7 +185,7 @@ func run(logger *log.Logger, tr transport.Transport, timeout time.Duration) erro
 		}
 		logger.Printf("\n--- %s (0x%02x) — %s", name, byte(step.cmd), step.purpose)
 
-		if err := tr.Send(step.cmd, nil); err != nil {
+		if err := tr.Send(step.cmd, step.payload); err != nil {
 			return fmt.Errorf("send %s: %w", name, err)
 		}
 		if err := collect(logger, tr, step.cmd, timeout); err != nil {
@@ -334,35 +318,75 @@ func describe(logger *log.Logger, sent proto.Opcode, raw []byte) reply {
 
 func dryRunFrames(logger *log.Logger) {
 	logger.Printf("dry run — no USB device is opened, nothing is transmitted\n")
-	for _, step := range steps {
-		frame := proto.Encode(step.cmd, nil)
-		class, ok := step.cmd.Class()
-		status := "UNREGISTERED — would be refused"
-		if ok {
-			status = class.String()
-		}
-		logger.Printf("\n%s (0x%02x) [%s]\n  %s\n  %s",
-			step.cmd.Name(), byte(step.cmd), status, step.purpose, hexdump(frame))
+
+	logger.Printf("\n=== what the probe would send ===")
+	for _, st := range steps {
+		printFrame(logger, "", st)
 	}
-	logger.Printf("\n%d frames. Verify the framing by hand against docs/protocol.md before running live.", len(steps))
+	logger.Printf("\n%d frame(s). Verify the framing by hand against docs/protocol.md before running live.", len(steps))
+
+	// The vendor sequence is reference material, not a plan. Printing it is how
+	// the PLAN.md Phase 4 gate — "each planned command matches the vendor
+	// sequence byte for byte" — actually gets checked by a human.
+	logger.Printf("\n\n=== the Windows driver's init sequence, for reference ===")
+	logger.Printf("transcribed from the vendor ETW log (docs/protocol.md). The probe sends NONE of this.")
+	for i, st := range vendorInit {
+		printFrame(logger, fmt.Sprintf("#%d ", i+1), st)
+	}
+}
+
+// printFrame renders one catalogue entry: its class, its payload rule and the
+// exact bytes that would go on the wire.
+func printFrame(logger *log.Logger, prefix string, st step) {
+	name := st.cmd.Name()
+	if name == "" {
+		name = "<unregistered>"
+	}
+
+	status := "UNREGISTERED — would be refused"
+	if class, ok := st.cmd.Class(); ok {
+		status = class.String()
+	}
+	if rule, ok := st.cmd.PayloadRule(); ok {
+		status += ", " + rule.String()
+	}
+
+	logger.Printf("\n%s%s (0x%02x) [%s]\n  %s", prefix, name, byte(st.cmd), status, st.purpose)
+	if st.note != "" {
+		logger.Printf("  note: %s", st.note)
+	}
+	if !st.known() {
+		logger.Printf("  payload not on record — no frame can be built")
+		return
+	}
+	logger.Printf("  %s", hexdump(proto.Encode(st.cmd, st.payload)))
 }
 
 // run1Script replays the transfers captured in Run 1 (docs/protocol.md), so
 // --replay and the tests decode real device bytes rather than synthesised ones.
+// It is the one fixture here whose response bytes were copied from a device
+// rather than produced by our own encoder, which is what makes it worth
+// keeping: it can catch a framing mistake that a generated fixture would share.
+//
+// Two honest caveats.
 //
 // Run 1 read once per command, so which command each transfer answers is an
-// interpretation: the 0x32 message arrived first and is attributed to nop,
-// and the version string that arrived while read_otp was being read belongs to
-// firmware_version. read_otp and preset_psk_read are omitted, as they are
-// from steps.
+// interpretation. The unsolicited 0x32 arrived first, before any reply, and Run
+// 1 attributed it to nop. nop is no longer a step, so it leads the
+// firmware_version exchange here — which is also the order it appeared on the
+// wire. Runs 2, 3 and 4 saw no 0x32 on attach at all, so it is not a reply to
+// anything.
+//
+// Run 1 sent 0xa8 with an EMPTY payload. The probe now sends the vendor's
+// `00 00`, so the request below is not the one Run 1 made. Only the request
+// changed: the responses are Run 1's bytes, and the vendor log records the same
+// reply for `a8 00 00`.
 func run1Script() []transport.Exchange {
 	return []transport.Exchange{
-		{Cmd: 0x00, Responses: [][]byte{
-			// Unsolicited 0x32, probably emitted on attach.
+		{Cmd: 0xa8, Payload: []byte{0x00, 0x00}, Responses: [][]byte{
+			// Unsolicited 0x32, emitted on attach, before any reply.
 			{0xa0, 0x14, 0x00, 0xb4, 0x32, 0x11, 0x00, 0x02, 0x00, 0x2f, 0x00, 0x1e, 0x01,
 				0x38, 0x01, 0xff, 0x00, 0xf7, 0x00, 0x3f, 0x01, 0x34, 0x01, 0x73},
-		}},
-		{Cmd: 0xa8, Responses: [][]byte{
 			// ACK for firmware_version, status 01.
 			{0xa0, 0x06, 0x00, 0xa6, 0xb0, 0x03, 0x00, 0xa8, 0x01, 0x4e},
 			// "GF_ITE_EC_20063".

@@ -58,13 +58,17 @@ func TestRun1CaptureDecodes(t *testing.T) {
 		}
 	}
 
-	nop := section(t, out, "nop")
-	if !strings.Contains(nop, "unsolicited message cmd=0x32") || !strings.Contains(nop, "no ACK") {
-		t.Errorf("nop section should show the unsolicited 0x32 and no ACK:\n%s", nop)
-	}
-
+	// nop is no longer a step, so the unsolicited 0x32 that arrived on attach
+	// leads the firmware_version section — the order it was seen on the wire.
+	// It must still be reported as unsolicited and must not be mistaken for a
+	// reply, which is the mistake Run 1's one-read-per-command loop made.
 	fw := section(t, out, "firmware_version")
-	for _, want := range []string{"ACK for firmware_version (0xa8), status 0x01", "data for firmware_version", `"GF_ITE_EC_20063"`} {
+	for _, want := range []string{
+		"unsolicited message cmd=0x32",
+		"ACK for firmware_version (0xa8), status 0x01",
+		"data for firmware_version",
+		`"GF_ITE_EC_20063"`,
+	} {
 		if !strings.Contains(fw, want) {
 			t.Errorf("firmware_version section lacks %q:\n%s", want, fw)
 		}
