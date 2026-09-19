@@ -34,13 +34,21 @@ func TestOpcodeRegistry(t *testing.T) {
 		{0x00, "nop", ClassSafe},
 		{0xa8, "firmware_version", ClassSafe},
 		{0xa6, "read_otp", ClassSafe},
+		{0xae, "get_mcu_state", ClassSafe},
+		{0x82, "read_register", ClassSafe},
 		{0xe4, "preset_psk_read", ClassStateChanging},
 		{0x96, "enable_chip", ClassStateChanging},
 		{0xa2, "reset", ClassStateChanging},
 		{0x70, "mcu_switch_to_idle_mode", ClassStateChanging},
+		{0x98, "set_dac", ClassStateChanging},
 		{0x90, "upload_config_mcu", ClassStateChanging},
 		{0xd0, "request_tls_connection", ClassStateChanging},
+		{0xd4, "tls_successfully_established", ClassStateChanging},
 		{0x20, "mcu_get_image", ClassStateChanging},
+		{0x50, "nav_mode", ClassStateChanging},
+		{0x32, "fdt_down", ClassStateChanging},
+		{0x34, "fdt_up", ClassStateChanging},
+		{0x36, "fdt_manual", ClassStateChanging},
 		{0xf4, "check_firmware", ClassStateChanging},
 	}
 
@@ -91,16 +99,30 @@ func TestRegisteredIsSorted(t *testing.T) {
 	}
 }
 
-func TestRegisteredContainsAllSafeAndStateChanging(t *testing.T) {
-	want := []Opcode{0x00, 0x20, 0x70, 0x90, 0x96, 0xa2, 0xa6, 0xa8, 0xd0, 0xe4, 0xf4}
-	got := Registered()
-	set := make(map[Opcode]bool, len(got))
-	for _, op := range got {
-		set[op] = true
+// TestRegisteredSetIsExact pins the registry exactly, not as a subset. Every
+// registered opcode is one the transport may be asked to send, so the set is a
+// safety boundary: adding to it has to be a deliberate edit here, reviewed next
+// to the evidence that the device tolerates the command.
+//
+// 0xd2 is deliberately absent — PLAN.md lists it, but it appears in neither the
+// vendor driver's eight inits nor either USB capture.
+func TestRegisteredSetIsExact(t *testing.T) {
+	want := []Opcode{
+		0x00, 0x20, 0x32, 0x34, 0x36, 0x50, 0x70, 0x82, 0x90, 0x96,
+		0x98, 0xa2, 0xa6, 0xa8, 0xae, 0xd0, 0xd4, 0xe4, 0xf4,
 	}
-	for _, op := range want {
-		if !set[op] {
-			t.Fatalf("Registered() is missing opcode %#x", byte(op))
+	if destructiveEnabled {
+		want = append(want, 0xe0, 0xf0)
+		sort.Slice(want, func(i, j int) bool { return want[i] < want[j] })
+	}
+
+	got := Registered()
+	if len(got) != len(want) {
+		t.Fatalf("Registered() has %d opcodes %#x, want %d %#x", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Registered() = %#x, want %#x", got, want)
 		}
 	}
 }
