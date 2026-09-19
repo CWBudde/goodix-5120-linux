@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,7 @@ type linuxHost struct {
 	keys  chan struct{}
 	done  chan error
 	marks bool
+	ec    *ecRefreshCounter
 }
 
 // newLinuxHost opens the internal keyboard for reading. It does not grab the
@@ -35,8 +37,15 @@ func newLinuxHost(marks bool) (*linuxHost, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening %s (needs root or the input group): %w", path, err)
 	}
-	h := &linuxHost{keys: make(chan struct{}, 64), done: make(chan error, 1), marks: marks}
+	h := &linuxHost{
+		keys:  make(chan struct{}, 64),
+		done:  make(chan error, 1),
+		marks: marks,
+		ec:    &ecRefreshCounter{read: readBatteryTuple},
+	}
+	h.ec.sample() // establish a baseline before the first check
 	go h.read(f)
+	go h.ec.poll(time.Second)
 	return h, nil
 }
 
@@ -111,9 +120,18 @@ func (h *linuxHost) SensorPresent() bool {
 	return false
 }
 
-// Snapshot reports the i8042 interrupt counts (summed over CPUs) and the ACPI
-// SCI count. A key press that does not move the i8042 count means the EC sent
-// nothing, as opposed to Linux dropping it.
+// Snapshot reports two counters, both of which matter only as differences.
+//
+// The i8042 interrupt counts (summed over CPUs) watch the keyboard half of the
+// EC: a key press that does not move them means the EC sent nothing, as opposed
+// to Linux dropping it.
+//
+// "ec refreshes" watches the EC itself, through an interface the fingerprint
+// commands do not touch. See ecRefreshCounter.
+//
+// The ACPI SCI count used to be logged here and no longer is. It was never a
+// liveness signal: it stood still at 300 through all of Run 2 and at 118 through
+// both 18:2x runs, every one of them healthy. See docs/acpi.md.
 func (h *linuxHost) Snapshot() string {
 	var parts []string
 	if f, err := os.Open("/proc/interrupts"); err == nil {
@@ -139,10 +157,10 @@ func (h *linuxHost) Snapshot() string {
 		}
 		f.Close()
 	}
-	if b, err := os.ReadFile("/sys/firmware/acpi/interrupts/sci"); err == nil {
-		if fields := strings.Fields(string(b)); len(fields) > 0 {
-			parts = append(parts, "acpi sci="+fields[0])
-		}
+	if n, ok := h.ec.count(); ok {
+		parts = append(parts, fmt.Sprintf("ec refreshes=%d", n))
+	} else {
+		parts = append(parts, "ec refreshes=? (no battery to watch)")
 	}
 	if len(parts) == 0 {
 		return "no counters readable"
@@ -162,6 +180,83 @@ func (h *linuxHost) Mark(msg string) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "<5>goodix-probe: %s\n", msg)
+}
+
+// ecRefreshCounter counts how often the EC updates the battery block it keeps in
+// its own RAM. It is a liveness signal for the EC firmware in the same idiom as
+// the i8042 interrupt count: the absolute value means nothing, a value that
+// stops advancing does.
+//
+// It reaches the EC by a path the fingerprint commands never touch. ACPI's
+// battery methods read BAPR/BARC/BAPV straight out of the EC's memory-mapped RAM
+// window (docs/acpi.md), so a sample is a plain memory read of bytes the EC
+// firmware keeps up to date. It costs the EC nothing and cannot disturb it, and
+// when the firmware stops running the values freeze rather than erroring —
+// which is exactly the distinction a wedge needs.
+//
+// Measured idle on AC, 2026-09-20: the tuple changed 7 times in 60 s, with one
+// gap of 28 s. So a single unchanged sample proves nothing. A counter that has
+// not moved between two checks a minute apart is the finding.
+type ecRefreshCounter struct {
+	read func() (string, bool)
+
+	mu      sync.Mutex
+	last    string
+	seen    bool
+	changes uint64
+}
+
+func (c *ecRefreshCounter) sample() {
+	v, ok := c.read()
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen && v != c.last {
+		c.changes++
+	}
+	c.last, c.seen = v, true
+}
+
+// count returns the number of changes seen so far, and whether the EC values
+// could be read at all.
+func (c *ecRefreshCounter) count() (uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.changes, c.seen
+}
+
+// poll samples until the process exits. The probe is short-lived, so there is
+// nothing to stop it for.
+func (c *ecRefreshCounter) poll(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for range t.C {
+		c.sample()
+	}
+}
+
+// batteryFields are the EC-maintained values worth watching. charge_now and
+// energy_now are alternatives — whichever the driver exposes is used.
+var batteryFields = []string{"voltage_now", "current_now", "charge_now", "energy_now", "capacity"}
+
+// readBatteryTuple joins every readable battery field into one string. Any
+// change anywhere in it counts as a refresh.
+func readBatteryTuple() (string, bool) {
+	dirs, _ := filepath.Glob("/sys/class/power_supply/BAT*")
+	var parts []string
+	for _, d := range dirs {
+		for _, f := range batteryFields {
+			if b, err := os.ReadFile(filepath.Join(d, f)); err == nil {
+				parts = append(parts, strings.TrimSpace(string(b)))
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, " "), true
 }
 
 // assumeKeysHost stands in for the keyboard in --replay runs without root:

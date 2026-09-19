@@ -84,9 +84,21 @@ sequencing to imitate and nothing for a Linux driver to hook.
 it stood still at 300 through all of Run 2 and at 118 through both 18:2x runs — healthy runs, every
 one. It cannot tell a live EC from a wedged one, and Run 4's 328 → 330 → 330 says nothing either.
 
-A better probe, and free: the battery. `_BST` reads `BAPR`/`BARC`/`BAPV` **directly out of `ERAM`**,
-so it is a plain memory read of RAM the EC keeps up to date — it will not fail when the EC is stuck,
-it will freeze. `/sys/class/power_supply/BAT0/voltage_now` and `current_now` are world-readable and
-move on their own on a live machine. Logging them at each keyboard check, and watching whether they
-still move after a wedge, would show whether the wedge is confined to the EC's USB task or has taken
-the whole firmware down. Not implemented yet — it touches the live path, so it is the user's call.
+**Replaced, 2026-09-20, by an EC refresh counter.** `_BST` reads `BAPR`/`BARC`/`BAPV` **directly out
+of `ERAM`**, so reading the battery is a plain memory read of RAM the EC keeps up to date. It costs
+the EC nothing and cannot disturb it, and when the firmware stops running the values freeze rather
+than erroring — exactly the distinction a wedge needs. `--bisect` now samples
+`/sys/class/power_supply/BAT*/{voltage_now,current_now,charge_now,energy_now,capacity}` once a second
+and logs `ec refreshes=N`, a count of how many times that tuple changed. Like the i8042 count, only
+the difference between two checks means anything.
+
+Measured idle on AC before implementing it: the tuple changed **7 times in 60 s, with one gap of
+28 s**. So a single unchanged reading proves nothing — a counter that has not moved between two
+checks a minute apart is the finding. A dead counter with a live keyboard would mean the wedge took
+the whole EC; a live counter with a dead keyboard would confine it to the parts of the firmware that
+serve USB and i8042.
+
+Two limits, stated plainly. The battery block is RAM the EC writes, so this proves the firmware is
+still *running*, not that any particular interface still answers. And `--assume-keys` reports
+`not observed`, so an offline rehearsal never exercises it; `TestSnapshotReportsTheECAndNotTheSCICount`
+covers it instead.

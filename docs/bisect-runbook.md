@@ -29,7 +29,7 @@ vendor-driver capture exists, which departs from the Phase 4 gate in PLAN.md. Cl
 | ~~2~~ | ~~`nop` (`0x00`)~~ — dropped; the vendor never sends it to an ITE EC | — |
 | ~~3~~ | ~~`preset_psk_read` (`0xe4`)~~ — removed after Run 2 wedged the EC on it | — |
 
-After each step it logs the i8042 interrupt counts, the ACPI SCI count and whether `27c6:5120` is still
+After each step it logs the i8042 interrupt counts, an **EC refresh counter** and whether `27c6:5120` is still
 enumerated, and then waits (30 s by default) for a key press on the **internal** keyboard. The first
 missing key press stops the run. Nothing after that step is sent. The exit status is 0 if every step
 passed, 2 if the keyboard stopped, and 1 on any other error.
