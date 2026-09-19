@@ -94,6 +94,7 @@ builds and tests the tooling offline; the user runs it.
 - [x] Record it as Run 2 in `docs/protocol.md`.
 - [x] `0xe4` reclassified to `ClassStateChanging` and removed from `steps`; the probe now sends only
       `nop` and `0xa8`.
+- [x] Live check of the fixed probe (Run 3, 2026-09-19 20:33): attach, `nop`, `0xa8` all passed.
 - [ ] Optional: confirm `0xe4` alone. This needs a code change first (bisect refuses it now) and
       costs another power cycle.
 

@@ -250,6 +250,26 @@ Consequence (2026-09-19): `0xe4` is now `ClassStateChanging` and is no longer in
 default ceiling refuses it and `--bisect --steps e4` is rejected. Confirming it in isolation would take a
 deliberate code change.
 
+### Run 3 — 2026-09-19 20:33, `sudo ./goodix-probe --bisect` (observed)
+
+The first live run of the probe without `0xe4` (steps `00,a8`). Run by the user after a warm reboot, not
+a cold power cycle. No usbmon capture. **Result: the internal keyboard stayed alive after every step.**
+
+```
+step          TX                          RX                                        keyboard
+baseline      —                           —                                         alive
+0 attach      —                           nothing (5 s drain)                       alive
+1 nop         a0 04 00 a4 00 01 00 a9     nothing — no ACK, no data                 alive
+2 0xa8        a0 04 00 a4 a8 01 00 01     ACK a8/01 after 5 ms, then "GF_ITE_EC_20063"  alive
+```
+
+- Byte-identical to Run 2 for attach, `nop` and `0xa8`, so the replies are reproducible.
+- For the second time, attach brought no unsolicited `0x32`. It has not been seen since Run 1, so it is
+  not sent on every attach. Neither Run 2 nor Run 3 followed a cold power cycle, so the EC may send it only
+  once per power-up. Unconfirmed.
+- Attach, `nop` and `0xa8` are safe to repeat on this device. The probe as it now stands does not wedge
+  the EC.
+
 ### Device identity — observed
 
 ```
