@@ -154,6 +154,13 @@ after each one.
 **Why.** The ITE EC serves both the fingerprint sensor over USB and the internal keyboard over
 i8042. Four read-only fingerprint commands left it in a state where it stopped servicing either.
 
+**Which command — answered, twice.** Run 2 (2026-09-19) bisected it to `preset_psk_read` (`0xe4`), and
+Run 4 the same evening reduced it further: attach, then `0xe4` and nothing else, and the keyboard still
+died. So one command is sufficient — no `nop`, no `0xa8` before it. The Windows driver sends the same
+opcode in all 8 of its inits without trouble, because it sends an 8-byte argument with it. What this
+project sent, three times, was `0xe4` with an **empty payload**. The opcode is not the hazard; the
+missing argument is. See `docs/protocol.md`, Runs 2 and 4.
+
 **Recovery.** Software recovery does not work — there is no device left to reset. Unbinding and
 rebinding `atkbd` on `serio0` correctly recreated the input node (`input29`), proving the Linux side
 was healthy, but no scancodes arrived because the EC was not sending any.

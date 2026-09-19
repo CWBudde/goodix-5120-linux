@@ -4,7 +4,7 @@ Working notes. Two kinds of statement appear here and they are deliberately kept
 
 - **Transcribed** — read from the upstream [goodix-fp-dump][dump] Python source (`goodix.py`,
   `protocol.py`, `driver_51x0.py`). Believed accurate for the 5110; *assumed* to hold for the 5120.
-- **Observed** — measured against this machine's actual hardware (Run 1, Run 2 below).
+- **Observed** — measured against this machine's actual hardware (Runs 1–4 below).
 
 Anything not marked observed is a hypothesis. The point of the probe is to move lines from the first
 category to the second.
@@ -112,8 +112,9 @@ Classification is this project's own, and drives the enforcement described in th
 wrong in that direction is cheap while being wrong in the other could cost the sensor.
 
 `0xe4` reads the stored PSK metadata and writes nothing, and was `ClassSafe` until 2026-09-19. It moved
-here because it wedges this device's EC (Run 1, Run 2 below). The probe no longer sends it, and bisect
-refuses it.
+here because **an `0xe4` with an empty payload** wedges this device's EC (Runs 1, 2 and 4 below; Run 4
+showed it needs no other command before it). The probe no longer sends it, and bisect refuses it unless
+`--allow-e4` is given, in which case it goes out with the vendor's 8-byte argument.
 
 ### `ClassDestructive` — never compiled into a default build
 
@@ -243,8 +244,8 @@ baseline      —                           —                                 
 
 Interpretation (hypothesis): the EC's `0xe4` handler blocks its main loop, e.g. waiting on a sensor or
 flash read that never completes, after it has queued the ACK. `0xe4` is therefore not safe on this device
-in practice, even though it only reads. Not yet confirmed in isolation, and it is not known whether
-`0xa8` has to come first.
+in practice, even though it only reads. **Run 4 later confirmed it in isolation:** `0xa8` does not have to
+come first, and neither does `nop`.
 
 Consequence (2026-09-19): `0xe4` is now `ClassStateChanging` and is no longer in the probe's steps, so the
 default ceiling refuses it and `--bisect --steps e4` is rejected. Confirming it in isolation would take a
@@ -269,6 +270,45 @@ baseline      —                           —                                 
   once per power-up. Unconfirmed.
 - Attach, `nop` and `0xa8` are safe to repeat on this device. The probe as it now stands does not wedge
   the EC.
+
+### Run 4 — 2026-09-19 22:41, `sudo ./goodix-probe --bisect --allow-e4 --steps e4 --timeout 30s` (observed)
+
+The run [`bisect-runbook.md`](bisect-runbook.md) prescribes for settling whether `0xe4` wedges the EC
+**on its own**: attach, then `0xe4` and nothing else. Run by the user with an external keyboard attached. No
+usbmon capture. **Result: the internal keyboard stopped after step 1, `preset_psk_read` (`0xe4`) —
+with no `nop` and no `0xa8` before it.**
+
+```
+step          TX                          RX                                        i8042 irq1  keyboard
+baseline      —                           —                                         4912        alive
+0 attach      —                           nothing (30 s drain)                      4955        alive
+1 0xe4        a0 04 00 a4 e4 01 00 c5     ACK e4/01 after 4 ms, then nothing (30 s) 4956        DEAD
+```
+
+- **The question is closed: `0xe4` wedges the EC alone.** `0xa8` is not a precondition, and neither is
+  `nop`. The frame is byte-identical to the one Run 1 and Run 2 sent: `0xe4` with an **empty payload**.
+- **Same make-without-break signature as Run 2.** Between the step 0 snapshot (`irq1=4955`, 22:41:45.53)
+  and the step 1 snapshot (`irq1=4956`, 22:42:47.89) the user pressed Shift exactly once — the press that
+  cleared the attach check at 22:41:47.82. A press is worth 2 (make + break); only 1 arrived. `0xe4` went
+  out at 22:41:47.84, about 20 ms after the make. *Interpretation:* the EC stopped serving i8042 within
+  those 20 ms, before it could deliver the break. The ACPI SCI count did not move at all (330 → 330).
+- **The kernel logged nothing**, as in Runs 1 and 2 — no i8042, atkbd or USB message between the `0xe4`
+  and the shutdown. The probe's own `/dev/kmsg` markers stop at `step 1 preset_psk_read (0xe4): sending`;
+  there is no `keyboard alive after step 1`.
+- The EC answered the ACK in 4 ms and then sent nothing for the full 30 s, and the drain that followed
+  got nothing either. With no usbmon capture, 60 s of silence is all that can be said; whether anything
+  would have arrived later is unknown.
+- Boot context: the same boot as Run 3. That boot started 18:50:32, right after the cold power cycle
+  that recovered Run 2, so there was **no cold power cycle between Run 3 and Run 4** — the EC had been
+  up for just under four hours. For the third consecutive time, attach produced no unsolicited `0x32`.
+- Recovery: the journal shows a clean shutdown starting at 22:43:09, 26 s into the keyboard prompt —
+  the user, on the external keyboard, having seen the internal one was dead. The next boot is 23:15:33,
+  32 minutes later; per the user that gap is the cold power cycle. Both the keyboard and `27c6:5120`
+  came back.
+
+Consequence: the empty-payload `0xe4` has now killed the internal keyboard three times (Runs 1, 2, 4) and
+is the only frame ever shown to do so. The vendor's `0xe4` **with** its 8-byte argument is answered
+normally in all 8 driver inits, so the payload — not the opcode — is what the EC cannot survive.
 
 ### Device identity — observed
 
@@ -369,9 +409,12 @@ Identical in all 8 inits. Payloads are message payloads (checksum omitted). ACK 
 **`0xe4` is not what wedges the EC. An `0xe4` with an empty payload is.** The vendor sends it with an 8-byte
 argument (`data_type = 0xbb020003` LE, then a `uint32` length of 0) in every init and gets ACK plus data.
 The probe sent `e4 01 00 c5`, which has no payload, in Run 1 and Run 2, and the EC hung after the ACK.
-Hypothesis: the EC's handler reads the missing argument and blocks. The same pattern fits `read_otp`:
-Run 1's empty `a6` got nothing back, while the vendor's `a6 00 00` gets ACK plus 64 bytes. Our `a8` with
-no payload still worked. Not confirmed live, and not worth confirming: stay on the vendor's payloads.
+**Run 4 (2026-09-19 22:41) confirmed this live and in isolation:** attach, then that one frame and nothing
+else, and the keyboard died. So the empty payload is sufficient on its own. Why it is fatal is still a
+hypothesis — presumably the EC's handler reads the missing argument and blocks. The same pattern fits
+`read_otp`: Run 1's empty `a6` got nothing back, while the vendor's `a6 00 00` gets ACK plus 64 bytes.
+Our `a8` with no payload still worked. Nothing further is to be learned from sending the empty frame
+again: stay on the vendor's payloads.
 
 The `0xe4` reply carries a hash of the device's PSK, so don't record it here.
 
