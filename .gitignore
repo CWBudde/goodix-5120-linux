@@ -20,3 +20,8 @@
 goodix-bisect-*.log
 usbmon-*.txt
 kernel-after-wedge.txt
+
+# Windows vendor-driver capture (docs/windows-capture-runbook.md)
+*.pcap
+*.pcapng
+/windows-driver/

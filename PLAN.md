@@ -70,7 +70,7 @@ flow.
 - [ ] **Windows USB capture** (best source, if Windows can run on this machine, e.g. on a spare disk or
       a live Windows To Go install). Use USBPcap + Wireshark on `27c6:5120` during driver load,
       enrollment and verification. Convert the capture into replay fixtures, so the exact expected
-      sequence is tested offline.
+      sequence is tested offline. Step by step: [`docs/windows-capture-runbook.md`](docs/windows-capture-runbook.md).
 - [ ] Record everything in `docs/protocol.md` and mark each item as observed or hypothesis.
 
 Done when the command sequence used by the vendor driver is known, or it is clear it can't be
