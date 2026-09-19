@@ -78,6 +78,22 @@ obtained.
 
 ---
 
+## Phase 3b — Bisect the wedge (live, user's decision)
+
+On 2026-09-19 the user chose to run one diagnostic live run before a vendor capture exists. The
+aim is to learn *which* step stops the keyboard: attach, `nop`, `0xa8` or `0xe4`. The journal
+shows the EC failed silently, so only a key press after each step can tell (FINDINGS.md). Claude
+builds and tests the tooling offline; the user runs it.
+
+- [x] `goodix-probe --bisect`: baseline check, attach-only step, then one command per step with drain,
+      a keyboard check, host counters, kernel-log markers and an fsync'd log. Tested against the
+      replay with a fake keyboard.
+- [ ] Rehearse: `sudo ./goodix-probe --bisect --replay` (real keyboard, no USB).
+- [ ] Live run per [`docs/bisect-runbook.md`](docs/bisect-runbook.md), with an external keyboard attached.
+- [ ] Record it as Run 2 in `docs/protocol.md`; if a step failed, confirm it alone with `--steps`.
+
+---
+
 ## Phase 4 — Live runs (only if the gate is met)
 
 **Gate:** Phase 1 is complete, **and** Phase 3 produced a captured sequence from the vendor driver

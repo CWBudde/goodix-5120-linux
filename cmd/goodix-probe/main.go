@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -54,6 +55,12 @@ func main() {
 		replay  = flag.Bool("replay", false, "run against the built-in replay fake instead of real hardware")
 		verbose = flag.Bool("v", false, "log every transfer as hex")
 		timeout = flag.Duration("timeout", 5*time.Second, "per-transfer timeout")
+
+		bisect     = flag.Bool("bisect", false, "attach, then one command per step, checking the internal keyboard after each (see docs/bisect-runbook.md)")
+		stepList   = flag.String("steps", defaultBisectSteps(), "bisect: comma-separated hex opcodes to send after attach, in order")
+		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
+		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
+		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
 	)
 	flag.Parse()
 
@@ -62,6 +69,10 @@ func main() {
 	if *dryRun {
 		dryRunFrames(logger)
 		return
+	}
+
+	if *bisect {
+		os.Exit(mainBisect(*replay, *assumeKeys, *stepList, *logPath, *timeout, *keyWait))
 	}
 
 	opts := transport.Options{
@@ -88,6 +99,80 @@ func main() {
 	if err := run(logger, tr, *timeout); err != nil {
 		logger.Printf("probe failed: %v", err)
 		os.Exit(1)
+	}
+}
+
+// mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
+// survived every step, 2 if it stopped (or was not working to begin with), 1
+// on any other failure.
+func mainBisect(replay, assumeKeys bool, stepList, logPath string, timeout, keyWait time.Duration) int {
+	stderr := log.New(os.Stderr, "", 0)
+	if assumeKeys && !replay {
+		stderr.Print(errAssumeKeysLive)
+		return 1
+	}
+	ops, err := parseSteps(stepList)
+	if err != nil {
+		stderr.Printf("--steps: %v", err)
+		return 1
+	}
+
+	if logPath == "" {
+		logPath = "goodix-bisect-" + time.Now().Format("20060102-150405") + ".log"
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		stderr.Printf("cannot open log: %v", err)
+		return 1
+	}
+	defer f.Close()
+	logger := log.New(io.MultiWriter(os.Stdout, syncWriter{f}), "", log.Ltime|log.Lmicroseconds)
+
+	var host bisectHost = assumeKeysHost{}
+	if !assumeKeys {
+		lh, err := newLinuxHost(!replay)
+		if err != nil {
+			logger.Printf("cannot watch the internal keyboard: %v", err)
+			return 1
+		}
+		host = lh
+	}
+
+	opts := transport.Options{
+		Ceiling: proto.ClassSafe, // never raised by this binary
+		Timeout: timeout,
+		Verbose: true, // the raw bytes are the point of a bisect run
+		Logger:  logger,
+	}
+	open := func() (transport.Transport, error) {
+		if replay {
+			return transport.NewReplay(scriptFor(ops), opts), nil
+		}
+		return transport.OpenUSB(opts)
+	}
+
+	mode := "LIVE HARDWARE"
+	if replay {
+		mode = "replay (no USB)"
+	}
+	logger.Printf("goodix-probe bisect — %s, ceiling=%s, steps=%s, log=%s", mode, proto.ClassSafe, stepList, logPath)
+
+	err = runBisect(logger, host, open, ops, timeout, keyWait)
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, errKeyboardLost), errors.Is(err, errBaseline):
+		logger.Printf("\nstopped: %v", err)
+		if errors.Is(err, errKeyboardLost) {
+			logger.Printf("recover with a cold power cycle: shut down, unplug the charger, hold power ~30 s")
+		}
+		return 2
+	default:
+		logger.Printf("\nbisect failed: %v", err)
+		if errors.Is(err, transport.ErrPermission) || errors.Is(err, transport.ErrNotFound) {
+			explainOpenError(logger, err)
+		}
+		return 1
 	}
 }
 

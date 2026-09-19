@@ -14,6 +14,9 @@ bridges to the sensor *and* drives the keyboard over i8042.
 - `FINDINGS.md` is the full account and recommendation; `PLAN.md` is the phased plan (Phase 1 = offline code fixes,
   Phase 4 live runs are gated on a vendor-driver USB capture); `docs/protocol.md` records the wire format, with each fact
   marked as transcribed from upstream or observed. Append new observations there.
+- `--bisect` (`cmd/goodix-probe/bisect.go`, `host.go`) is the one sanctioned live mode, per
+  `docs/bisect-runbook.md`. The **user** runs it with an external keyboard attached; Claude never does.
+  Offline it runs as `--bisect --replay --assume-keys`.
 - No firmware blobs (`*.bin`) or captures (`*.pgm`, `*.raw`, `captures/`) go into the repo — captures may contain
   biometric data.
 
@@ -30,6 +33,7 @@ go test -tags goodix_destructive ./internal/proto   # tag-aware tests; cmd/goodi
 
 ./goodix-probe --dry-run   # print the frames it would send; opens no USB device
 ./goodix-probe --replay    # full decode path against the scripted fake
+./goodix-probe --bisect --replay --assume-keys   # bisect flow offline (no root, no USB)
 ```
 
 ## Architecture

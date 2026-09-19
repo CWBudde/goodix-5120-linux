@@ -15,3 +15,8 @@
 .idea/
 *.swp
 .DS_Store
+
+# Bisect run output (docs/bisect-runbook.md)
+goodix-bisect-*.log
+usbmon-*.txt
+kernel-after-wedge.txt

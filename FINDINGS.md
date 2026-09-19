@@ -130,8 +130,26 @@ attach. Unidentified.
 ## The keyboard incident
 
 **What happened.** Immediately after the probe ran, the internal keyboard stopped working. The
-`27c6:5120` device then disappeared from the USB bus entirely (`1-4` vanished from
-`/sys/bus/usb/devices/`), and `usbreset` failed with `can't open [Input/output error]`.
+`27c6:5120` device later disappeared from the USB bus entirely (`1-4` vanished from
+`/sys/bus/usb/devices/`), and a later `usbreset` failed with `can't open [Input/output error]`.
+
+**What the journal shows** (boot of 2026-08-17, read back on 2026-09-19; times CEST):
+
+| Time | Event |
+|---|---|
+| 20:31:41.32 | `sudo goodix-probe -v` starts; it exits 0.13 s later |
+| 20:31–21:08 | **no kernel message at all** — no USB disconnect, no i8042 or atkbd error |
+| 21:05:09 | external USB keyboard plugged in |
+| 21:08:28 | `atkbd` unbind → `i8042: Can't write CTR while closing KBD port` (first i8042 error) |
+| 21:08:52 | `usbreset 27c6:5120` → `usb 1-4: USB disconnect`, then re-enumeration fails with `error -71` and `unable to enumerate USB device` |
+| 21:09:44 | suspend attempt → on resume, i8042 selftest timeouts and `failed to resume: error -5` |
+
+Two corrections follow from this. First, the EC failed **silently**: Linux noticed nothing until
+it wrote to the i8042 itself, so the kernel log cannot tell which command caused the wedge. Second,
+the probe did not knock the device off the bus. It stayed enumerated until the `usbreset`, and only
+then failed to come back. So the USB side of the EC was stuck as well, but the reset is what made
+`1-4` vanish. `docs/bisect-runbook.md` describes a run that finds the step, using a keyboard check
+after each one.
 
 **Why.** The ITE EC serves both the fingerprint sensor over USB and the internal keyboard over
 i8042. Four read-only fingerprint commands left it in a state where it stopped servicing either.
