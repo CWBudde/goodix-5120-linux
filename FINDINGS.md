@@ -153,6 +153,10 @@ after each one.
 
 **Why.** The ITE EC serves both the fingerprint sensor over USB and the internal keyboard over
 i8042. Four read-only fingerprint commands left it in a state where it stopped servicing either.
+The ACPI tables show how separate those two paths are: the keyboard is its own logical device
+(`KBC0`, `FUJ7401`/`PNP0303`) at I/O `0x60`/`0x64` on IRQ 1, the ACPI EC channel is another
+(`EC0`, `PNP0C09`, GPE 3), and the sensor is a plain USB device on a third. Three host interfaces
+into one chip, and a command on one of them silenced another. See [`docs/acpi.md`](docs/acpi.md).
 
 **Which command — answered, twice.** Run 2 (2026-09-19) bisected it to `preset_psk_read` (`0xe4`), and
 Run 4 the same evening reduced it further: attach, then `0xe4` and nothing else, and the keyboard still
@@ -168,6 +172,12 @@ was healthy, but no scancodes arrived because the EC was not sending any.
 Only a **cold power cycle** cleared it: full shutdown, charger disconnected, power button held ~30
 seconds. A warm reboot does not reset the EC. Afterwards both the keyboard and `27c6:5120` returned
 and remain healthy.
+
+That is not just what we observed, it is all the firmware offers. The sensor's USB port
+(`\_SB.PCI0.GP17.XHC0.RHUB.PRT4`) carries `_ADR`, `_UPC` and `_PLD` and nothing else — no `_PRW`,
+no power resource, no `_DSM` — so no driver and no ACPI method can drop power to it or reset the
+sensor. The EC's watchdog (`HWWD`) resets the system, not the EC's USB task, and is a service of the
+stuck firmware. There is no software recovery to find.
 
 **The lesson, stated plainly.** This project classified opcodes by what they do *to the sensor* —
 read versus write flash. That axis was correct for a discrete Goodix MCU and wrong here. The real

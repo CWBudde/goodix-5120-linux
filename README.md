@@ -140,6 +140,7 @@ internal/capture/     pcapng and USBPcap decoding (stdlib + proto only)
 internal/tlspsk/      Tier 2 scaffold — TLS-PSK via openssl subprocess (no call sites)
 internal/image/       Tier 2 scaffold — PGM writer (no call sites)
 docs/protocol.md      observed wire format, appended as we learn
+docs/acpi.md          what the ACPI tables say about the EC, the keyboard and the port
 ```
 
 ## Roadmap

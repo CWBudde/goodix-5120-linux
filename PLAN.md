@@ -87,12 +87,15 @@ flow.
       No init on the wire, because a service restart doesn't reload the UMDF driver. Every checksum
       verifies.
 - [x] Record everything in `docs/protocol.md` and mark each item as observed or hypothesis.
-- [ ] **Capture a real init on the wire.** Every driver load runs the full init, including `d0`,
-      even with TLS already up. So capture Device Manager → **Disable/Enable device**, or
-      **Uninstall** (keep the driver) + **Scan for hardware changes**. This isn't a service restart.
-      Needed for the full 224-byte `0x90` config, which the log truncates, and to match the log
-      against the wire byte for byte.
-      Runbook: [`docs/windows-capture-runbook.md`](docs/windows-capture-runbook.md), Scenario 1.
+- [ ] **Capture a real init on the wire.** An init needs the **UMDF driver host** to reload *and*
+      the EC to lose its TLS session, which Device Manager → **Disable/Enable device** does because
+      it re-enumerates the device. A `WbioSrvc` restart does neither: `restart.pcapng` holds exactly
+      **2 frames** on the device — one `0xae`, reply `isTlsConnected=1` — and then steady state.
+      If Disable/Enable still produces no init, **Uninstall** (keep the driver) + **Scan for hardware
+      changes**. Needed for the full 224-byte `0x90` config, which the log truncates, and to match
+      the log against the wire byte for byte.
+      Runbook: [`docs/windows-capture-runbook.md`](docs/windows-capture-runbook.md) — rewritten
+      2026-09-20 down to just this capture and the three files to carry back with it.
 - [ ] **Keep the debug log in every Windows session.** Copy
       `Goodix-FingerprintProvider%4Debug.evtx` out after each capture. It is circular (20 MB) and
       the best source we have.
@@ -100,12 +103,17 @@ flow.
       `generate_entropy2: generate rootkey`, `gf_sgx_seal_data`, "IntelME pmk hash")? DPAPI, TPM/SGX,
       or a machine-derived key? Static analysis of `gfusb.dll` only, local, never published. This
       decides Phase 5.
-- [ ] **ACPI tables.** `sudo acpidump > acpi.dat && acpixtract -a && iasl -d dsdt.dat ssdt*.dat`.
-      Look for EC methods or devices that mention the fingerprint reader or USB port `1-4`, and for a
-      power/reset method that could reset the sensor without a cold boot. Only read tables; don't call
-      any methods.
-- [ ] **EC identity.** Check `dmidecode`, `/sys/firmware/acpi/tables` and `ec_sys` (read-only,
-      `write_support=0`) to identify the ITE chip model and EC firmware version.
+- [x] **ACPI tables.** 2026-09-20, DSDT + 13 SSDTs, read only — no method called. Answer:
+      **nothing in ACPI can reset the EC or cut power to the sensor's USB port.** The port
+      (`\_SB.PCI0.GP17.XHC0.RHUB.PRT4`, PCI `0000:04:00.3` port 4 = `1-4`) has `_ADR`, `_UPC` and
+      `_PLD` and nothing else — no `_PRW`, no power resource, no `_DSM`. No object anywhere names a
+      fingerprint reader. The keyboard (`KBC0`, `FUJ7401`/`PNP0303`, `0x60`/`0x64`, IRQ 1) and the
+      ACPI EC (`EC0`, `PNP0C09`, GPE 3) are separate host interfaces into the same ITE part, which is
+      the shape of the keyboard incident. See [`docs/acpi.md`](docs/acpi.md).
+- [x] **EC identity.** EC firmware release **1.8** (`/sys/class/dmi/id/ec_firmware_release`), BIOS
+      `1.08`, board `HVY-WXX9-PCB`. The ASL also exposes EC version bytes `ECMV`/`ECSV`/`ECTV`/`ECRV`
+      in the memory-mapped `ERAM` window at `0xFE800700`. The ITE part number is still only the
+      device's own `GF_ITE_EC_20063` string; `ec_sys` was not loaded.
 
 ---
 

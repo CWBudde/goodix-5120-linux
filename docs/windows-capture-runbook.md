@@ -1,177 +1,141 @@
-# Windows capture runbook: what does the vendor driver send?
+# Windows capture runbook: the one capture that is still missing
 
-Everything the probe sends today was transcribed from upstream's `driver_51x0.py`, which targets other
-silicon. Run 2 (2026-09-19) showed what guessing costs: `preset_psk_read` (`0xe4`) wedged the EC and
-took the internal keyboard with it. PLAN.md Phase 4 gates any further live run on the command sequence
-the **vendor driver** actually uses. This runbook gets that sequence: boot Windows, let the Huawei/Goodix
-driver talk to `27c6:5120`, and record the USB traffic with USBPcap.
+Two USBPcap captures exist and both show **steady state**. The vendor driver's init has never been
+seen on the wire. This runbook is now only about getting that one capture, plus three files worth
+carrying back in the same session.
 
-This is passive. The vendor driver does the talking; we only listen. Nothing from this repo runs on
-Windows.
+## What we already have, and why it was not enough
 
-## What we want out of it
+| file | what it was | frames on the device |
+|---|---|---|
+| `restart.pcapng` | `Restart-Service WbioSrvc` | **2** — one `0xae`, one reply |
+| `dump.pcapng` | 43 finger captures | 382, all steady state |
+| `Goodix-FingerprintProvider%4Debug.evtx` | driver debug log | 8 complete inits, the `0x90` config truncated |
 
-In order of importance:
+(Counts from `./goodix-pcap -in restart.pcapng` and `-in dump.pcapng`.)
 
-1. **Driver initialization.** The first commands after the device appears: which opcodes, in what order,
-   with what payloads, and whether `0xe4` shows up and in what context.
-2. **Enrollment** and **verification** (Windows Hello). Probably encrypted after a TLS handshake (pack
-   flag `0xb0`). Even so, the plaintext commands before the handshake and the handshake itself matter.
-3. **Sleep/resume and shutdown.** How the driver quiesces the EC. This may explain why the EC wedges
-   when the host just goes away.
-4. **The driver package itself**, for the "Windows driver analysis" item in PLAN.md Phase 3.
+The restart capture is the miss, and it shows exactly why it missed. Restarting `WbioSrvc` does not
+reload the **UMDF driver host**. `gfusb.dll` stayed loaded, the EC still had its TLS session, so the
+driver asked one question — `0xae` get_mcu_state, reply `isTlsConnected=1` — and went straight back
+to steady state. No init. That is a property of the driver, not a mistake in the capture setup.
 
-## What you need
+To see an init, the driver host has to reload **and** the EC has to lose its TLS session. Device
+Manager → Disable → Enable does both, because it re-enumerates the USB device.
 
-- **Windows on this machine**, with the fingerprint reader working under Windows Hello. If it doesn't
-  work yet, install the fingerprint driver for `HVY-WXX9` from Huawei PC Manager or the Huawei support
-  page.
-- **Wireshark for Windows** (wireshark.org). In the installer, **tick the USBPcap component**. It isn't
-  always selected by default. **Reboot** afterwards: USBPcap is a filter driver and only attaches to hubs
-  at boot.
-- Optional: **USBView** (from the Windows SDK/WDK "Debugging Tools") to see which root hub the reader is on.
-- An **external USB keyboard**, just in case. The vendor driver should be safe, but it talks to the same
-  EC that drives the internal keyboard.
-- A USB stick or a shared exFAT/NTFS partition to carry the captures back to Linux.
+## What is missing, exactly
 
-## Before
+One frame: **`0x90` upload_config, 224 bytes.** The debug log truncates it, which makes it the only
+outbound frame in the entire vendor init that nobody has the bytes for. It blocks a complete
+vendor-init replay fixture, and with it PLAN.md Phase 4 step 5.
 
-1. Plug in the external keyboard.
-2. Check the reader works: Settings → Accounts → Sign-in options → Fingerprint recognition (Windows Hello).
-3. Note the device in Device Manager. It is usually under **Biometric devices**, sometimes under
-   another category. Properties → Details → *Hardware Ids* should show `USB\VID_27C6&PID_5120`. Also note
-   *Driver* → Driver Details (file names) and Driver Version.
-4. **Find the USBPcap interface.** Start Wireshark. The interface list shows `USBPcap1`, `USBPcap2`, ….
-   Click the gear icon next to each. The one whose device tree lists the Goodix device (`27c6:5120`, or
-   "Goodix"/"FingerPrint") is yours. Note the interface name and the device's **address** shown there.
-5. In that interface's options, enable:
-   - **Capture from all devices connected** is simplest. Filtering to a single device is possible but
-     easy to get wrong, and the filter is applied in Wireshark later anyway.
-   - **Capture from newly connected devices**
-   - **Inject already connected devices descriptors** (so Wireshark can decode the descriptors of a
-     device that was attached before the capture started)
-6. Make a folder for the captures, e.g. `C:\goodix-captures\`.
+Secondary, from the same capture: the log-versus-wire comparison byte for byte, and the `d0` TLS
+handshake as it actually appears on the wire.
 
-Use one capture file per scenario below. Stop the capture (red square) and **File → Save As**
-(`.pcapng`) between scenarios. Start each scenario by writing down the time, so it can be matched to the
-capture.
+## Your capture settings were right — keep them
 
-## Scenario 1: driver initialization (most important)
+`goodix-pcap` found the device from its descriptor (bus 2, device 2) in both files, and every pack
+and message checksum verified across all 384 frames. Same USBPcap interface, same three options
+(*Capture from all devices connected*, *Capture from newly connected devices*, *Inject already
+connected devices descriptors*). Nothing to change.
 
-The driver loads at boot, before any capture can run. So re-trigger it:
+## The session: four things, one boot
 
-1. Start the capture on the USBPcap interface.
-2. Wait ~5 s (records background traffic).
-3. Device Manager → the fingerprint device → right-click → **Disable device**. Wait ~5 s.
-4. Right-click → **Enable device**. Wait ~15 s, until the device is idle.
-5. Stop and save as `01-init-disable-enable.pcapng`.
+External USB keyboard plugged in, as before.
 
-Repeat with a service restart. This may bring up the TLS session without a USB re-enumeration:
+### 1. The init capture — the point of the exercise
 
-1. Start the capture.
-2. Run an **admin** PowerShell: `Restart-Service WbioSrvc -Force` (Windows Biometric Service). Wait ~15 s.
-3. Stop and save as `02-init-wbiosrvc-restart.pcapng`.
+1. Start the capture on the same USBPcap interface.
+2. Wait ~5 s.
+3. Device Manager → **Biometric devices** → the Goodix device → right-click → **Disable device**.
+   Confirm. Wait ~5 s.
+4. Right-click → **Enable device**. Wait ~20 s, until it is idle.
+5. Touch the sensor once, so the file also ends in a known steady state.
+6. Stop the capture, **File → Save As** → `01-init-disable-enable.pcapng`.
 
-If disable/enable doesn't produce a re-enumeration (no descriptor requests in the capture), try
-**Uninstall device** (don't tick "delete the driver"), then **Action → Scan for hardware changes**.
+Check it before moving on — see below.
 
-## Scenario 2: enrollment
+### 2. The driver package
 
-1. Start the capture.
-2. Settings → Sign-in options → Fingerprint recognition → **Add a finger** (or set up, if none is
-   enrolled). Complete the enrollment.
-3. Stop and save as `03-enroll.pcapng`.
-
-**This capture may contain fingerprint images.** See "Handling the files".
-
-## Scenario 3: verification
-
-1. Start the capture.
-2. Lock with **Win+L**. The capture keeps running behind the lock screen.
-3. Unlock with the finger. Do it three times, with one deliberate **wrong finger** attempt.
-4. Stop and save as `04-verify.pcapng`.
-
-## Scenario 4: sleep/resume (optional)
-
-1. Start the capture.
-2. Start → Power → **Sleep**. Wait ~30 s, then wake it up and unlock with the finger.
-3. Stop and save as `05-sleep-resume.pcapng`.
-
-Wireshark may lose the capture across sleep. If so, save whatever it has.
-
-## Scenario 5: shutdown (optional)
-
-Capturing the shutdown sequence needs `USBPcapCMD` writing straight to disk. Wireshark exits too early.
-In an **admin** command prompt:
-
-```bat
-"C:\Program Files\USBPcap\USBPcapCMD.exe" -d \\.\USBPcap1 -A -o C:\goodix-captures\06-shutdown.pcap
-```
-
-(Replace `USBPcap1` with your interface.) Then shut down from the Start menu in another window. The file
-may be truncated at the end, but it usually keeps most of the traffic.
-
-## The driver package
-
-In an **admin** PowerShell:
+There is no copy of `gfusb.dll` on the Linux side, and the PSK-sealing question (PLAN.md Phase 3) is
+static analysis of that DLL. In an **admin** PowerShell:
 
 ```powershell
 pnputil /enum-drivers > C:\goodix-captures\drivers.txt
-# Find the oemNN.inf whose "Original Name" / provider is Goodix or Huawei fingerprint, then:
+# find the oemNN.inf whose provider is Goodix, then:
 pnputil /export-driver oemNN.inf C:\goodix-captures\driver
 ```
 
-This copies the complete package (`.inf`, `.sys`/`.dll`, and any firmware images) out of the
-DriverStore. Also save the driver version from Device Manager into a text file next to it.
+### 3. The debug log
 
-Optional: `Get-PnpDevice -InstanceId 'USB\VID_27C6*' | Format-List *` and
-`Get-PnpDeviceProperty -InstanceId '<the id>'` into a text file, for the device and its parent hub.
+`C:\Windows\System32\winevt\Logs\Goodix-FingerprintProvider%4Debug.evtx` — copy it again. It is a
+20 MB ring buffer, and the Disable/Enable init will be its newest entry. That is what makes the
+log-versus-wire comparison possible.
 
-## Before booting back to Linux
+### 4. The sealed PSK blob
 
-- Shut down with a **full shutdown**, not Fast Startup: hold Shift while clicking **Shut down**, or run
-  `shutdown /s /t 0` in a command prompt. With Fast Startup, Windows hibernates the kernel, and the
-  EC/sensor may not be in a clean state for Linux.
-- Copy `C:\goodix-captures\` to the USB stick or shared partition.
+`C:\ProgramData\Goodix\Goodix_Cache.bin`, 332 bytes. Its first 20 bytes settle the sealing question
+on the spot: a DPAPI blob starts with
+`01 00 00 00 d0 8c 9d df 01 15 d1 11 8c 7a 00 c0 4f c2 97 eb`. Anything else points at TPM/SGX.
+**Never commit it and never publish it** — `*.bin` is gitignored, and PLAN.md lists the sealed blob
+as never-publish.
 
-## Handling the files
+## Check the capture worked, before you shut down
 
-- **Never commit captures or the driver package.** `.gitignore` covers `*.pcap`, `*.pcapng`, `/captures/`
-  and `/windows-driver/`. Put them in `captures/` in the repo checkout, or outside it.
-- Enrollment and verification captures may contain biometric data. Don't upload them anywhere, and
-  don't paste raw payloads from them into issues or docs.
-- The driver package is Huawei/Goodix proprietary code. Keep it local (`windows-driver/`) for analysis.
+In Wireshark, on the saved file, display filter:
 
-## Afterwards (back on Linux)
+```
+usb.capdata[0] == a0 && usb.capdata[4] == 90
+```
 
-1. Check the captures open: `tshark -r captures/01-init-disable-enable.pcapng | head`.
-2. Find the device's address from the descriptors (`usb.idVendor == 0x27c6`), then look at only its
-   traffic:
+That is a plaintext pack (`a0`, 4-byte pack header) whose message opcode is `0x90` upload_config.
+**Exactly one packet means success.** Zero means no init ran, and the file is not worth carrying back.
+
+Quicker smoke test: `usb.capdata[0] == a0` should give a few dozen packets, not 2. If Wireshark
+rejects the slice syntax, just compare the packet count against `restart.pcapng` — an init is
+visibly bigger than two frames, and a re-enumeration shows up as a burst of descriptor requests.
+
+**If no init ran:** Device Manager → **Uninstall device** — do *not* tick "delete the driver" — then
+**Action → Scan for hardware changes**, with the capture still running. That forces the reload.
+
+## Back on Linux
+
+1. **Full shutdown, not Fast Startup:** hold Shift while clicking *Shut down*, or `shutdown /s /t 0`.
+   With Fast Startup, Windows hibernates the kernel and the EC is not in a clean state for Linux.
+2. Captures to `captures/` in the checkout, driver package to `windows-driver/` — both gitignored —
+   or keep them outside the repo.
+3. Acceptance check:
 
    ```sh
-   tshark -r captures/01-init-disable-enable.pcapng \
-     -Y 'usb.device_address == N' \
-     -T fields -e frame.number -e frame.time_relative -e usb.transfer_type \
-     -e usb.endpoint_address -e usb.setup.bRequest -e usb.capdata
+   ./goodix-pcap -in captures/01-init-disable-enable.pcapng
    ```
 
-   Look at **all** transfer types, not only bulk. The reader is a CDC device (interface 0 with interrupt
-   EP `0x82`, interface 1 with bulk `0x01`/`0x83`, see `docs/protocol.md`), and the driver may send CDC
-   control requests (`SET_LINE_CODING`, `SET_CONTROL_LINE_STATE`) that the probe doesn't send.
-3. Ask Claude to decode the traffic with `internal/proto` and to turn it into replay fixtures (one script
-   per scenario, like `run1Script`), so the vendor sequence is tested offline.
-4. Record the result in `docs/protocol.md` as observed, marked "vendor driver, Windows", with the driver
-   version. Include: the init sequence, where `0xe4` appears (if it does), where TLS starts, and any
-   `0xf0` (firmware write) traffic. If the driver updates firmware on load, write it down, but it stays
-   compiled out on our side.
-5. Check off "Windows USB capture" (and "Windows driver analysis", if done) in PLAN.md Phase 3.
+   Expect the vendor init in the TX list: `96`, `a8`, `ae`, `e4`, `a2` ×2, `82`, `a6`, `70`, `98`,
+   **`90` with 224 bytes**, `d0`, `d4`, then the FDT calibration and arming. The tool refuses to
+   print `0xe4` and `0xa6` payloads at all.
 
-## If something goes wrong
+   One thing that may go wrong on our side, not yours: `internal/capture` treats each bulk transfer
+   as one whole pack and does not reassemble. The `0x90` frame is 232 bytes, the first outbound frame
+   longer than the 64-byte OUT transfers seen so far. If Windows split it, the summary will report
+   failed decodes around it. That is a tool fix here, not a bad capture — the bytes are in the file
+   either way. (The 7749-byte inbound TLS packs do arrive as single transfers, so this probably
+   won't happen.)
+4. The `0x90` bytes then replace the synthetic config in the vendor-init fixture
+   (`cmd/goodix-probe/fixtures_test.go`), and the result goes into `docs/protocol.md` as observed,
+   with the driver version.
+5. Tick **"Capture a real init on the wire"** in PLAN.md Phase 3.
 
-- **USBPcap interfaces missing in Wireshark:** USBPcap isn't installed or you didn't reboot. Re-run the
-  Wireshark installer, tick USBPcap, reboot.
-- **Only a few packets, no bulk traffic:** wrong USBPcap interface, or "Capture from all devices" was
-  off. Check the other interfaces.
-- **Internal keyboard stops under Windows:** don't keep poking. Save the capture (external keyboard),
-  then cold power cycle as in `docs/bisect-runbook.md`: shut down, unplug the charger, hold power ~30 s.
-  That capture is extremely valuable. Note exactly what you did just before.
+## Scenarios that are no longer needed
+
+- **Enrollment and verification.** `dump.pcapng` already covers verification (43 image captures), and
+  the images are TLS ciphertext that is unreadable without the PSK. An enrollment capture would add
+  biometric data and no protocol.
+- **Sleep/resume and shutdown.** These existed to explain the wedge. The wedge is explained: an
+  `0xe4` with an empty payload, confirmed in isolation by Run 4 (`docs/protocol.md`). That the driver
+  sends nothing on idle or D0Exit, and leaves the EC armed in FDT-down mode with TLS up, is already
+  established from the log.
+
+## If the internal keyboard stops under Windows
+
+Don't keep poking. Save the capture using the external keyboard, then cold power cycle as in
+`docs/bisect-runbook.md`: shut down, unplug the charger, hold the power button ~30 s. That capture
+would be extremely valuable — note exactly what you did just before.

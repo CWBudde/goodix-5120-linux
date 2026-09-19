@@ -22,6 +22,11 @@ goodix-bisect-*.log
 usbmon-*.txt
 kernel-after-wedge.txt
 
+# ACPI dumps (docs/acpi.md) — firmware, not ours to vendor
+*.dat
+*.dsl
+*.aml
+
 # Windows vendor-driver capture (docs/windows-capture-runbook.md)
 *.pcap
 *.pcapng
