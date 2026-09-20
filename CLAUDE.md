@@ -37,6 +37,7 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 
 go build -buildvcs=false ./cmd/goodix-pcap
 ./goodix-pcap -in dump.pcapng                   # counts only, no payload bytes; reads a file, opens nothing
+./goodix-pcap -in dump.pcapng -devices          # every device address in the capture: which hub, who kept transferring
 go test ./internal/capture -capture "$PWD/dump.pcapng"   # checks the payload rules against real vendor traffic
 ```
 

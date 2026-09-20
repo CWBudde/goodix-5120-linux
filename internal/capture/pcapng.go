@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 // pcapng block types, from the pcapng specification.
@@ -29,6 +30,62 @@ const (
 
 // LinkTypeUSBPcap is the pcapng link type written by USBPcap on Windows.
 const LinkTypeUSBPcap = 249
+
+// optionTSResol is the interface-description option carrying the timestamp
+// resolution. USBPcap omits it, which per the specification means microseconds.
+const optionTSResol = 9
+
+// Interface is one described capture interface.
+type Interface struct {
+	LinkType uint16
+	// TSResol is the if_tsresol option: the low 7 bits are an exponent, and the
+	// high bit selects base 2 rather than base 10. 6 (microseconds) is the
+	// specified default and what USBPcap writes.
+	TSResol byte
+}
+
+// Time converts a raw pcapng timestamp to wall-clock time.
+//
+// The timestamp is a count of resolution units since the Unix epoch. Doing the
+// conversion here rather than assuming microseconds at the call site is what
+// makes a duration printed from a capture trustworthy.
+func (i Interface) Time(ticks uint64) (time.Time, error) {
+	exp := i.TSResol &^ 0x80
+	if i.TSResol&0x80 != 0 {
+		if exp > 63 {
+			return time.Time{}, fmt.Errorf("%w: binary timestamp resolution 2^-%d", ErrFormat, exp)
+		}
+		shift := uint(exp)
+		sec := ticks >> shift
+		frac := ticks & (1<<shift - 1)
+		// Scale the fraction in two steps when a single multiply would overflow.
+		var nsec uint64
+		if shift <= 30 {
+			nsec = frac * 1e9 >> shift
+		} else {
+			nsec = (frac >> (shift - 30)) * 1e9 >> 30
+		}
+		return time.Unix(int64(sec), int64(nsec)).UTC(), nil
+	}
+
+	if exp > 18 {
+		return time.Time{}, fmt.Errorf("%w: decimal timestamp resolution 10^-%d", ErrFormat, exp)
+	}
+	div := uint64(1)
+	for n := byte(0); n < exp; n++ {
+		div *= 10
+	}
+	sec, frac := ticks/div, ticks%div
+	// div is a power of ten, so exactly one of these divisions is exact.
+	var nsec uint64
+	switch {
+	case div > 1e9:
+		nsec = frac / (div / 1e9)
+	default:
+		nsec = frac * (1e9 / div)
+	}
+	return time.Unix(int64(sec), int64(nsec)).UTC(), nil
+}
 
 // ErrFormat means the file is not a pcapng file this package can read.
 var ErrFormat = errors.New("capture: malformed or unsupported pcapng")
@@ -51,16 +108,25 @@ const maxBlockLen = 16 << 20
 type Reader struct {
 	r     io.Reader
 	order binary.ByteOrder
-	// linkTypes records each interface's link type, in description order.
-	linkTypes []uint16
-	err       error
+	// ifaces records each described interface, in description order.
+	ifaces []Interface
+	err    error
 }
 
 // NewReader starts reading a pcapng stream.
 func NewReader(r io.Reader) *Reader { return &Reader{r: r} }
 
+// Interfaces returns every interface described so far, in description order.
+func (rd *Reader) Interfaces() []Interface { return rd.ifaces }
+
 // LinkTypes returns the link type of every interface described so far.
-func (rd *Reader) LinkTypes() []uint16 { return rd.linkTypes }
+func (rd *Reader) LinkTypes() []uint16 {
+	out := make([]uint16, len(rd.ifaces))
+	for i, f := range rd.ifaces {
+		out[i] = f.LinkType
+	}
+	return out
+}
 
 // Next returns the next block, or io.EOF at the end of the stream.
 func (rd *Reader) Next() (Block, error) {
@@ -96,7 +162,10 @@ func (rd *Reader) Next() (Block, error) {
 	}
 
 	if typ == blockInterfaceDesc && len(body) >= 2 {
-		rd.linkTypes = append(rd.linkTypes, rd.order.Uint16(body[0:2]))
+		rd.ifaces = append(rd.ifaces, Interface{
+			LinkType: rd.order.Uint16(body[0:2]),
+			TSResol:  rd.tsResol(body),
+		})
 	}
 	return Block{Type: typ, Body: body, ByteOrder: rd.order}, nil
 }
@@ -131,7 +200,7 @@ func (rd *Reader) readSectionHeader(head [8]byte) (Block, error) {
 		return Block{}, err
 	}
 	// A new section resets the interface table.
-	rd.linkTypes = nil
+	rd.ifaces = nil
 	return Block{Type: blockSectionHeader, Body: body, ByteOrder: rd.order}, nil
 }
 
@@ -171,4 +240,27 @@ func (rd *Reader) readBodyFrom(total uint32, already int, prefix []byte) ([]byte
 		return nil, rd.err
 	}
 	return body, nil
+}
+
+// tsResol reads the if_tsresol option out of an interface description block.
+//
+// The specified default is 6 — microseconds — and USBPcap writes no option at
+// all, so an unreadable or absent option is that default rather than an error.
+func (rd *Reader) tsResol(body []byte) byte {
+	// linkType(2) + reserved(2) + snapLen(4), then the options.
+	const fixed = 8
+	for off := fixed; off+4 <= len(body); {
+		code := rd.order.Uint16(body[off : off+2])
+		length := int(rd.order.Uint16(body[off+2 : off+4]))
+		off += 4
+		if code == 0 || off+length > len(body) { // opt_endofopt, or truncated
+			break
+		}
+		if code == optionTSResol && length == 1 {
+			return body[off]
+		}
+		// Every option value is padded to a multiple of four bytes.
+		off += (length + 3) &^ 3
+	}
+	return 6
 }

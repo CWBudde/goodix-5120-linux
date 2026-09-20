@@ -2,6 +2,7 @@ package capture
 
 import (
 	"fmt"
+	"time"
 
 	"goodix5120/internal/proto"
 )
@@ -13,6 +14,11 @@ type Frame struct {
 	Pack    []byte // the pack payload, with USB padding removed
 	Cmd     proto.Opcode
 	Payload []byte // message payload, when Flags is 0xa0
+	// Addr is the device address the frame was seen at. It is worth carrying
+	// because one device can hold two addresses in one capture, either side of a
+	// re-enumeration.
+	Addr Addr
+	Time time.Time
 	// Ack is set when the frame is a 0xb0 ACK message, in which case Cmd is the
 	// command being acknowledged and Status is its status byte.
 	Ack    bool
@@ -25,21 +31,33 @@ type Frame struct {
 // TLS reports whether the pack carries a TLS record rather than a message.
 func (f Frame) TLS() bool { return f.Flags == proto.FlagTLSData || f.Flags == proto.FlagTLSAlt }
 
-// Frames decodes the Goodix bulk traffic of one device.
+// Frames decodes the Goodix bulk traffic of the given device addresses, in
+// capture order.
+//
+// More than one address is not a convenience: a device that re-enumerates
+// mid-capture is the same device under two numbers, and its init sequence is
+// exactly what lives on the far side of that boundary. Passing no address
+// decodes nothing, which is the honest answer to "decode these zero devices".
 //
 // Outbound transfers are padded to 64 bytes by the host, and the vendor driver
 // does not zero that padding — uninitialised Windows kernel stack memory rides
 // along after the pack. Everything past the declared pack length is therefore
 // dropped here and never decoded or emitted, which is both a correctness rule
 // and the first line of the scrubbing.
-func Frames(ts []Transfer, dev Addr) []Frame {
+func Frames(ts []Transfer, devs ...Addr) []Frame {
+	want := make(map[Addr]bool, len(devs))
+	for _, d := range devs {
+		want[d] = true
+	}
+
 	var out []Frame
 	for _, t := range ts {
-		if t.Bus != dev.Bus || t.Device != dev.Device || t.Transfer != transferBulk || len(t.Data) == 0 {
+		addr := Addr{Bus: t.Bus, Device: t.Device}
+		if !want[addr] || t.Transfer != transferBulk || len(t.Data) == 0 {
 			continue
 		}
 
-		f := Frame{In: t.In}
+		f := Frame{In: t.In, Addr: addr, Time: t.Time}
 		flags, packPayload, err := proto.DecodePack(t.Data)
 		if err != nil {
 			f.Err = fmt.Errorf("pack: %w", err)
