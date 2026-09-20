@@ -403,6 +403,14 @@ The `0xae` reply, decoded by `proto.DecodeMCUState`:
 
 Phase 4 steps 1 and 2 have now both passed live. `0xae` is safe on this device.
 
+### Run 7 — 2026-09-20 12:46, `sudo ./goodix-probe --bisect --steps a8,ae` (observed)
+
+The confirmation run the plan requires before `0xe4`: steps 1–2 a second time. **Byte-identical to Run 6**
+— `GF_ITE_EC_20063`, then the `0xae` state `02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 10 10`
+(`Status = 0x02`, TLS still up, trailing counter unchanged at `10 10`), no ACK, i8042 4897 → 4903, EC
+refreshes 0 → 11, keyboard alive after every step. The `0xa8`/`0xae` exchanges are reproducible on this
+device. Steps 1 and 2 have each now passed twice, meeting the gate on Phase 4 step 3 (`0xe4`).
+
 ### Device identity — observed
 
 ```
