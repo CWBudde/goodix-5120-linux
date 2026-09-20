@@ -3,7 +3,9 @@
     "allow": [
       "Bash(go build *)",
       "Bash(go vet *)",
-      "Bash(go test *)"
+      "Bash(go test *)",
+      "Read(//mnt/**)",
+      "Bash(mount)"
     ]
   }
 }

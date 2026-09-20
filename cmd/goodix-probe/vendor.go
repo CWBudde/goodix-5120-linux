@@ -129,9 +129,10 @@ var steps = []step{
 // it appears in vendorInit, so its payload is on record, and is ClassSafe, so
 // the transport's default ceiling would pass it.
 //
-// preset_psk_read (0xe4) is the one exception, admitted only by --allow-e4, and
-// even then it now goes out with the vendor's 8-byte argument rather than the
-// empty frame that wedged the EC.
+// Two above-ceiling exceptions are catalogued so --allow-e4 / --allow-a2 can
+// admit them: preset_psk_read (0xe4), which now goes out with the vendor's
+// 8-byte argument rather than the empty frame that wedged the EC, and reset
+// (0xa2). parseSteps still refuses either unless its flag is set.
 func bisectable(op proto.Opcode) (step, bool) {
 	for _, s := range vendorInit {
 		if s.cmd != op || !s.known() {
@@ -140,7 +141,7 @@ func bisectable(op proto.Opcode) (step, bool) {
 		if class, ok := op.Class(); ok && class == proto.ClassSafe {
 			return s, true
 		}
-		if op == opPSKRead {
+		if op == opPSKRead || op == opReset {
 			return s, true
 		}
 	}

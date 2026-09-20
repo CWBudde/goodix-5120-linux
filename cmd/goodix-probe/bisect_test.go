@@ -46,7 +46,7 @@ func bisectReplay(t *testing.T, presses ...bool) (string, *fakeHost, replayCount
 // how a two-step run is built now that the probe sends exactly one command.
 func bisectReplaySteps(t *testing.T, list string, presses ...bool) (string, *fakeHost, replayCounters, bool, error) {
 	t.Helper()
-	ops, err := parseSteps(list, false)
+	ops, err := parseSteps(list)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestBisectAttachFailure(t *testing.T) {
 }
 
 func TestParseSteps(t *testing.T) {
-	got, err := parseSteps(" 0xA8, ae ,", false)
+	got, err := parseSteps(" 0xA8, ae ,")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,28 +146,44 @@ func TestParseSteps(t *testing.T) {
 	// which is what lets PLAN.md Phase 4 add one command per live run without
 	// widening the probe's own step list.
 	for _, ok := range []string{"a8", "ae", "82", "a6"} {
-		if _, err := parseSteps(ok, false); err != nil {
+		if _, err := parseSteps(ok); err != nil {
 			t.Errorf("parseSteps(%q) refused: %v", ok, err)
 		}
 	}
 
-	// Refused: preset_psk_read (needs --allow-e4), everything above the safe
-	// ceiling, the destructive opcodes, nop (the vendor never sends it, so
+	// Refused with no allow set: the two above-ceiling frames (preset_psk_read
+	// needs --allow-e4, reset needs --allow-a2), the destructive opcodes,
+	// everything else above the safe ceiling, nop (the vendor never sends it, so
 	// there is no payload to copy) and junk.
-	for _, bad := range []string{"e4", "f0", "e0", "a2", "20", "90", "d0", "00", "zz", "100"} {
-		if _, err := parseSteps(bad, false); err == nil {
+	for _, bad := range []string{"e4", "a2", "f0", "e0", "20", "90", "d0", "00", "zz", "100"} {
+		if _, err := parseSteps(bad); err == nil {
 			t.Errorf("parseSteps(%q) accepted", bad)
 		}
 	}
 
-	// --allow-e4 admits preset_psk_read, and admits nothing else that was
-	// refused without it.
-	if got, err := parseSteps("e4", true); err != nil || len(got) != 1 || got[0] != opPSKRead {
-		t.Errorf("parseSteps(e4, allowE4) = %v, %v", got, err)
+	// An allow entry admits exactly its opcode and nothing else that was refused
+	// without it.
+	if got, err := parseSteps("e4", opPSKRead); err != nil || len(got) != 1 || got[0] != opPSKRead {
+		t.Errorf("parseSteps(e4, opPSKRead) = %v, %v", got, err)
 	}
-	for _, bad := range []string{"f0", "e0", "a2", "20", "90", "d0", "00"} {
-		if _, err := parseSteps(bad, true); err == nil {
-			t.Errorf("parseSteps(%q, allowE4) accepted", bad)
+	if got, err := parseSteps("a2", opReset); err != nil || len(got) != 1 || got[0] != opReset {
+		t.Errorf("parseSteps(a2, opReset) = %v, %v", got, err)
+	}
+	// One flag does not unlock the other's opcode.
+	if _, err := parseSteps("a2", opPSKRead); err == nil {
+		t.Error("parseSteps(a2, opPSKRead) accepted a2 under the e4 allow")
+	}
+	if _, err := parseSteps("e4", opReset); err == nil {
+		t.Error("parseSteps(e4, opReset) accepted e4 under the a2 allow")
+	}
+	// Both together admit both, in order.
+	if got, err := parseSteps("a2,e4", opReset, opPSKRead); err != nil || len(got) != 2 || got[0] != opReset || got[1] != opPSKRead {
+		t.Errorf("parseSteps(a2,e4, opReset, opPSKRead) = %v, %v", got, err)
+	}
+	// The allow set never lowers the bar for the destructive or nonsense opcodes.
+	for _, bad := range []string{"f0", "e0", "20", "90", "d0", "00"} {
+		if _, err := parseSteps(bad, opPSKRead, opReset); err == nil {
+			t.Errorf("parseSteps(%q, allow all) accepted", bad)
 		}
 	}
 }
@@ -176,7 +192,7 @@ func TestParseSteps(t *testing.T) {
 // Allow exception while the ceiling stays safe; without it, the transport
 // still refuses it. The replay answers with the ACK Runs 1 and 2 saw.
 func TestBisectAllowE4(t *testing.T) {
-	ops, err := parseSteps("e4", true)
+	ops, err := parseSteps("e4", opPSKRead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,9 +224,42 @@ func TestBisectAllowE4(t *testing.T) {
 	}
 }
 
+// With --allow-a2, reset reaches the device through the transport's Allow
+// exception while the ceiling stays safe; without it, the transport refuses it.
+// Unlike 0xe4 the reset does not wedge the EC, so the run completes with the
+// keyboard alive after every step.
+func TestBisectAllowA2(t *testing.T) {
+	ops, err := parseSteps("a2", opReset)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	refusing := transport.NewReplay(scriptFor(ops), transport.Options{Ceiling: proto.ClassSafe})
+	if err := refusing.Send(opReset, nil); !errors.Is(err, transport.ErrRefused) {
+		t.Fatalf("0xa2 without Allow: err = %v, want ErrRefused", err)
+	}
+
+	var buf bytes.Buffer
+	tr := transport.NewReplay(scriptFor(ops), transport.Options{
+		Ceiling: proto.ClassSafe,
+		Allow:   []proto.Opcode{opReset},
+	})
+	open := func() (transport.Transport, error) { return tr, nil }
+	// baseline ok, attach ok, reset ok — the keyboard survives the reset.
+	host := &fakeHost{presses: []bool{true, true, true}}
+
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second)
+	if err != nil {
+		t.Fatalf("runBisect with --allow-a2 = %v\n%s", err, buf.String())
+	}
+	if out := buf.String(); !strings.Contains(out, "keyboard alive after step 1 reset (0xa2)") {
+		t.Errorf("reset step not run as expected:\n%s", out)
+	}
+}
+
 // Everything bisect may send without --allow-e4 must be ClassSafe.
 func TestBisectStepsAreSafe(t *testing.T) {
-	ops, err := parseSteps(defaultBisectSteps(), false)
+	ops, err := parseSteps(defaultBisectSteps())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -49,6 +48,7 @@ func main() {
 		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
 		allowE4    = flag.Bool("allow-e4", false, "bisect: also accept preset_psk_read (0xe4) in --steps. Sent with the vendor's 8-byte payload; the EMPTY form wedged the EC in Runs 1, 2 and 4 and is now refused outright (see docs/bisect-runbook.md)")
+		allowA2    = flag.Bool("allow-a2", false, "bisect: also accept reset (0xa2) in --steps. State-changing; the vendor sends it before reading the chip ID, which without it reads a pre-reset value (Run 9). Sent with the vendor payload 01 14 (see docs/bisect-runbook.md)")
 	)
 	flag.Parse()
 
@@ -58,6 +58,10 @@ func main() {
 		logger.Print("--allow-e4 only works with --bisect")
 		os.Exit(1)
 	}
+	if *allowA2 && !*bisect {
+		logger.Print("--allow-a2 only works with --bisect")
+		os.Exit(1)
+	}
 
 	if *dryRun {
 		dryRunFrames(logger)
@@ -65,7 +69,14 @@ func main() {
 	}
 
 	if *bisect {
-		os.Exit(mainBisect(*replay, *assumeKeys, *allowE4, *stepList, *logPath, *timeout, *keyWait))
+		var allow []proto.Opcode
+		if *allowE4 {
+			allow = append(allow, opPSKRead)
+		}
+		if *allowA2 {
+			allow = append(allow, opReset)
+		}
+		os.Exit(mainBisect(*replay, *assumeKeys, allow, *stepList, *logPath, *timeout, *keyWait))
 	}
 
 	opts := transport.Options{
@@ -98,13 +109,13 @@ func main() {
 // mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
 // survived every step, 2 if it stopped (or was not working to begin with), 1
 // on any other failure.
-func mainBisect(replay, assumeKeys, allowE4 bool, stepList, logPath string, timeout, keyWait time.Duration) int {
+func mainBisect(replay, assumeKeys bool, allow []proto.Opcode, stepList, logPath string, timeout, keyWait time.Duration) int {
 	stderr := log.New(os.Stderr, "", 0)
 	if assumeKeys && !replay {
 		stderr.Print(errAssumeKeysLive)
 		return 1
 	}
-	ops, err := parseSteps(stepList, allowE4)
+	ops, err := parseSteps(stepList, allow...)
 	if err != nil {
 		stderr.Printf("--steps: %v", err)
 		return 1
@@ -137,11 +148,27 @@ func mainBisect(replay, assumeKeys, allowE4 bool, stepList, logPath string, time
 		Verbose: true, // the raw bytes are the point of a bisect run
 		Logger:  logger,
 	}
+	// Admit above-ceiling opcodes to the transport, but only the ones that are
+	// actually steps in this run: a flag set without the matching --steps entry
+	// unlocks nothing. The ceiling itself stays ClassSafe.
+	var above []proto.Opcode
+	for _, op := range ops {
+		if class, ok := op.Class(); ok && class != proto.ClassSafe {
+			above = append(above, op)
+		}
+	}
 	allowed := "none"
-	if slices.Contains(ops, opPSKRead) {
-		// The one exception above the ceiling, and only when it is a step.
-		opts.Allow = []proto.Opcode{opPSKRead}
-		allowed = "preset_psk_read (0xe4)"
+	if len(above) > 0 {
+		opts.Allow = above
+		names := make([]string, len(above))
+		for i, op := range above {
+			if st, ok := stepFor(op); ok {
+				names[i] = fmt.Sprintf("%s (0x%02x)", st.purpose, byte(op))
+			} else {
+				names[i] = fmt.Sprintf("0x%02x", byte(op))
+			}
+		}
+		allowed = strings.Join(names, ", ")
 	}
 	open := func() (transport.Transport, error) {
 		if replay {

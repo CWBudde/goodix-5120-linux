@@ -40,8 +40,14 @@ Step markers (`goodix-probe: ...`) also go to the kernel log, so they line up wi
 
 `--steps` accepts an opcode only when it is `ClassSafe` **and** its payload is on record from the vendor
 driver — today `a8`, `ae`, `82` and `a6`. That is how PLAN.md Phase 4 adds one command per live run
-without widening what the plain probe sends. It cannot name a state-changing opcode, so the run fails
-before the device is opened rather than halfway through.
+without widening what the plain probe sends. It cannot name a state-changing opcode on its own, so the
+run fails before the device is opened rather than halfway through.
+
+Two state-changing opcodes can be unlocked, each by its own flag and one at a time: `--allow-e4` admits
+`preset_psk_read` (`0xe4`) and `--allow-a2` admits `reset` (`0xa2`). A flag lifts the ceiling for that
+one opcode and nothing else, and only when the opcode is actually in `--steps`; the ceiling itself stays
+`ClassSafe`. Both frames go out with the vendor's payload — `0xe4` with its 8-byte argument, `0xa2` with
+`01 14`.
 
 ## Before
 
@@ -121,6 +127,30 @@ Rehearse offline first:
 
 The replay answers with the ACK that Runs 1, 2 and 4 all saw and nothing after it. It deliberately does
 not invent the 41 bytes; only a live run or a Windows capture can supply them.
+
+## `0xa2` reset and reading the chip ID — what `--allow-a2` does
+
+Run 9 (2026-09-20) sent `0x82` (`read_register`) with the vendor's chip-ID payload but **without** the
+`0xa2` reset the vendor sends immediately before it, and read `01 00 80 1b` — a pre-reset value, not the
+chip ID `0x2504`. So the chip-ID register is populated by the reset. `--allow-a2` admits `0xa2` to a
+bisect run so the reset can precede the read:
+
+```sh
+sudo ./goodix-probe --bisect --allow-a2 --steps a8,ae,a2,82,a6
+```
+
+`0xa2` is `ClassStateChanging`, not secret-bearing and not destructive, but it changes sensor state and
+may drop the EC's TLS session, so it is unlocked deliberately, the way `0xe4` is. It goes out with the
+vendor payload `01 14` and is answered with an ACK; the vendor log records a small data reply (`01 00 08`).
+The following `0x82` should then read `a2 04 25 00` — chip ID `0x2504`. `0xa6` (`read_otp`) is already
+`ClassSafe`, so it needs no flag, **but its reply is the device OTP — the first 32 bytes are the
+`sensorid`. Keep it out of the repo and out of any issue report, exactly like the `0xe4` PSK hash.**
+
+Rehearse offline first:
+
+```sh
+./goodix-probe --bisect --replay --assume-keys --allow-a2 --steps a8,ae,a2,82,a6
+```
 
 ## Afterwards
 

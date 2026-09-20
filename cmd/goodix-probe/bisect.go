@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,13 +56,23 @@ var errBaseline = errors.New("internal keyboard not responding before the run")
 // driver uses in all eight of its inits and gets an ACK plus 41 bytes for.
 const opPSKRead proto.Opcode = 0xe4
 
-// parseSteps turns a comma-separated opcode list (hex, e.g. "a8,ae") into
-// steps. An opcode is accepted only if it is in the vendor catalogue, so its
-// payload is on record, and ClassSafe, so the transport's default ceiling would
-// pass it. Bisect therefore cannot send a frame the vendor driver has never
-// been observed to send, and cannot get further than the ceiling would allow.
-// The one exception is preset_psk_read, accepted only when allowE4 is set.
-func parseSteps(list string, allowE4 bool) ([]proto.Opcode, error) {
+// opReset is the sensor reset (0xa2). It is ClassStateChanging: the vendor
+// driver sends it immediately before reading the chip ID, and without it that
+// register reads a pre-reset value rather than 0x2504 (Run 9,
+// docs/protocol.md). --allow-a2 admits it to a bisect run, and only there; it is
+// never a probe step. It is neither secret-bearing nor destructive, but it
+// changes sensor state (it can drop the EC's TLS session), so it stays above the
+// safe ceiling and is unlocked deliberately, the way opPSKRead is.
+const opReset proto.Opcode = 0xa2
+
+// parseSteps turns a comma-separated opcode list (hex, e.g. "a8,ae") into steps.
+// An opcode is accepted only if it is in the vendor catalogue, so its payload is
+// on record. A ClassSafe opcode passes on its own; an opcode above the ceiling
+// (preset_psk_read, reset) passes only when named in allow — the set the
+// matching --allow-… flag turns on. Bisect therefore cannot send a frame the
+// vendor driver has never been observed to send, and cannot get above the
+// ceiling except for an opcode the operator has explicitly unlocked.
+func parseSteps(list string, allow ...proto.Opcode) ([]proto.Opcode, error) {
 	var out []proto.Opcode
 	for field := range strings.SplitSeq(list, ",") {
 		field = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(field)), "0x")
@@ -73,15 +84,28 @@ func parseSteps(list string, allowE4 bool) ([]proto.Opcode, error) {
 			return nil, fmt.Errorf("bad opcode %q: %w", field, err)
 		}
 		op := proto.Opcode(v)
-		if op == opPSKRead && !allowE4 {
-			return nil, fmt.Errorf("opcode 0xe4 wedges the EC when sent empty; it needs --allow-e4 (see docs/bisect-runbook.md)")
-		}
 		if _, ok := stepFor(op); !ok {
 			return nil, fmt.Errorf("opcode 0x%02x is not a safe command with a known vendor payload", byte(op))
+		}
+		if class, ok := op.Class(); ok && class != proto.ClassSafe && !slices.Contains(allow, op) {
+			return nil, needsAllow(op)
 		}
 		out = append(out, op)
 	}
 	return out, nil
+}
+
+// needsAllow explains that op is above the safe ceiling and names the flag that
+// admits it.
+func needsAllow(op proto.Opcode) error {
+	switch op {
+	case opPSKRead:
+		return fmt.Errorf("opcode 0xe4 wedges the EC when sent empty; it needs --allow-e4 (see docs/bisect-runbook.md)")
+	case opReset:
+		return fmt.Errorf("opcode 0xa2 (reset) is state-changing; it needs --allow-a2 (see docs/bisect-runbook.md)")
+	default:
+		return fmt.Errorf("opcode 0x%02x is above the safe ceiling and cannot be sent by bisect", byte(op))
+	}
 }
 
 // defaultBisectSteps is every probe step, in order.
