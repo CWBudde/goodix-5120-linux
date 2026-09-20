@@ -175,13 +175,14 @@ Proposed order, one new step per run, always in vendor order, prefix from the ve
 3. [x] `+ e4 [03 00 02 bb 00 00 00 00]` → ACK + 41-byte reply, **keyboard alive**. The wedge hypothesis
    is confirmed: the empty payload, not the opcode, is fatal. **Done 2026-09-20, Run 8.** The 41-byte
    reply's 32-byte PSK-hash field was seen on screen and kept out of the repo.
-4. [ ] `+ 82 [00 00 00 04 00]`, `a6 [00 00]` → chip ID `0x2504`, OTP. Both are `ClassSafe` and
-   `--steps`-eligible today (`--bisect --steps a8,ae,82,a6`). **`a6`'s reply is the OTP — secret-bearing
-   (its first 32 bytes are the `sensorid`); withhold it as with `0xe4`.** `a2 [01 14]` (reset) sits
-   before `82` in the vendor order but is `ClassStateChanging`, so it cannot go through `--steps`: sending
-   it needs a deliberate `--allow-a2` path added the way `--allow-e4` was, and a decision on whether the
-   chip-ID read even needs the reset first. That is its own gated sub-decision. **Next up: `82` for the
-   chip ID.**
+4. [~] `+ 82 [00 00 00 04 00]` → **done 2026-09-20, Run 9: safe, but read `01 00 80 1b`, not the chip ID
+   `0x2504`.** The chip-ID register is populated by the `a2` reset that precedes `82` in the vendor order;
+   skipping it (a2 is `ClassStateChanging`, not `--steps`-eligible) reads a pre-reset value. So the open
+   question is answered: **reading the chip ID live requires `a2` first**, which needs a deliberate
+   `--allow-a2` path added the way `--allow-e4` was. `a6 [00 00]` (OTP) is `ClassSafe` and `--steps`-eligible
+   but its reply is the **OTP — secret-bearing (first 32 bytes are the `sensorid`); withhold it as with
+   `0xe4`**, and it adds little we don't already have from the Windows log. **Next decision: whether to add
+   `--allow-a2` and read the chip ID with a reset, or stop here.**
 5. Stop there. `70`/`98`/`90` configure the sensor, and `d0` starts a handshake we can't finish without
    the PSK. What gates this step has nothing to do with missing bytes — it is live-hardware safety, one
    command per run, and the PSK question beyond `d0`.

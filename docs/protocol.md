@@ -451,6 +451,33 @@ Counters: i8042 `irq1` 4909 → 4917, EC refreshes advancing, sensor enumerated 
   now runs live on this hardware with no ill effect. Step 4 (`a2`, `82`, `a6`) is next; `d0` and beyond
   stay gated on the PSK (Phase 5).
 
+### Run 9 — 2026-09-20 12:53, `sudo ./goodix-probe --bisect --steps a8,ae,82` (observed)
+
+Phase 4 step 4, first half: attach, `0xa8`, `0xae`, then `0x82` (`read_register`) with the vendor payload
+`00 00 00 04 00` — the read the vendor uses for the chip ID. Run by the user with an external keyboard
+attached. No usbmon capture. **Result: the internal keyboard stayed alive after every step; `0x82`
+returned an ACK and a 4-byte register value, but not the chip ID the vendor read returns.**
+
+```
+step          TX                                       RX (data)              keyboard
+1 0xa8        a0 06 00 a6 a8 03 00 00 00 ff            "GF_ITE_EC_20063"      alive
+2 0xae        a0 09 00 a9 ae 06 00 55 a2 52 00 00 …    02 02 31 … 10 10       alive
+3 0x82        a0 09 00 a9 82 06 00 00 00 00 04 00 1e   01 00 80 1b            alive
+```
+
+- **`0x82` is safe** on this device: ACK `82/01`, then a 4-byte payload, keyboard alive, counters ticking
+  (i8042 5745 → 5753, EC refreshes 0 → 9).
+- **The value is `01 00 80 1b`, not the vendor's `a2 04 25 00`.** In the vendor init the same read returns
+  `a2 04 25 00`, whose bytes 1–2 (`04 25` LE) are the chip ID `0x2504` (`docs/protocol.md`, init step 6).
+  Here bytes 1–2 (`00 80`) are `0x8000` — the register does not hold the chip ID.
+- **The difference is the `a2` reset.** In the vendor sequence `a2` (`reset`) runs immediately before
+  `0x82`; this run skipped it, because `a2` is `ClassStateChanging` and cannot go through `--steps`. So the
+  chip-ID register is populated by the reset, not standing in the sensor at rest. This answers the open
+  question from Phase 4 step 4: **reading the chip ID live requires the preceding `a2` reset**, which in
+  turn requires a deliberate `--allow-a2` path added the way `--allow-e4` was. Until then, `0x82` is
+  confirmed safe but reads a pre-reset value, not `0x2504`.
+- The `0xa8` and `0xae` replies were identical to Runs 6–8 (`0xae` still `Status = 0x02`, TLS up).
+
 ### Device identity — observed
 
 ```
