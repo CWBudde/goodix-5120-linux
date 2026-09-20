@@ -147,45 +147,23 @@ the current one.
 
 ---
 
-## Phase 4 — Live runs (only if the gate is met)
+## Phase 4 — Live plaintext runs — done (2026-09-20)
 
-**Gate:** Phase 3c complete (2026-09-19), **and** each planned command matches the vendor sequence byte
-for byte, opcode *and* payload. Both halves are enforced in code rather than checked by hand:
-`TestStepPayloadsMatchVendorInit` fails if a step is not a vendor frame, and `./goodix-probe --dry-run`
-prints the probe's frames next to the whole vendor sequence for a human to compare.
+Steps 1–4 ran live, one command per run, external keyboard attached, `--bisect` checking the keyboard
+after each step. **Every safe frame of the vendor init — `a8`, `ae`, `e4`, `a2`, `82`, `a6` — now runs on
+this hardware with no ill effect.** The full account is `docs/protocol.md`, Runs 5–10; the two results
+that mattered:
 
-Since 2026-09-20 the gate's *data* half is fully satisfied up to `d0`, the `0x90` config included.
-Nothing about that loosens anything: the gate was never only about having the bytes.
+- **The wedge is understood and defused.** The vendor `0xe4` (with its 8-byte payload) returns an ACK and
+  41 bytes and leaves the keyboard alive; the empty payload — not the opcode — is what wedged the EC, and
+  the transport refuses that frame outright. `--allow-e4` sends only the vendor form.
+- **The sensor is identified from the device.** With the `a2` reset ahead of it, `0x82` read chip ID
+  `0x2504` (`--allow-a2`, added this day, mirrors `--allow-e4`). `0xa6` returned a 64-byte OTP whose
+  `S2A755.` prefix matches the Windows log; the `sensorid` was withheld from the repo, as was the `0xe4`
+  PSK hash.
 
-Setup for every run:
-
-- [ ] Plug in an external USB keyboard, or better, drive the machine over SSH from a second computer.
-- [ ] Nothing else open or unsaved on the machine.
-- [ ] Rehearse the recovery first: shut down fully, unplug the charger, hold the power button ~30 s.
-      A warm reboot doesn't reset the EC.
-- [ ] Use `--bisect` (keyboard check after each step). Drain responses before exiting.
-- [ ] After each run, check that the internal keyboard still works
-      (`evtest` on `AT Translated Set 2 keyboard`) and that `1-4` is still in
-      `/sys/bus/usb/devices/`. Stop at the first sign of trouble.
-- [ ] Append every run to `docs/protocol.md` as "Run N".
-
-Proposed order, one new step per run, always in vendor order, prefix from the vendor sequence:
-
-1. [x] `a8 [00 00]` → ACK + `GF_ITE_EC_20063`. **Done 2026-09-20, Run 5.**
-2. [x] `+ ae [55 …]` → 20-byte state, no ACK; `Status = 0x02` (TLS still up from Windows).
-   **Done 2026-09-20, Runs 6 and 7.**
-3. [x] `+ e4 [03 00 02 bb 00 00 00 00]` → ACK + 41-byte reply, **keyboard alive**. The wedge hypothesis
-   is confirmed: the empty payload, not the opcode, is fatal. **Done 2026-09-20, Run 8.** The 41-byte
-   reply's 32-byte PSK-hash field was seen on screen and kept out of the repo.
-4. [x] `+ a2 [01 14]`, `82 [00 00 00 04 00]`, `a6 [00 00]` → reset, chip ID `0x2504`, OTP.
-   **Done 2026-09-20, Run 10** (`--bisect --allow-a2 --steps a8,ae,a2,82,a6`). With the `a2` reset ahead of
-   it, `82` read `a2 04 25 00` = chip ID **`0x2504`** live (Run 9 without the reset read `01 00 80 1b`).
-   `a2` reset returned ACK + `01 00 08`, keyboard alive. `a6` returned a 64-byte OTP beginning `S2A755.`,
-   matching the Windows log; the `sensorid` was withheld from the repo. `--allow-a2` was added the same day
-   (mirrors `--allow-e4`).
-5. Stop there. `70`/`98`/`90` configure the sensor, and `d0` starts a handshake we can't finish without
-   the PSK. What gates this step has nothing to do with missing bytes — it is live-hardware safety, one
-   command per run, and the PSK question beyond `d0`.
+**Stop point, by design:** `70`/`98`/`90` configure the sensor and `d0` starts the TLS handshake, which
+cannot complete without the PSK (Phase 5). This is live-hardware safety, not a missing-bytes gate.
 
 **Never, under any circumstances:** run upstream's `driver_51x0.main()` or any IAP/firmware-write path.
 It would try to flash `GF_ST411SEC_APP_12117.bin` onto the ITE EC that also runs the keyboard.
