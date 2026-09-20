@@ -247,7 +247,9 @@ and `nop` is gone from its sequence because the vendor never sends it to an ITE 
 `0xb0` acknowledgements, reads ACK then data per command, skips unsolicited messages, drains the IN
 endpoint before exiting and no longer sends `read_otp`. It is tested against the Run 1 capture through
 the replay transport. **This is not a recommendation to run it.** The advice above still stands, and
-`PLAN.md` Phase 4 gates any live run on a capture from the vendor driver.
+`PLAN.md` Phase 4 gates any live run on each planned command matching the vendor sequence byte for
+byte, opcode *and* payload — a gate now enforced by `TestStepPayloadsMatchVendorInit` rather than
+checked by hand.
 
 ### Known issues
 

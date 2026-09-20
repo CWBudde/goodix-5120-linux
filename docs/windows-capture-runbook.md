@@ -70,16 +70,10 @@ But the 224-byte `0x90` is still missing.
 
 ### Settled 2026-09-20: the init ran, USBPcap missed it
 
-The debug log answers it. Both properly aimed attempts contain a **complete** init:
-
-| capture | window | complete init inside it |
-|---|---|---|
-| `disable-enable2.pcapng` | 23:13:09.726 + 22.295 s | 23:13:23.144 |
-| `disable-enable3.pcapng` | 23:25:14.831 + 84.581 s | 23:25:41.462 |
-
-In attempt 4 the sensor's last captured transfer is 23:25:24.680, the init starts **16.8 s later**,
-and neither it nor any new device address appears anywhere in the file. The clicking was right all
-three times. **USBPcap does not follow the device across the PnP re-enumeration** the Enable causes.
+The debug log answers it: both properly aimed attempts contain a **complete** init, and neither
+recorded a byte of it or any new device address. The clicking was right all three times.
+**USBPcap does not follow the device across the PnP re-enumeration** the Enable causes. The
+capture-window correlation is in `docs/protocol.md`, "Why three Disable/Enable captures hold no init".
 
 Two consequences, and the second one reverses earlier advice in this file:
 

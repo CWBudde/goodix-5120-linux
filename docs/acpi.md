@@ -64,7 +64,11 @@ command byte**. The EC's command set itself is firmware, not described here. Eac
 rather than hanging.
 
 **Do not call these.** `ECCC` is an unfiltered command channel into the part that also runs the
-keyboard — the same class of mistake as the empty `0xe4`, one layer down.
+keyboard — the same class of mistake as the empty `0xe4`, one layer down. For the same reason `ec_sys`
+was never loaded: its `io` file is a write path into this address space, and `write_support=1` would
+put one behind a `cat >`. Everything here was read from the tables, not from the EC.
+
+The ITE part number is still only the device's own `GF_ITE_EC_20063` string — nothing in ACPI names it.
 
 ## The watchdog is not a way out
 
