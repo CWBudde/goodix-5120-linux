@@ -2,6 +2,7 @@
 /goodix-probe
 /goodix-pcap
 /goodix-evtx
+/goodix-dpapi
 /dist/
 
 # Captured sensor data — may contain biometric material, never commit

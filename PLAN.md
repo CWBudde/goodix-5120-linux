@@ -176,7 +176,21 @@ It would try to flash `GF_ST411SEC_APP_12117.bin` onto the ITE EC that also runs
 Blocked on the PSK. The options, in order of preference:
 
 1. **Unseal the Windows PSK** from `Goodix_Cache.bin`, if the DPAPI master key can be derived on Linux.
-   Non-destructive, and Windows Hello keeps working.
+   Non-destructive, and Windows Hello keeps working. **Built and partly done (2026-09-20).** `cmd/goodix-dpapi`
+   (with `internal/dpapi` and the minimal `internal/winreg`) does the whole machine-scoped DPAPI chain offline
+   — boot key from `SYSTEM`, LSA key and `DPAPI_SYSTEM` from `SECURITY`, then the `S-1-5-18` master key — no
+   password, no brute force, read-only, no hardware. Every stage is HMAC-verified; a live test confirms all 26
+   machine master keys decrypt. **The wall:** `Goodix_Cache.bin` was sealed with an application-specific
+   `pOptionalEntropy`, so the master key alone does not open it (proven: the master key is authenticated and
+   every blob field parses, so entropy is the only free input and the Sign HMAC fails without it). Static
+   analysis of `gfusb.dll` then established that **the entropy is DRBG-generated, not a constant**: the cache
+   seal/read code (RVA ~`0x32b00`) builds it with a routine tagged `generate_entropy2` (mbedTLS `CTR_DRBG`;
+   `CryptGenRandom` imported) and feeds it to the generic DPAPI wrapper (RVA `0xb490`). The read path must be
+   deterministic, so the entropy is reconstructible offline in principle — but only by replaying that
+   derivation from the stored seed (likely the cache's 8 trailing bytes; raw, they fail). See
+   [`docs/dpapi-runbook.md`](docs/dpapi-runbook.md). **Next decision:** finish the derivation by static RE of
+   `generate_entropy2`, or fall back to option 2 (which reconstructs the entropy at runtime and skips it). Once
+   the entropy bytes are known by either route, `goodix-dpapi -entropy HEX` finishes the unseal in one step.
 2. **Read it out of a running Windows** — the driver's memory, or its debug switches
    (`psk_simulation_switch`, `Local_test_original_psk`). Local analysis only.
 3. **Provision our own PSK with `0xe0`.** Destructive: it overwrites the EC's PSK and breaks Windows

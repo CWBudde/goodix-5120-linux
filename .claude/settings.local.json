@@ -5,7 +5,10 @@
       "Bash(go vet *)",
       "Bash(go test *)",
       "Read(//mnt/**)",
-      "Bash(mount)"
+      "Bash(mount)",
+      "Bash(DPAPI_DEBUG=1 go test ./internal/dpapi -run TestDebugReal -v)",
+      "Bash(DPAPI_DEBUG=1 go test ./internal/dpapi -run TestDebugBlob -v)",
+      "Bash(cd *)"
     ]
   }
 }
