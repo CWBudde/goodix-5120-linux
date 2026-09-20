@@ -411,6 +411,46 @@ The confirmation run the plan requires before `0xe4`: steps 1–2 a second time.
 refreshes 0 → 11, keyboard alive after every step. The `0xa8`/`0xae` exchanges are reproducible on this
 device. Steps 1 and 2 have each now passed twice, meeting the gate on Phase 4 step 3 (`0xe4`).
 
+### Run 8 — 2026-09-20 12:48, `sudo ./goodix-probe --bisect --allow-e4 --steps a8,ae,e4` (observed)
+
+**Phase 4 step 3 — the wedge hypothesis, tested and confirmed the safe way.** Attach, `0xa8`, `0xae`,
+then `0xe4` (`preset_psk_read`) **with its 8-byte vendor payload** `03 00 02 bb 00 00 00 00`. Run by the
+user with an external keyboard attached. No usbmon capture. **Result: the internal keyboard stayed alive
+after every step, and `0xe4` returned an ACK followed by a 41-byte data reply.**
+
+```
+step          TX                                         RX                                   keyboard
+baseline      —                                          —                                    alive
+0 attach      —                                          nothing (5 s drain)                  alive
+1 0xa8        a0 06 00 a6 a8 03 00 00 00 ff              ACK a8/01, "GF_ITE_EC_20063"         alive
+2 0xae        a0 09 00 a9 ae 06 00 55 a2 52 00 00 …      no ACK, 20-byte state (as Run 6/7)   alive
+3 0xe4        a0 0c 00 ac e4 09 00 03 00 02 bb 00 00…    ACK e4/01, then 41-byte reply        ALIVE
+```
+
+Counters: i8042 `irq1` 4909 → 4917, EC refreshes advancing, sensor enumerated throughout.
+
+- **This settles the question the empty-frame runs could not.** The empty-payload `0xe4` wedged the EC in
+  Runs 1, 2 and 4; the vendor's `0xe4` **with** its argument is answered normally and leaves the keyboard
+  working — exactly as the driver's own nine complete inits do. **The payload, not the opcode, is fatal.**
+  The transport already refuses the empty form (`TestSendRefusesTheFrameThatWedgedTheEC`); this is the
+  live confirmation that the vendor form is safe.
+- The `0xe4` reply, framing only:
+
+  ```
+  e4 2a 00 | 00 03 00 01 bb 20 00 00 00 | <32 bytes WITHHELD> | <checksum>
+             ^^^^^^^^^^^^^^ data-type header, then 0x20 = 32-byte length
+  ```
+
+  The 32-byte field is **a hash of the device PSK** and is deliberately **not reproduced here or anywhere
+  in the repo**, per `CLAUDE.md` and `PLAN.md`. It is `cmd/goodix-pcap`'s and `internal/evtx`'s reason for
+  refusing the `0xe4` body, and the same rule applies to a live run: the bytes were seen on the operator's
+  screen and go no further. What is safe to state is that the reply is well-formed, 41 bytes of message,
+  and declares a 32-byte payload — matching the length the vendor log records (`recvd data cmd-len:
+  0xe4-42`) without its bytes.
+- **Phase 4 steps 1–3 are complete.** The plaintext half of the vendor init — `0xa8`, `0xae`, `0xe4` —
+  now runs live on this hardware with no ill effect. Step 4 (`a2`, `82`, `a6`) is next; `d0` and beyond
+  stay gated on the PSK (Phase 5).
+
 ### Device identity — observed
 
 ```

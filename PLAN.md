@@ -32,7 +32,8 @@ observations there, not here.
   image.
 
 Open work, in order: **Phase 2** (publish — drafted, not posted), **Phase 4** (live plaintext runs, one
-command per run), **Phase 5** (the PSK, then TLS and images).
+command per run — steps 1–3 done 2026-09-20, Runs 5–8; the vendor `0xe4` is confirmed safe and the empty
+form is what wedges the EC), **Phase 5** (the PSK, then TLS and images).
 
 ---
 
@@ -168,11 +169,19 @@ Setup for every run:
 
 Proposed order, one new step per run, always in vendor order, prefix from the vendor sequence:
 
-1. `a8 [00 00]` → expect ACK + `GF_ITE_EC_20063` (known safe with an empty payload).
-2. `+ ae [55 + timestamp]` → expect 20-byte state, no ACK. Tells us whether TLS is still up from Windows.
-3. `+ e4 [03 00 02 bb 00 00 00 00]` → expect ACK + 41 bytes. **This tests the wedge hypothesis.**
-   Only with the external keyboard attached, and only after steps 1–2 passed twice.
-4. `+ a2 [01 14]`, `82 [00 00 00 04 00]`, `a6 [00 00]` → reset, chip ID `0x2504`, OTP.
+1. [x] `a8 [00 00]` → ACK + `GF_ITE_EC_20063`. **Done 2026-09-20, Run 5.**
+2. [x] `+ ae [55 …]` → 20-byte state, no ACK; `Status = 0x02` (TLS still up from Windows).
+   **Done 2026-09-20, Runs 6 and 7.**
+3. [x] `+ e4 [03 00 02 bb 00 00 00 00]` → ACK + 41-byte reply, **keyboard alive**. The wedge hypothesis
+   is confirmed: the empty payload, not the opcode, is fatal. **Done 2026-09-20, Run 8.** The 41-byte
+   reply's 32-byte PSK-hash field was seen on screen and kept out of the repo.
+4. [ ] `+ 82 [00 00 00 04 00]`, `a6 [00 00]` → chip ID `0x2504`, OTP. Both are `ClassSafe` and
+   `--steps`-eligible today (`--bisect --steps a8,ae,82,a6`). **`a6`'s reply is the OTP — secret-bearing
+   (its first 32 bytes are the `sensorid`); withhold it as with `0xe4`.** `a2 [01 14]` (reset) sits
+   before `82` in the vendor order but is `ClassStateChanging`, so it cannot go through `--steps`: sending
+   it needs a deliberate `--allow-a2` path added the way `--allow-e4` was, and a decision on whether the
+   chip-ID read even needs the reset first. That is its own gated sub-decision. **Next up: `82` for the
+   chip ID.**
 5. Stop there. `70`/`98`/`90` configure the sensor, and `d0` starts a handshake we can't finish without
    the PSK. What gates this step has nothing to do with missing bytes — it is live-hardware safety, one
    command per run, and the PSK question beyond `d0`.

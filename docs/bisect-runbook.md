@@ -105,10 +105,11 @@ What is fatal is the **empty payload**, not the opcode. Since then:
 
   The Windows driver sends exactly this in all eight of its inits and gets an ACK plus 41 bytes back.
 
-**This has not been run live.** PLAN.md Phase 4 step 3 plans it, after steps 1 and 2 have passed twice,
-with an external keyboard attached. The expectation is now the **opposite** of what this section used to
-say: an ACK and 41 bytes, and a keyboard that keeps working. A dead keyboard would mean the vendor log is
-not the whole story, so stop and record it.
+**Run live and confirmed — Run 5 through Run 8, 2026-09-20** (see `docs/protocol.md`). Steps 1 and 2
+(`0xa8`, `0xae`) each passed twice, and then Run 8 sent `a8,ae,e4` with the vendor payload: `0xe4`
+returned an ACK and a 41-byte reply, and the internal keyboard stayed alive. The expectation held — the
+payload, not the opcode, is what wedges the EC. The empty form remains refused by the transport, so the
+only `0xe4` that can go out is the vendor one.
 
 The reply carries a hash of the device's PSK. Keep it out of the repo and out of any issue report.
 
