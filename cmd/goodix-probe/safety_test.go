@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -71,21 +72,101 @@ func TestVendorInitPayloadsSatisfyTheirRules(t *testing.T) {
 	}
 }
 
-// TestUploadConfigIsNotAStep guards the one outbound frame in the catalogue
-// whose bytes nobody has: the driver log truncates the 224-byte 0x90 config.
-// Until a Disable/Enable capture on Windows records it, no code may send a
-// guessed one.
+// opUploadConfig is upload_config_mcu. Its 224-byte payload is on record as of
+// 2026-09-20, but it is ClassStateChanging and nothing has ever sent it from
+// Linux, so it stays out of `steps`.
+const opUploadConfig proto.Opcode = 0x90
+
+// uploadConfigLogPrefix is the first 57 payload bytes of the `0x90` frame as
+// the vendor driver's own ETW debug log prints them — the log truncates there,
+// which is why the full config had to come out of gfusb.dll instead.
+//
+// Written here as hex, separately from the byte literal in vendor.go, so the
+// two must be changed together. Be clear about how independent that is: the raw
+// ETW log is not in this repository, so both literals were taken from
+// docs/protocol.md, which records the DLL blob and states that the log agrees
+// with its first 57 bytes. What this constant buys is therefore not a second
+// reading of the log but a second, differently-encoded copy of the same claim:
+// a re-extraction that shifts the window has to justify itself here too.
+const uploadConfigLogPrefix = "7011607100712c9d1cb918d100d100d100ba000180ca000400840015b3860000" +
+	"c4880000ba8a0000b28c0000aa8e0000c19000bbbb9200b1b1"
+
+// TestUploadConfigIsNotAStep keeps `0x90` out of the live sequence. Knowing the
+// bytes is not permission to send them: writing a register script to the MCU is
+// state-changing, and PLAN.md Phase 4 gates it on a live run of its own.
 func TestUploadConfigIsNotAStep(t *testing.T) {
-	const uploadConfig proto.Opcode = 0x90
 	for _, st := range steps {
-		if st.cmd == uploadConfig {
-			t.Fatal("upload_config_mcu is a probe step, but its payload is not on record")
+		if st.cmd == opUploadConfig {
+			t.Fatal("upload_config_mcu is a probe step; it is state-changing and Phase 4 has not cleared it")
 		}
 	}
+}
+
+// TestUploadConfigMatchesTheRecoveredBlob checks the catalogue's `0x90` payload
+// against the three properties docs/protocol.md used to establish it. Each one
+// fails if the 224-byte window extracted from gfusb.dll is off by a byte, so
+// together they are what stops a re-extraction silently shifting.
+func TestUploadConfigMatchesTheRecoveredBlob(t *testing.T) {
+	var payload []byte
+	var found bool
 	for _, st := range vendorInit {
-		if st.cmd == uploadConfig && st.known() {
-			t.Error("vendorInit carries bytes for upload_config_mcu; the driver log truncates them, " +
-				"so any bytes here are invented")
+		if st.cmd == opUploadConfig {
+			payload, found = st.payload, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("vendorInit has no upload_config_mcu entry; the vendor sends one on every init")
+	}
+
+	// 1. Present and exactly 224 bytes. A nil payload here is the old state of
+	// this file, when nobody had the bytes; a different length means the window
+	// moved, and proto's PayloadExactly(224) rule would refuse the frame.
+	if payload == nil {
+		t.Fatal("upload_config_mcu carries no payload; it was recovered on 2026-09-20 (docs/protocol.md)")
+	}
+	if len(payload) != 224 {
+		t.Fatalf("upload_config_mcu payload is %d bytes, want 224", len(payload))
+	}
+
+	// 2. The vendor's message-checksum convention. This is the check that pins
+	// the length: sum over 223 or 225 bytes of the DLL's .rdata does not land
+	// on 0xaa, so an off-by-one extraction cannot pass it.
+	var sum byte
+	for _, b := range payload {
+		sum += b
+	}
+	if sum != 0xaa {
+		t.Errorf("sum(payload) & 0xff = 0x%02x, want 0xaa; the 224-byte window is wrong", sum)
+	}
+
+	// 3. Agreement with the debug log. The log and the DLL are independent
+	// artefacts; if the extracted blob were a different structure that happens
+	// to be 224 bytes and sum to 0xaa, this is what would catch it. It also
+	// catches a shift at the START of the window, which the checksum alone
+	// would not if the shift kept the sum.
+	want, err := hex.DecodeString(uploadConfigLogPrefix)
+	if err != nil {
+		t.Fatalf("uploadConfigLogPrefix is not valid hex: %v", err)
+	}
+	if len(want) != 57 {
+		t.Fatalf("uploadConfigLogPrefix is %d bytes, want the 57 the driver log prints", len(want))
+	}
+	if !bytes.Equal(payload[:57], want) {
+		t.Errorf("the first 57 payload bytes are %x,\nbut the driver log shows %x", payload[:57], want)
+	}
+}
+
+// TestVendorInitPayloadsAreAllOnRecord pins what is new as of 2026-09-20: the
+// whole 14-frame init sequence is known, byte for byte. Until the `0x90` config
+// came out of gfusb.dll, one entry was nil and the code had to work around it
+// everywhere. Reintroducing a nil should cost an argument, not a silent edit.
+func TestVendorInitPayloadsAreAllOnRecord(t *testing.T) {
+	for i, st := range vendorInit {
+		if !st.known() {
+			t.Errorf("vendorInit[%d] %s (0x%02x) has no payload; every vendor frame is on record "+
+				"(docs/protocol.md, \"Init sequence\") and an empty frame is what wedged the EC",
+				i, st.cmd.Name(), byte(st.cmd))
 		}
 	}
 }

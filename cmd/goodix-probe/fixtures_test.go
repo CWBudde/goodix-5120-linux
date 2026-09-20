@@ -21,8 +21,15 @@ import (
 
 // synthetic returns n deterministic bytes for a fixture whose real bytes must
 // never enter this repository: the 0xe4 reply carries a hash of the device PSK,
-// the 0xa6 reply is the OTP, the 0x90 config is unknown, and every 0xb0 pack is
-// TLS ciphertext of a fingerprint image.
+// the 0xa6 reply is the OTP, and every 0xb0 pack is TLS ciphertext of a
+// fingerprint image.
+//
+// The 224-byte 0x90 config used to be on that list, for a different reason — it
+// was unknown rather than secret. It is now real (vendor.go,
+// uploadConfigPayload), and it is the one set of real vendor bytes in the
+// outbound direction here. It may be: it is a register-write script lifted from
+// a shipped driver DLL, not a key, not calibration data unique to this unit,
+// and not biometric. Nothing else in this file gained real bytes.
 //
 // Bytes are SHA-256 of label and a counter, so a fixture is reproducible
 // without depending on any RNG, and two labels can never collide.
@@ -71,20 +78,14 @@ func mcuState(status byte) []byte {
 // Synthetic, and flagged as such wherever it appears:
 //   - the 32-byte hash in the 0xe4 reply (it is a hash of the device PSK)
 //   - the 64-byte OTP in the 0xa6 reply
-//   - the 224-byte 0x90 config, which the driver log truncates, and which is
-//     therefore the one OUTBOUND frame here that is not the vendor's
 //   - the TLS ClientHello after 0xd0
+//
+// Every OUTBOUND frame is now the vendor's own, the 224-byte 0x90 config
+// included: it was recovered from gfusb.dll on 2026-09-20 and no longer needs
+// standing in for.
 func vendorInitScript() []transport.Exchange {
-	req := func(i int) step {
-		st := vendorInit[i]
-		if !st.known() {
-			// 0x90: nobody has these bytes. The fixture says so by name.
-			st.payload = synthetic("90-config", 224)
-		}
-		return st
-	}
 	ex := func(i int, responses ...[]byte) transport.Exchange {
-		st := req(i)
+		st := vendorInit[i]
 		return transport.Exchange{Cmd: st.cmd, Payload: st.payload, Responses: responses}
 	}
 
@@ -306,8 +307,14 @@ func TestFixtureEventsDecode(t *testing.T) {
 }
 
 // TestSyntheticIsDeterministicAndDistinct is what lets a reviewer trust the
-// "no real bytes" claim: a fixture region either equals synthetic(label, n) or
-// it does not, and a pasted real secret would fail that check.
+// "no secret bytes" claim: a fixture region either equals synthetic(label, n)
+// or it does not, and a pasted real secret would fail that check.
+//
+// The claim is no longer "no real bytes". Since 2026-09-20 one region IS the
+// vendor's: the 224-byte 0x90 config in vendorInitScript, taken from vendor.go.
+// It is a register-write script out of a shipped DLL — not a key, not the OTP,
+// not biometric — so it is safe to hold, and the checks below still cover
+// everything that is not: the 0xe4 PSK hash, the 0xa6 OTP and the TLS records.
 func TestSyntheticIsDeterministicAndDistinct(t *testing.T) {
 	if !bytes.Equal(synthetic("a6-otp", 64), synthetic("a6-otp", 64)) {
 		t.Error("synthetic is not deterministic")
@@ -317,6 +324,30 @@ func TestSyntheticIsDeterministicAndDistinct(t *testing.T) {
 	}
 	if n := len(synthetic("image-1", 7744)); n != 7744 {
 		t.Errorf("synthetic returned %d bytes, want 7744", n)
+	}
+}
+
+// TestVendorInitScriptSendsTheRealConfig pins the one deliberate exception to
+// the synthetic rule. The script's outbound 0x90 frame must be vendor.go's
+// recovered blob, not a stand-in: --replay is the only place the full init is
+// exercised end to end, and a placeholder there would mean the framing of the
+// largest frame in the sequence was never actually tested.
+func TestVendorInitScriptSendsTheRealConfig(t *testing.T) {
+	var got []byte
+	for _, ex := range vendorInitScript() {
+		if ex.Cmd == 0x90 {
+			got = ex.Payload
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("vendorInitScript has no 0x90 exchange")
+	}
+	if !bytes.Equal(got, uploadConfigPayload) {
+		t.Error("the script's 0x90 payload is not vendor.go's recovered config")
+	}
+	if bytes.Equal(got, synthetic("90-config", 224)) {
+		t.Error("the script still substitutes synthetic bytes for the 0x90 config")
 	}
 }
 
