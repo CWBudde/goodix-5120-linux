@@ -172,8 +172,19 @@ and bridge the decrypted stream to the device. Handshake outline per upstream:
 Subsequent image data uses alternating encrypted/unencrypted `0x3f0`-byte blocks with HMAC-SHA256
 authentication.
 
-PSK provenance varies across the family — sealed (hardware-specific), white-box, or all-zero. Which
-applies to this 5120 is **unknown** and is a Tier 2 question.
+PSK provenance varies across the family — sealed (hardware-specific), white-box, or all-zero. This 5120
+uses a **sealed, hardware-specific** key: Windows provisioned a random 32-byte PSK and sealed it with
+DPAPI in `Goodix_Cache.bin`. It has been recovered offline; see
+[`dpapi-runbook.md`](dpapi-runbook.md).
+
+**Confirmed offline (2026-09-20).** The suite the family uses, `PSK-AES128-CBC-SHA256` (`0x00ae`,
+`TLS_PSK_WITH_AES_128_CBC_SHA256`), is offered by this machine's openssl (3.5.5) and negotiates at the
+default security level with exactly the `s_server` line above — no `@SECLEVEL=0` needed here.
+`internal/tlspsk` drives that subprocess as the **server** (the device is the client); `Config.Cipher`
+is an optional override for distributions that drop legacy CBC PSK suites, and `TestNegotiatesDeviceSuite`
+pins the negotiation. The recovered device PSK reaches `Config.PSK` through `tlspsk.LoadPSK` (raw key file)
+or `tlspsk.ParsePSKHex`. What stays unverified is only what a live handshake settles: whether the EC
+accepts that PSK, and the exact record framing over `d0`.
 
 ## Open questions
 
@@ -186,7 +197,7 @@ kept, struck, because knowing a question *is* settled is worth as much as the an
 | ~~Firmware version string~~ | **Resolved** — `GF_ITE_EC_20063`, via `0xa8` |
 | ~~Sensor resolution~~ | **Resolved — 80 × 64**, from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
 | ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
-| PSK variant | **Open, and the wall.** The transcribed upstream key is not this device's: Windows provisioned a random PSK and sealed it (`Goodix_Cache.bin`, DPAPI). Whether the 5120 accepts the upstream key is unverified |
+| PSK variant | **The device key is recovered; acceptance is the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Whether the EC accepts it is unverified until the live `d0` handshake (Phase 5b) |
 | What the 224-byte `0x90` config actually *does* | **Open.** The bytes are known and the entry structure is a reasonable reading, but no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
 
 ## Image sample packing (transcribed, `tool.py::decode_image`)
@@ -204,6 +215,11 @@ s3 =  b4        << 4  | b5 >> 4
 
 Corroborated by arithmetic: `driver_51x0.py` reads 10573 bytes, strips an 8-byte header and 5-byte
 trailer, leaving 10560 payload bytes; 80 x 88 = 7040 samples, and 7040 / 4 * 6 = 10560 exactly.
+
+`internal/image.Decode12BitRaw` implements this exact layout, guarded by a pack→unpack round-trip test
+(`image_test.go`). For **this** part at 80 × 64 the payload is 5120 samples = **7680 bytes exactly**
+(`5120 / 4 * 6`); the decoder is verified in code but still unconfirmed against a real 5120 plaintext,
+which the live capture in Phase 5c will settle. See "How big is an image, really".
 
 ## PSK provenance (transcribed)
 
