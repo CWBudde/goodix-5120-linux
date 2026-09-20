@@ -31,8 +31,19 @@ interface 1   bInterfaceClass 10  CDC Data
 
 Also observed:
 
+- **The link negotiates Full Speed, 12 Mbit/s** (observed 2026-09-20), despite `bcdUSB 2.00`. With
+  64-byte bulk packets that is ~1.2 MB/s at best, so a 7749-byte image pack needs at least ~6.5 ms on
+  the wire and realistically more. Any imaging frame rate is bounded by this before software matters.
+  Arithmetic, not measured — neither capture is on disk any more.
+- **`bmAttributes 0x60` in the configuration descriptor is malformed**: bit 7 is reserved and must
+  always be set. The device reports Self Powered + Remote Wakeup without it, and `lsusb` flags it
+  ("Missing must-be-set bit!"). Harmless, but a plain spec violation in the descriptor.
+- **Remote Wakeup is set**, consistent with the driver log's "resume from S0 idle" transitions.
+- The device presents as **CDC ACM**, but the payload is not serial — the class is a wrapper around the
+  bulk pair. Interface 0's interrupt endpoint `0x82` has never been observed carrying anything.
 - No kernel driver bound to either interface — no `/dev/ttyACM*`, and the `driver` symlinks under
-  `/sys/bus/usb/devices/1-4:1.{0,1}/` do not resolve.
+  `/sys/bus/usb/devices/1-4:1.{0,1}/` do not resolve. That is this machine; `cdc_acm` binding is a
+  plausible outcome elsewhere, which is why `internal/transport` enables libusb auto-detach.
 - No `/dev/spidev*` on this system, which is why the upstream `run_5120_spi.py` path is inapplicable.
 - Unprivileged `OpenDevices()` fails with `libusb: bad access [code -3]` (`LIBUSB_ERROR_ACCESS`).
   The device is present; only permission is missing.

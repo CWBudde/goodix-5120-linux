@@ -89,8 +89,9 @@ them are security material.
 4. ~~**Board identifier.**~~ **Resolved 2026-09-20 from DMI:** `product_name=HVY-WXX9`,
    `board_name=HVY-WXX9-PCB`, `board_version=M1060`. Not a contradiction — two different DMI fields,
    loosely labelled. The drafts use the product name, which is the one a reader can match against.
-5. **The full `lsusb -v` dump.** This repository holds only the abridged descriptor fields, not a
-   verbatim dump. Draft B has a marked placeholder for it. Do not invent one — paste the real output.
+5. ~~**The full `lsusb -v` dump.**~~ **Done 2026-09-20** — the real unprivileged output is in Draft B,
+   verbatim. It agrees with the abridged fields this repository already held, and added three facts
+   nobody had recorded: Full Speed negotiation, the malformed `bmAttributes 0x60`, and Remote Wakeup.
 6. **The public repository.** `PLAN.md` lists pushing this repository publicly as optional. Both drafts
    mention it as something that *may* follow and carry a placeholder for the URL. If the repository is
    not going to be published, delete those lines rather than leaving a dangling promise.
@@ -106,6 +107,7 @@ them are security material.
       master-key GUID.
 - [ ] No OTP bytes, including the ASCII prefix, and no `0x98` DAC values unless item 1 above is decided.
 - [ ] No capture files attached, and nothing derived from a fingerprint image.
+- [x] Draft B carries a real `lsusb -v` dump, not a reconstruction.
 - [ ] Cross-links between the two posts filled in once the first one has a URL.
 - [ ] Dates, counts and the recovery procedure re-read against `docs/protocol.md` — they have drifted
       in this repository before (see the report accompanying this file).
@@ -548,8 +550,109 @@ interface 1   bInterfaceClass 10  CDC Data
               EP 0x83 IN      wMaxPacketSize 0x0040   bulk
 ```
 
-> **[PLACEHOLDER — full `lsusb -v -d 27c6:5120` output goes here. Paste the real dump; do not
-> reconstruct it. Delete this marker before posting.]**
+**Full `lsusb -v -d 27c6:5120`** (observed, 2026-09-20; run unprivileged, so the string descriptors are not read — that is the "Couldn't open device" line, not a device fault):
+
+```
+Bus 001 Device 003: ID 27c6:5120 Shenzhen Goodix Technology Co.,Ltd. Unknow device
+Couldn't open device, some information will be missing
+Negotiated speed: Full Speed (12Mbps)
+Device Descriptor:
+  bLength                18
+  bDescriptorType         1
+  bcdUSB               2.00
+  bDeviceClass            2 Communications
+  bDeviceSubClass         1 Direct Line
+  bDeviceProtocol         1 
+  bMaxPacketSize0        64
+  idVendor           0x27c6 Shenzhen Goodix Technology Co.,Ltd.
+  idProduct          0x5120 Unknow device
+  bcdDevice            2.00
+  iManufacturer           1 
+  iProduct                2 Unknow device
+  iSerial                 0 
+  bNumConfigurations      1
+  Configuration Descriptor:
+    bLength                 9
+    bDescriptorType         2
+    wTotalLength       0x0043
+    bNumInterfaces          2
+    bConfigurationValue     1
+    iConfiguration          0 
+    bmAttributes         0x60
+      (Missing must-be-set bit!)
+      Self Powered
+      Remote Wakeup
+    MaxPower              100mA
+    Interface Descriptor:
+      bLength                 9
+      bDescriptorType         4
+      bInterfaceNumber        0
+      bAlternateSetting       0
+      bNumEndpoints           1
+      bInterfaceClass         2 Communications
+      bInterfaceSubClass      1 Direct Line
+      bInterfaceProtocol      1 
+      iInterface              0 
+      CDC Header:
+        bcdCDC               1.10
+      CDC Call Management:
+        bmCapabilities       0x00
+        bDataInterface          1
+      CDC ACM:
+        bmCapabilities       0x02
+          line coding and serial state
+      CDC Union:
+        bMasterInterface        0
+        bSlaveInterface         1 
+      Endpoint Descriptor:
+        bLength                 7
+        bDescriptorType         5
+        bEndpointAddress     0x82  EP 2 IN
+        bmAttributes            3
+          Transfer Type            Interrupt
+          Synch Type               None
+          Usage Type               Data
+        wMaxPacketSize     0x0008  1x 8 bytes
+        bInterval              16
+    Interface Descriptor:
+      bLength                 9
+      bDescriptorType         4
+      bInterfaceNumber        1
+      bAlternateSetting       0
+      bNumEndpoints           2
+      bInterfaceClass        10 CDC Data
+      bInterfaceSubClass      0 [unknown]
+      bInterfaceProtocol      0 
+      iInterface              0 
+      Endpoint Descriptor:
+        bLength                 7
+        bDescriptorType         5
+        bEndpointAddress     0x01  EP 1 OUT
+        bmAttributes            2
+          Transfer Type            Bulk
+          Synch Type               None
+          Usage Type               Data
+        wMaxPacketSize     0x0040  1x 64 bytes
+        bInterval               0
+      Endpoint Descriptor:
+        bLength                 7
+        bDescriptorType         5
+        bEndpointAddress     0x83  EP 3 IN
+        bmAttributes            2
+          Transfer Type            Bulk
+          Synch Type               None
+          Usage Type               Data
+        wMaxPacketSize     0x0040  1x 64 bytes
+        bInterval               0
+```
+
+Three things in there are worth a driver author's attention:
+
+- **It negotiates Full Speed, 12 Mbit/s** — not High Speed, despite `bcdUSB 2.00`. With 64-byte bulk packets that caps the link at roughly 1.2 MB/s in theory, so a 7749-byte image pack cannot cross the wire in less than about 6.5 ms, and in practice rather more. That bounds any imaging loop before anything in software does. (arithmetic, not measured — the capture used for the frame counts is no longer on disk)
+- **`bmAttributes 0x60` is malformed.** Bit 7 is reserved and must always be set; this device reports Self Powered and Remote Wakeup without it, which is why `lsusb` prints "Missing must-be-set bit!". Harmless in practice, but it is a straightforward spec violation in the descriptor and a fair indication of how carefully the firmware was written.
+- **Remote Wakeup is set**, which fits the driver log's "resume from S0 idle" transitions: the device is expected to wake the host, and a driver that suspends it should expect it back.
+
+The device presents as **CDC ACM** — a USB serial port — but nothing about the payload is serial; the class is a wrapper. On this machine no kernel driver binds either interface and no `/dev/ttyACM*` appears, so libusb can claim interface 1 directly. Do not rely on that: `cdc_acm` binding is a plausible outcome on another kernel or with different udev rules, and a driver should be prepared to detach it.
 
 The internal keyboard is a separate Linux device — `AT Translated Set 2 keyboard` on `isa0060/serio0`,
 through `i8042`/`atkbd` — and that is precisely the point: it is a different host interface into the
