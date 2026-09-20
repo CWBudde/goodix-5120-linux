@@ -31,9 +31,11 @@ observations there, not here.
   with DPAPI in `Goodix_Cache.bin` and stored in the EC. Without it: everything up to `d0`, and not one
   image.
 
-Open work, in order: **Phase 2** (publish — drafted, not posted), **Phase 4** (live plaintext runs, one
-command per run — steps 1–3 done 2026-09-20, Runs 5–8; the vendor `0xe4` is confirmed safe and the empty
-form is what wedges the EC), **Phase 5** (the PSK, then TLS and images).
+Open work, in order: **Phase 2** (publish — drafted, not posted), **Phase 5** (the PSK, then TLS and
+images). **Phase 4 is complete through its planned plaintext extent** (steps 1–4, Runs 5–10,
+2026-09-20): every safe frame of the vendor init — `a8`, `ae`, `e4`, `a2`, `82`, `a6` — runs live on this
+hardware with no ill effect, the vendor `0xe4` is confirmed safe (the empty form is what wedges the EC),
+and the chip ID `0x2504` is confirmed from the device. Everything past `d0` is PSK-blocked.
 
 ---
 
@@ -175,15 +177,12 @@ Proposed order, one new step per run, always in vendor order, prefix from the ve
 3. [x] `+ e4 [03 00 02 bb 00 00 00 00]` → ACK + 41-byte reply, **keyboard alive**. The wedge hypothesis
    is confirmed: the empty payload, not the opcode, is fatal. **Done 2026-09-20, Run 8.** The 41-byte
    reply's 32-byte PSK-hash field was seen on screen and kept out of the repo.
-4. [~] `+ a2 [01 14]`, `82 [00 00 00 04 00]`, `a6 [00 00]` → reset, chip ID `0x2504`, OTP.
-   - Run 9 (2026-09-20) sent `82` alone and read `01 00 80 1b`, not the chip ID: the register is populated
-     by the `a2` reset that precedes it in the vendor order.
-   - `--allow-a2` was added 2026-09-20 (mirrors `--allow-e4`; `a2` is `ClassStateChanging`, admitted only
-     with the flag and only as a step, sent with the vendor payload `01 14`). Run it as
-     `sudo ./goodix-probe --bisect --allow-a2 --steps a8,ae,a2,82,a6`; the following `82` should read
-     `a2 04 25 00` = `0x2504`.
-   - **`a6`'s reply is the OTP — secret-bearing (first 32 bytes are the `sensorid`); withhold it as with
-     `0xe4`.** **Awaiting the live run.**
+4. [x] `+ a2 [01 14]`, `82 [00 00 00 04 00]`, `a6 [00 00]` → reset, chip ID `0x2504`, OTP.
+   **Done 2026-09-20, Run 10** (`--bisect --allow-a2 --steps a8,ae,a2,82,a6`). With the `a2` reset ahead of
+   it, `82` read `a2 04 25 00` = chip ID **`0x2504`** live (Run 9 without the reset read `01 00 80 1b`).
+   `a2` reset returned ACK + `01 00 08`, keyboard alive. `a6` returned a 64-byte OTP beginning `S2A755.`,
+   matching the Windows log; the `sensorid` was withheld from the repo. `--allow-a2` was added the same day
+   (mirrors `--allow-e4`).
 5. Stop there. `70`/`98`/`90` configure the sensor, and `d0` starts a handshake we can't finish without
    the PSK. What gates this step has nothing to do with missing bytes — it is live-hardware safety, one
    command per run, and the PSK question beyond `d0`.
@@ -222,7 +221,8 @@ Then:
 ## Recommended order
 
 1. **Phase 2:** post the two drafts.
-2. **Phase 4:** steps 1–4 above, one command per run, external keyboard attached.
+2. ~~**Phase 4:** steps 1–4, one command per run, external keyboard attached.~~ **Done 2026-09-20,
+   Runs 5–10.**
 3. **Phase 5**, only once the PSK question has an answer.
 
 Optional and blocking nothing: the init capture in Phase 3.

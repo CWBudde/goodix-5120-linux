@@ -478,6 +478,45 @@ step          TX                                       RX (data)              ke
   confirmed safe but reads a pre-reset value, not `0x2504`.
 - The `0xa8` and `0xae` replies were identical to Runs 6–8 (`0xae` still `Status = 0x02`, TLS up).
 
+### Run 10 — 2026-09-20 13:08, `sudo ./goodix-probe --bisect --allow-a2 --steps a8,ae,a2,82,a6` (observed)
+
+Phase 4 step 4, complete: attach, `0xa8`, `0xae`, then the reset `0xa2` (admitted by the new
+`--allow-a2`), the chip-ID read `0x82`, and the OTP read `0xa6`. Run by the user with an external keyboard
+attached. No usbmon capture. **Result: the internal keyboard stayed alive after every step, and with the
+reset ahead of it the chip-ID read returned `0x2504` — the value Run 9 could not get without the reset.**
+
+```
+step          TX                                       RX (data)            keyboard
+1 0xa8        a8 03 00 00 00 …                         "GF_ITE_EC_20063"    alive
+2 0xae        ae 06 00 55 a2 52 00 00 …                02 02 31 … 10 10     alive
+3 0xa2 reset  a2 03 00 01 14 …                         ACK + 01 00 08       alive
+4 0x82        82 06 00 00 00 00 04 00 …                a2 04 25 00          alive
+5 0xa6 OTP    a6 03 00 00 00 …                         S2A755. + [WITHHELD] alive
+```
+
+Counters: i8042 `irq1` 6429 → 6442, EC refreshes 0 → 30, sensor enumerated throughout.
+
+- **`0xa2` reset is safe on this device.** ACK `a2/01`, then a 3-byte data reply `01 00 08` — byte-identical
+  to the vendor log's reset reply (`docs/protocol.md`, init step 5). Keyboard alive.
+- **`0x82` now reads the chip ID `0x2504`.** The reply data is `a2 04 25 00`; bytes 1–2 (`04 25` LE) are
+  `0x2504`, exactly the vendor value. Run 9 read `01 00 80 1b` from the same command **without** the reset;
+  this run adds the reset and gets `0x2504`, confirming live that **the chip-ID register is populated by
+  the `a2` reset**. The sensor part is now identified from the device itself, not only the driver log —
+  which independently backs the 80 × 64 geometry (see "How big is an image, really").
+- **`0xa6` returned a 64-byte OTP.** It begins with the ASCII prefix `53 32 41 37 35 35 2e` = **"S2A755."**,
+  matching the `sensorid` prefix already documented from the Windows log. **The rest of the OTP — the
+  `sensorid` proper — is deliberately not reproduced here or anywhere in the repo**, the same rule applied
+  to the `0xe4` PSK hash: the bytes were seen on the operator's screen and go no further. What is safe to
+  state is that the reply is well-formed, 64 bytes, and its public prefix matches the log, so the live OTP
+  and the captured OTP are the same device.
+- The reset ran between `0xae` (which reported TLS still up) and the later reads; whether it dropped the
+  EC's TLS session was not re-checked (no second `0xae` after it). It can be measured later if it matters.
+
+**Phase 4 is complete through its planned plaintext extent** (steps 1–4, Runs 5–10). Every safe frame of
+the vendor init — `a8`, `ae`, `e4`, `a2`, `82`, `a6` — now runs live on this hardware with no ill effect.
+Step 5 stops here by design: `70`/`98`/`90` configure the sensor and `d0` starts the TLS handshake, which
+cannot complete without the PSK (Phase 5).
+
 ### Device identity — observed
 
 ```
