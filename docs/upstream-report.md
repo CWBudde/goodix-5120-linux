@@ -60,10 +60,12 @@ extracted from Goodix's Windows drivers, so this is an established norm there ra
 **This is a considered position, not legal advice**, and it was not written by a lawyer. It is recorded
 so that anyone accepting the contribution can see what it is based on and reach their own view.
 
-**Consequence for the repository.** `cmd/goodix-probe/vendor.go` carries these bytes, so publishing the
-repository would publish them too. That objection to the optional "push this repo publicly" item in
-`PLAN.md` is therefore removed — but whether to publish the repository is still a separate call, and
-has not been made here.
+**Consequence for the repository — and a correction.** `cmd/goodix-probe/vendor.go` carries these
+bytes, and the repository **was already public** at `https://github.com/CWBudde/goodix-5120-linux` when they
+were committed, with auto-push on commit. So they went public at commit time, before this decision was
+recorded rather than after it. The decision above ratifies that; it did not gate it. Anyone reasoning
+about this repository should start from "everything committed is already published", not from "this
+may be published later".
 
 **Still withheld, on grounds that have nothing to do with copyright:** the `0xe4` PSK hash, every byte
 of `Goodix_Cache.bin`, the DPAPI master-key GUID, the OTP, and the OTP-derived `0x98` DAC values. Those
@@ -92,9 +94,9 @@ them are security material.
 5. ~~**The full `lsusb -v` dump.**~~ **Done 2026-09-20** — the real unprivileged output is in Draft B,
    verbatim. It agrees with the abridged fields this repository already held, and added three facts
    nobody had recorded: Full Speed negotiation, the malformed `bmAttributes 0x60`, and Remote Wakeup.
-6. **The public repository.** `PLAN.md` lists pushing this repository publicly as optional. Both drafts
-   mention it as something that *may* follow and carry a placeholder for the URL. If the repository is
-   not going to be published, delete those lines rather than leaving a dangling promise.
+6. ~~**The public repository.**~~ **Resolved: it is already public** —
+   https://github.com/CWBudde/goodix-5120-linux, since 2026-08-17. Both drafts can link it
+   directly; the "may follow" hedging and the URL placeholders should be replaced with the real link.
 7. **Contact and attribution.** Neither draft signs itself or offers a way to reach the author. Add
    whatever is appropriate for each tracker.
 
@@ -442,8 +444,9 @@ laptop".
 
 A parallel report goes to the libfprint tracker with the same device facts framed for a driver author:
 **[PLACEHOLDER — libfprint issue URL once Draft B is posted]**.
-**[OPTIONAL PLACEHOLDER — link to the public repository, if it is published; otherwise delete this
-sentence.]**
+All of the offline tooling behind this report — the protocol notes, the USBPcap reader and the
+payload-rule enforcement that makes the `0xe4` frame unsendable — is at
+<https://github.com/CWBudde/goodix-5120-linux>.
 
 ---
 ---
@@ -807,8 +810,9 @@ sealed blob, no OTP bytes and no capture files are included, here or anywhere th
 
 A companion report with the full frame-by-frame protocol detail goes to the `goodix-fp-dump` project:
 **[PLACEHOLDER — goodix-fp-dump issue URL once Draft A is posted]**.
-**[OPTIONAL PLACEHOLDER — link to the public repository, if it is published; otherwise delete this
-sentence.]**
+All of the offline tooling behind this report — the protocol notes, the USBPcap reader and the
+payload-rule enforcement that makes the `0xe4` frame unsendable — is at
+<https://github.com/CWBudde/goodix-5120-linux>.
 
 ---
 ---

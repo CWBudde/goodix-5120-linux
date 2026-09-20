@@ -85,8 +85,11 @@ both are the repository owner's call, not a technical blocker:
       power cycle that recovers it, and "no `nop` on ITE EC parts".
 - [ ] Comment on or open an issue at the [libfprint tracker][issues] with the same device facts, the
       `lsusb -v` descriptor, the vendor init sequence (plaintext part, no PSK material) and the warning.
-- [ ] Optional: push this repo publicly and link it from both. The `0x90` objection to this is gone —
-      the decision above covers the bytes `vendor.go` carries — but this remains a separate call.
+- [x] ~~Optional: push this repo publicly~~ — **it already is, and has been since 2026-08-17.**
+      `https://github.com/CWBudde/goodix-5120-linux` is public (`"private": false`), and the
+      working copy auto-pushes on commit, so every commit has been world-readable from the moment it
+      was made. This was never an open decision; treating it as one was an error. Link it from both
+      drafts.
 - [x] Ask upstream whether anyone has seen an `ITE_EC` firmware string on other Goodix parts, and
       whether anyone has unsealed a Windows-provisioned PSK (`Goodix_Cache.bin`) before. *(Carried into
       both drafts as questions; asked when they are posted.)*
