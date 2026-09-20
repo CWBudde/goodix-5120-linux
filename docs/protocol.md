@@ -365,6 +365,44 @@ baseline      —                                  —                          
   healthy baseline for the runs to come.
 - Attach and the vendor `0xa8` are safe on this device. Phase 4 step 1 passed; step 2 adds `0xae`.
 
+### Run 6 — 2026-09-20 12:43, `sudo ./goodix-probe --bisect --steps a8,ae` (observed)
+
+Phase 4 step 2: attach, `0xa8`, then the first live `0xae` (`get_mcu_state`) with the vendor payload
+`55 a2 52 00 00`. Run by the user with an external keyboard attached. No usbmon capture. **Result: the
+internal keyboard stayed alive after every step.**
+
+```
+step          TX                                    RX                                              keyboard
+baseline      —                                     —                                              alive
+0 attach      —                                     nothing (5 s drain)                            alive
+1 0xa8        a0 06 00 a6 a8 03 00 00 00 ff         ACK a8/01, then "GF_ITE_EC_20063"              alive
+2 0xae        a0 09 00 a9 ae 06 00 55 a2 52 00 00…  no ACK, 20-byte state (below)                  alive
+```
+
+Counters: i8042 `irq1` 4881 → 4887, EC refreshes 0 → 15, sensor enumerated throughout.
+
+The `0xae` reply, decoded by `proto.DecodeMCUState`:
+
+```
+02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 10 10
+^^ Version 0x02
+   ^^ Status 0x02  -> TLSConnected = true, POVImageValid = false
+                                             ^^^^^ trailing counter (captures showed 04 04)
+```
+
+- **`0xae` answers directly, with no ACK** — the first live confirmation of the receive-without-ACK path
+  the code already handled for this opcode.
+- **`Status = 0x02` means TLS is still up in the EC**, carried over from a prior Windows session across the
+  reboot into Linux. This is the same `isTlsConnected` short-circuit the vendor driver relies on: the EC
+  retains its TLS session across power/OS cycles. We do not hold the session keys, so the flag is an
+  observation, not something we can ride — but it confirms the EC's TLS state is persistent, which bears
+  on Phase 5.
+- **Bytes 0–17 are byte-identical to the steady-state reply in both Windows captures** (`dump.pcapng`,
+  `restart.pcapng`); only the trailing 2-byte counter differs (`10 10` here vs `04 04` there), exactly the
+  one field `docs/protocol.md` predicted would vary.
+
+Phase 4 steps 1 and 2 have now both passed live. `0xae` is safe on this device.
+
 ### Device identity — observed
 
 ```
