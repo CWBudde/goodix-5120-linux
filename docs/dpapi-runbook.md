@@ -95,3 +95,33 @@ The open Phase 5 decision is therefore between **(a)** finishing that derivation
 option 2 — reading the PSK or the entropy from the running Windows driver, which reconstructs the entropy itself
 and sidesteps the derivation. Once the entropy bytes are known by either route, `goodix-dpapi -entropy HEX`
 completes the unseal in one step; the whole DPAPI chain up to that point is done and verified.
+
+### Derivation recovered, PSK unsealed (2026-09-20)
+
+`generate_entropy2` was then read out of the disassembly in full. It takes the 8-byte seed and produces the
+48-byte entropy:
+
+```
+root    = SHA256(seed)                          // seed = 8 bytes
+entropy = root[16:32] || SHA256(root[0:16] || K)   // 48 bytes
+```
+
+`K` is a fixed 16-byte key folded from three 16-byte `.data` constants (`0x312cb0`/`0x312cc0`/`0x312cd0`):
+`K[0:8] = C0[0:8] ^ C1[0:8] ^ C0[8:16]` and `K[8:16] = C1[8:16] ^ C2[8:16] ^ C2[0:8]`. The hash is SHA-256,
+confirmed by the routine's own "Calculate SHA256 FAILED" string. The 8-byte seed is generated once at seal time
+and **stored as the 8 bytes trailing the DPAPI blob in the cache file**; on read those same bytes are expanded
+back into the entropy. That is why the file has exactly 8 trailing bytes, and why passing them raw as entropy
+failed — they are the seed, not the entropy.
+
+`internal/dpapi/goodix.go` reproduces this (the three constants are kept verbatim, so `K` is auditable against
+the binary), and `goodix-dpapi -goodix` reads the trailing seed, derives the entropy and unseals in one step:
+
+```sh
+./goodix-dpapi -sys … -sec … -mkdir … \
+  -blob /mnt/Windows/ProgramData/Goodix/Goodix_Cache.bin -goodix -out captures/goodix-psk.bin
+```
+
+**Result: the cache unseals to a 32-byte plaintext, HMAC-verified — the device PSK.** Phase 5 option 1 is
+complete: the TLS-PSK is recoverable offline from the machine's own files, non-destructively, with Windows Hello
+untouched. The PSK, the 8-byte seed and the boot key are machine-specific secrets, kept out of the repository
+(the PSK lands only in gitignored `captures/`); `K` and the derivation are vendor constants and are in the code.

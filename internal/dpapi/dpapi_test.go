@@ -2,6 +2,7 @@ package dpapi
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -36,6 +37,29 @@ func TestBootKeyPermutation(t *testing.T) {
 func TestBootKeyRejectsNonHex(t *testing.T) {
 	if _, err := BootKey("zzzzzzzz", "04050607", "08090a0b", "0c0d0e0f"); err == nil {
 		t.Fatal("expected error for non-hex class name")
+	}
+}
+
+func TestGoodixEntropy(t *testing.T) {
+	// K is folded from the three gfusb.dll .data constants; it is a vendor
+	// constant, not machine data. A synthetic seed exercises the derivation
+	// structurally, without embedding any real machine secret.
+	k := goodixEntropyKey()
+	if got := hex.EncodeToString(k[:]); got != "04e0b0f3f5598417dde298e467c795f7" {
+		t.Fatalf("folded key K = %s", got)
+	}
+	seed := []byte{0, 1, 2, 3, 4, 5, 6, 7} // arbitrary, not a real seed
+	ent := GoodixCacheEntropy(seed)
+	if len(ent) != 48 {
+		t.Fatalf("entropy length = %d, want 48", len(ent))
+	}
+	root := sha256.Sum256(seed)
+	if !bytes.Equal(ent[:16], root[16:32]) {
+		t.Fatal("entropy[:16] should be SHA256(seed)[16:32]")
+	}
+	h := sha256.Sum256(append(append([]byte(nil), root[:16]...), k[:]...))
+	if !bytes.Equal(ent[16:], h[:]) {
+		t.Fatal("entropy[16:] should be SHA256(SHA256(seed)[:16] || K)")
 	}
 }
 

@@ -37,6 +37,7 @@ func main() {
 		mkPath   = flag.String("mk", "", "path to the master-key file matching the blob's GUID")
 		mkDir    = flag.String("mkdir", "", "directory of master-key files; the one matching the blob's GUID is chosen (alternative to -mk)")
 		entropy  = flag.String("entropy", "", "optional secondary entropy, as hex")
+		goodix   = flag.Bool("goodix", false, "derive the secondary entropy from the cache's 8-byte trailing seed the way gfusb.dll's generate_entropy2 does (for Goodix_Cache.bin)")
 		out      = flag.String("out", "", "write the recovered plaintext (raw bytes) to this file; keep it out of the repo")
 		printPSK = flag.Bool("print-psk", false, "print the recovered plaintext in hex to stdout (a secret; off by default)")
 	)
@@ -46,13 +47,13 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(*sysPath, *secPath, *blobPath, *mkPath, *mkDir, *entropy, *out, *printPSK); err != nil {
+	if err := run(*sysPath, *secPath, *blobPath, *mkPath, *mkDir, *entropy, *goodix, *out, *printPSK); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(sysPath, secPath, blobPath, mkPath, mkDir, entropyHex, out string, printPSK bool) error {
+func run(sysPath, secPath, blobPath, mkPath, mkDir, entropyHex string, goodix bool, out string, printPSK bool) error {
 	// 1. Parse the blob first, so we know which master key to use.
 	blobBytes, err := os.ReadFile(blobPath)
 	if err != nil {
@@ -74,6 +75,17 @@ func run(sysPath, secPath, blobPath, mkPath, mkDir, entropyHex, out string, prin
 		if err != nil {
 			return fmt.Errorf("bad -entropy hex: %w", err)
 		}
+	}
+	if goodix {
+		if entropy != nil {
+			return fmt.Errorf("use either -goodix or -entropy, not both")
+		}
+		seed := blobBytes[blob.SealedLen:]
+		if len(seed) != 8 {
+			return fmt.Errorf("-goodix expects 8 trailing seed bytes after the blob, found %d", len(seed))
+		}
+		entropy = dpapi.GoodixCacheEntropy(seed)
+		fmt.Printf("goodix:     derived 48-byte entropy from the %d-byte trailing seed\n", len(seed))
 	}
 
 	// 2. Boot key from the SYSTEM hive.

@@ -343,6 +343,11 @@ type Blob struct {
 	data          []byte
 	sign          []byte
 	toSign        []byte // rawData[20 : end-of-Data], the region the Sign covers
+
+	// SealedLen is the number of bytes the DPAPI blob itself occupies. Any
+	// bytes after it in the file are a container's own trailer — for
+	// Goodix_Cache.bin, the 8-byte entropy seed.
+	SealedLen int
 }
 
 // ParseBlob parses a CryptProtectData blob.
@@ -371,7 +376,9 @@ func ParseBlob(b []byte) (*Blob, error) {
 	if signedEnd < 20 {
 		return nil, errors.New("dpapi: blob shorter than its header")
 	}
+	sealedLen := r.pos
 	return &Blob{
+		SealedLen: sealedLen,
 		MasterKeyGUID: guidString(mkGUID),
 		Description:   decodeUTF16(desc),
 		cryptAlgo:     cryptAlgo,
