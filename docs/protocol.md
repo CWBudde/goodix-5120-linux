@@ -341,6 +341,30 @@ Consequence: the empty-payload `0xe4` has now killed the internal keyboard three
 is the only frame ever shown to do so. The vendor's `0xe4` **with** its 8-byte argument is answered
 normally in all nine complete driver inits, so the payload — not the opcode — is what the EC cannot survive.
 
+### Run 5 — 2026-09-20 12:41, `sudo ./goodix-probe --bisect` (observed)
+
+Phase 4 step 1: the first live run since the payload rules landed and `nop` was dropped, so the default
+bisect is now attach + `0xa8` only (steps `a8`). Run by the user with an external keyboard attached. No
+usbmon capture. **Result: the internal keyboard stayed alive after every step.**
+
+```
+step          TX                                 RX                                        i8042 irq1  ec refr  keyboard
+baseline      —                                  —                                         4838        0        alive
+0 attach      —                                  nothing (5 s drain)                       4841        4        alive
+1 0xa8        a0 06 00 a6 a8 03 00 00 00 ff      ACK a8/01, then "GF_ITE_EC_20063"         4843        7        alive
+```
+
+- **`0xa8` now carries its vendor payload `00 00`.** The frame is `a0 06 00 a6 | a8 03 00 00 00 ff`, not
+  the empty `a0 04 00 a4 a8 01 00 01` of Runs 2–3; the reply is identical (`GF_ITE_EC_20063`), confirming
+  the EC accepts the longer, vendor-correct form.
+- For the fourth consecutive time, attach brought **no unsolicited `0x32`** (5 s drain, 0 transfers). Run 5
+  followed a warm session, not a cold power cycle, so this stays consistent with the "once per power-up"
+  reading from Run 3 without settling it.
+- **The EC refresh counter advanced 0 → 4 → 7** across the run — the health signal that replaced the SCI
+  count. The i8042 count rose 4838 → 4841 → 4843, in step with the three Shift presses. Both moving is the
+  healthy baseline for the runs to come.
+- Attach and the vendor `0xa8` are safe on this device. Phase 4 step 1 passed; step 2 adds `0xae`.
+
 ### Device identity — observed
 
 ```
