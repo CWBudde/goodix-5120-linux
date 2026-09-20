@@ -34,10 +34,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
+
+// PSKLen is the length in bytes of the 51x0 TLS pre-shared key. The reference
+// key and the recovered device key are both this length.
+const PSKLen = 32
 
 // ReferencePSKHex is the pre-shared key used by the upstream reference
 // implementation for the 51x0 family: 32 zero bytes.
@@ -62,6 +68,38 @@ func ReferencePSK() []byte {
 		panic("tlspsk: malformed ReferencePSKHex: " + err.Error())
 	}
 	return b
+}
+
+// LoadPSK reads a raw pre-shared key from a file: exactly PSKLen bytes, the
+// form `cmd/goodix-dpapi -out` writes. This is how the Phase 5 recovered device
+// PSK — kept only in gitignored captures/ — reaches Config.PSK, without the
+// secret ever entering the repository or being hardcoded here. A wrong length
+// is an error rather than a silent truncation, which also catches a hex dump
+// handed in where raw bytes were meant. The returned slice is the caller's own.
+func LoadPSK(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("tlspsk: reading PSK file %q: %w", path, err)
+	}
+	if len(b) != PSKLen {
+		return nil, fmt.Errorf("tlspsk: PSK file %q is %d bytes, want %d "+
+			"(a raw key as written by goodix-dpapi -out, not hex)", path, len(b), PSKLen)
+	}
+	return b, nil
+}
+
+// ParsePSKHex decodes a hex-encoded pre-shared key to PSKLen bytes. It accepts
+// surrounding whitespace, so it can take the output of `goodix-dpapi -print-psk`
+// or a command-line flag directly, and matches the form of ReferencePSKHex.
+func ParsePSKHex(s string) ([]byte, error) {
+	b, err := hex.DecodeString(strings.TrimSpace(s))
+	if err != nil {
+		return nil, fmt.Errorf("tlspsk: malformed PSK hex: %w", err)
+	}
+	if len(b) != PSKLen {
+		return nil, fmt.Errorf("tlspsk: PSK hex decodes to %d bytes, want %d", len(b), PSKLen)
+	}
+	return b, nil
 }
 
 // Defaults applied by Start when the corresponding Config field is zero.
