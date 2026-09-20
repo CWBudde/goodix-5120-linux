@@ -693,8 +693,9 @@ Four independent checks, each of which would fail on a window off by one byte or
 `goodix.dat`, `goodix_calib.dat` and the `SYSTEM`/`SOFTWARE` registry hives were also searched and do
 **not** contain it; the config lives in the DLL.
 
-**Structure — interpretation, not fact.** 29-byte header, then 48 four-byte entries of
-`[register LE16][value LE16]`, then a 3-byte tail. It is a write **script, not a map**: registers
+**Structure — interpretation, not fact.** 29-byte header, then 48 four-byte slots of
+`[register LE16][value LE16]` of which **the last three are zero-filled, so 45 are used** — a
+fixed-size table partially filled, not 48 live entries — then a 3-byte tail. It is a write **script, not a map**: registers
 `0x5c`, `0x66`, `0x7c` and `0x12a` each recur three times with different values, so order is
 significant and it cannot be replayed as an unordered set. Register sequence:
 

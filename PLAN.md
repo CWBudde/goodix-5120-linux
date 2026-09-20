@@ -65,11 +65,15 @@ incident.
 [`docs/upstream-report.md`](docs/upstream-report.md), each postable as-is. Two things gate posting, and
 both are the repository owner's call, not a technical blocker:
 
-- [ ] **Decide whether the 224-byte `0x90` config may be republished.** It was lifted verbatim from a
-      shipped proprietary DLL, so this is a licensing question. The drafts describe the config fully and
-      leave a marked placeholder where the bytes would go. **This is the same decision as the public-repo
-      item below** — the bytes are in `cmd/goodix-probe/vendor.go`, so publishing the repository
-      publishes them too. The trade-off is laid out at the top of `docs/upstream-report.md`.
+- [x] ~~Decide whether the 224-byte `0x90` config may be republished.~~ **Decided 2026-09-20: publish.**
+      Both drafts now carry the bytes and the decoded register entries. The basis is recorded at the top
+      of `docs/upstream-report.md` and stated in short form inside each draft: the table is very likely
+      not protected expression (*SAS Institute*, C-406/10), and if it were, the interoperability
+      exception (Directive 2009/24/EC Art. 6 / § 69e UrhG, unwaivable per § 69g(2)) covers both the
+      extraction and the disclosure needed for interoperability. Not based on right-to-repair or
+      Ecodesign, which bind manufacturers and grant no redistribution right. Per-device secrets stay
+      withheld regardless: the PSK hash, `Goodix_Cache.bin`, the master-key GUID, the OTP and the
+      OTP-derived `0x98` DAC values.
 - [ ] Work through that file's "CHECK BEFORE POSTING" list (seven smaller calls) and paste a real
       `lsusb -v -d 27c6:5120` dump, which the repository does not currently hold verbatim.
 
@@ -81,7 +85,8 @@ both are the repository owner's call, not a technical blocker:
       power cycle that recovers it, and "no `nop` on ITE EC parts".
 - [ ] Comment on or open an issue at the [libfprint tracker][issues] with the same device facts, the
       `lsusb -v` descriptor, the vendor init sequence (plaintext part, no PSK material) and the warning.
-- [ ] Optional: push this repo publicly and link it from both.
+- [ ] Optional: push this repo publicly and link it from both. The `0x90` objection to this is gone —
+      the decision above covers the bytes `vendor.go` carries — but this remains a separate call.
 - [x] Ask upstream whether anyone has seen an `ITE_EC` firmware string on other Goodix parts, and
       whether anyone has unsealed a Windows-provisioned PSK (`Goodix_Cache.bin`) before. *(Carried into
       both drafts as questions; asked when they are posted.)*

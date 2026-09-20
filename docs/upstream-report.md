@@ -20,46 +20,55 @@ Conventions inside the drafts follow [`docs/protocol.md`](protocol.md):
 
 ---
 
-## DECISION NEEDED BEFORE POSTING — the 224-byte `0x90` config
+## DECIDED — the 224-byte `0x90` config IS published
 
-**The question.** The `0x90 upload_config_mcu` payload — 224 bytes, the last frame of the vendor init
-that nobody outside Goodix had — was recovered on 2026-09-20 by static extraction from `gfusb.dll`, the
-shipped Windows UMDF driver (`gfusb.inf`, DriverVer 10/27/2020, 1.1.122.127). It sits in the DLL 19
-times, byte-identical. Do those 224 bytes go into the public drafts, or not?
+The repository owner decided on 2026-09-20 to publish the bytes. Both drafts below carry them in full,
+together with the decoded register entries. This section records the basis, because both drafts state
+it in short form and a maintainer accepting the contribution should be able to see the reasoning.
 
-**The two sides, as they stand:**
+**Why it is publishable.**
 
-- *For publishing them.* It is the single most useful thing in this report for anyone writing a Linux
-  driver for this part. Without it the sensor cannot be brought to the point where it produces an
-  image, and the only other route to it — a USB capture of a full init — has failed three times for a
-  tooling reason that is not going away (USBPcap does not follow the device across the PnP
-  re-enumeration that a full init requires). Everything else in the drafts is reproducible by a reader;
-  this is not.
-- *Against publishing them.* They are 224 bytes lifted verbatim out of a shipped proprietary DLL and
-  redistributed. That is a licensing and redistribution question, not a technical one, and it is the
-  repository owner's to answer — not this file's, and not a subagent's. Publishing them on someone
-  else's issue tracker also puts the question to a project that did not get to decide it.
+1. **It is very likely not protected expression in the first place.** Copyright protects expression,
+   not function. These 224 bytes are a table of hardware register addresses and the values the chip
+   requires — content dictated by the hardware, with no room for authorial choice. The EU standard is
+   the author's own intellectual creation (*Infopaq*, C-5/08), and *SAS Institute v World Programming*
+   (C-406/10) held that a program's functionality, its language and its data formats are not protected
+   as expression. A configuration table sits on the unprotected side of that line.
+2. **If it were protected, the interoperability exception covers it.** Directive 2009/24/EC Art. 6,
+   transposed in Germany as § 69e UrhG, permits reproducing and translating code where indispensable to
+   obtain the information needed to make an independently created program interoperable. Art. 6(2)(b)
+   restricts passing that information to others *"except when necessary for the interoperability of the
+   independently created computer program"* — so disclosure for that purpose is contemplated by the
+   exception, not merely tolerated. § 69e is unwaivable: § 69g(2) UrhG voids contrary licence terms.
+   Art. 5(3) / § 69d(3) separately covers observing and testing the program, which is what the USB
+   captures and the debug-log analysis are.
+3. **The conditions of Art. 6(1) are met on the facts here.** The work was done on a lawfully owned
+   machine with a lawfully licensed copy of the driver; the information was not otherwise available
+   (three attempts to capture it on the wire failed for a tooling reason, and the vendor's own debug log
+   truncates the payload); it is confined to the part necessary for interoperability — one configuration
+   frame, not the driver's code; and it is used solely to make an independent Linux implementation work
+   with the device, not to build a competing driver.
 
-**One fact that bears on it, stated without arguing either way.** As of 2026-09-20 the bytes are in this
-repository's own source tree (`cmd/goodix-probe/vendor.go`, `uploadConfigPayload`) as well as in
-`docs/protocol.md`. So if the optional "push this repo publicly" item in `PLAN.md` is taken, they become
-public through that route whatever the drafts do — which makes this decision and the public-repo
-decision one decision, not two. If they are to stay unpublished, both have to stay unpublished.
+**What this basis does *not* rest on.** Not the EU right-to-repair directive ((EU) 2024/1799) and not
+the Ecodesign rules. Those place obligations on manufacturers around spare parts and repair
+information; they do not grant third parties a right to redistribute extracted driver data. They are
+the wrong authority to cite here and citing them would only cloud the argument above.
 
-**What the drafts do in the meantime.** Both describe the `0x90` fully — 224-byte payload, 232-byte
-frame on the wire, ordered register write script rather than an unordered register map,
-`sum(payload) & 0xff == 0xaa`, four independent consistency checks, its place in the init — and neither
-prints the bytes. Each has a marked placeholder at the point where they would go.
+**Precedent in the receiving communities.** `goodix-fp-dump` already carries protocol constants
+extracted from Goodix's Windows drivers, so this is an established norm there rather than a novel ask.
 
-**Derivative material under the same decision.** These are not raw blob bytes but are derived directly
-from it, so they carry the same question and are also held back from the drafts:
+**This is a considered position, not legal advice**, and it was not written by a lawyer. It is recorded
+so that anyone accepting the contribution can see what it is based on and reach their own view.
 
-- the decoded register-address sequence (48 entries; addresses without values),
-- the two entries `0x0072 = 0x5678` / `0x0074 = 0x1234`, which together form the magic constant
-  `0x12345678` and are a useful sanity check on anyone's entry decoding.
+**Consequence for the repository.** `cmd/goodix-probe/vendor.go` carries these bytes, so publishing the
+repository would publish them too. That objection to the optional "push this repo publicly" item in
+`PLAN.md` is therefore removed — but whether to publish the repository is still a separate call, and
+has not been made here.
 
-Both are recorded in [`docs/protocol.md`](protocol.md), "The 224-byte `0x90` config — recovered". Add
-them to the drafts, or not, with the same decision.
+**Still withheld, on grounds that have nothing to do with copyright:** the `0xe4` PSK hash, every byte
+of `Goodix_Cache.bin`, the DPAPI master-key GUID, the OTP, and the OTP-derived `0x98` DAC values. Those
+are per-device secrets and calibration data — they are this unit's, useless to anyone else, and two of
+them are security material.
 
 ---
 
@@ -77,9 +86,9 @@ them to the drafts, or not, with the same decision.
    projects", "no firmware update for EC projects". Quoted in both drafts because they are the evidence
    for the `nop` rule and cannot be paraphrased without losing that. Short quotation from a log the
    owner's own machine produced; flagged only for completeness.
-4. **Board identifier.** This repository records both `M1060` (`FINDINGS.md`) and `HVY-WXX9-PCB`
-   (`PLAN.md`, from DMI). The drafts use the DMI product name `HVY-WXX9` and leave the board string out.
-   Fill in whichever is right if it matters to a reader.
+4. ~~**Board identifier.**~~ **Resolved 2026-09-20 from DMI:** `product_name=HVY-WXX9`,
+   `board_name=HVY-WXX9-PCB`, `board_version=M1060`. Not a contradiction — two different DMI fields,
+   loosely labelled. The drafts use the product name, which is the one a reader can match against.
 5. **The full `lsusb -v` dump.** This repository holds only the abridged descriptor fields, not a
    verbatim dump. Draft B has a marked placeholder for it. Do not invent one — paste the real output.
 6. **The public repository.** `PLAN.md` lists pushing this repository publicly as optional. Both drafts
@@ -92,7 +101,7 @@ them to the drafts, or not, with the same decision.
 
 ## Pre-post checklist
 
-- [ ] The `0x90` decision above is made, and each draft's placeholder is either filled or deleted.
+- [x] The `0x90` decision is made (publish), and both drafts carry the bytes and the entry table.
 - [ ] No PSK material: no PSK hash from the `0xe4` reply, no bytes of `Goodix_Cache.bin`, no DPAPI
       master-key GUID.
 - [ ] No OTP bytes, including the ASCII prefix, and no `0x98` DAC values unless item 1 above is decided.
@@ -317,8 +326,54 @@ bytes). It was recovered statically from the vendor DLL. (observed)
   implementation of the framing reproduces the logged first 64 bytes byte for byte, pack checksum
   included.
 
-> **[PLACEHOLDER — the 224 bytes go here, or this block is deleted. See "DECISION NEEDED BEFORE
-> POSTING" in `docs/upstream-report.md`. Do not post with this marker still in it.]**
+**Provenance and basis for sharing this.** These bytes were obtained by static analysis of the vendor's
+Windows driver on hardware I own, under the interoperability exception in Directive 2009/24/EC Art. 6
+(§ 69e UrhG in Germany), for the sole purpose of making an independent Linux implementation work with
+the device. They are a hardware register/value table rather than program logic, which on the *SAS
+Institute* (C-406/10) reasoning is unlikely to be protected expression at all. Nothing of the driver's
+code is reproduced here, and no per-device secret is included — the device PSK hash, the OTP and the
+sealed key blob are all deliberately withheld. If a maintainer would rather this material were not
+carried in your tracker, say so and I will remove it.
+
+**The payload (224 bytes, hex):**
+
+```
+7011607100712c9d1cb918d100d100d100ba000180ca000400840015b3860000
+c4880000ba8a0000b28c0000aa8e0000c19000bbbb9200b1b1940000a8960000
+b6980000009a000000d2000000d4000000d6000000d800000050000105d00000
+00700000007200785674003412200010402a0182032200012024001400800001
+005c000001560004205800030232000c02660003007c000058820080152a0108
+005c008000540010016200040364001900660003007c0000582a0108005c0000
+015200080054000001660003007c000058000000000000000000000000007815
+```
+
+The complete frame on the wire is 232 bytes: pack `a0 e4 00 84`, message `90 e1 00`, the 224 bytes
+above, then the message checksum `8f`.
+
+**Decoded as `[register LE16][value LE16]` entries** (interpretation, not fact — the byte sequence is
+what is observed). Bytes 0..28 are a header that does not fit the entry pattern and is not decoded;
+bytes 29..220 are 48 four-byte slots of which the last three are zero-filled, so **45 slots are
+used**; bytes 221..223 are a 3-byte tail.
+
+```
+0x0086 = 0xc400  0x0088 = 0xba00  0x008a = 0xb200  0x008c = 0xaa00
+0x008e = 0xc100  0x0090 = 0xbbbb  0x0092 = 0xb1b1  0x0094 = 0xa800
+0x0096 = 0xb600  0x0098 = 0x0000  0x009a = 0x0000  0x00d2 = 0x0000
+0x00d4 = 0x0000  0x00d6 = 0x0000  0x00d8 = 0x0000  0x0050 = 0x0501
+0x00d0 = 0x0000  0x0070 = 0x0000  0x0072 = 0x5678  0x0074 = 0x1234
+0x0020 = 0x4010  0x012a = 0x0382  0x0022 = 0x2001  0x0024 = 0x0014
+0x0080 = 0x0001  0x005c = 0x0100  0x0056 = 0x2004  0x0058 = 0x0203
+0x0032 = 0x020c  0x0066 = 0x0003  0x007c = 0x5800  0x0082 = 0x1580
+0x012a = 0x0008  0x005c = 0x0080  0x0054 = 0x0110  0x0062 = 0x0304
+0x0064 = 0x0019  0x0066 = 0x0003  0x007c = 0x5800  0x012a = 0x0008
+0x005c = 0x0100  0x0052 = 0x0008  0x0054 = 0x0100  0x0066 = 0x0003
+0x007c = 0x5800  0x0000 = 0x0000  0x0000 = 0x0000  0x0000 = 0x0000
+```
+
+Note `0x0072 = 0x5678` and `0x0074 = 0x1234` — together the constant `0x12345678` across two
+consecutive registers, which is a useful check that your entry decoding is aligned. Registers
+`0x5c`, `0x66`, `0x7c` and `0x12a` each recur three times with different values, so this is an
+ordered **write script**; replaying it as an unordered set will not work.
 
 ### Steady-state capture loop
 
@@ -542,8 +597,54 @@ as an unordered set (structure is interpretation; the bytes and the boundary are
 copies in the DLL, by matching the debug log's first 57 bytes in all nine complete inits, and by
 re-encoding to the logged frame byte for byte.
 
-> **[PLACEHOLDER — the 224 bytes go here, or this block is deleted. See "DECISION NEEDED BEFORE
-> POSTING" in `docs/upstream-report.md`. Do not post with this marker still in it.]**
+**Provenance and basis for sharing this.** These bytes were obtained by static analysis of the vendor's
+Windows driver on hardware I own, under the interoperability exception in Directive 2009/24/EC Art. 6
+(§ 69e UrhG in Germany), for the sole purpose of making an independent Linux implementation work with
+the device. They are a hardware register/value table rather than program logic, which on the *SAS
+Institute* (C-406/10) reasoning is unlikely to be protected expression at all. Nothing of the driver's
+code is reproduced here, and no per-device secret is included — the device PSK hash, the OTP and the
+sealed key blob are all deliberately withheld. If a maintainer would rather this material were not
+carried in your tracker, say so and I will remove it.
+
+**The payload (224 bytes, hex):**
+
+```
+7011607100712c9d1cb918d100d100d100ba000180ca000400840015b3860000
+c4880000ba8a0000b28c0000aa8e0000c19000bbbb9200b1b1940000a8960000
+b6980000009a000000d2000000d4000000d6000000d800000050000105d00000
+00700000007200785674003412200010402a0182032200012024001400800001
+005c000001560004205800030232000c02660003007c000058820080152a0108
+005c008000540010016200040364001900660003007c0000582a0108005c0000
+015200080054000001660003007c000058000000000000000000000000007815
+```
+
+The complete frame on the wire is 232 bytes: pack `a0 e4 00 84`, message `90 e1 00`, the 224 bytes
+above, then the message checksum `8f`.
+
+**Decoded as `[register LE16][value LE16]` entries** (interpretation, not fact — the byte sequence is
+what is observed). Bytes 0..28 are a header that does not fit the entry pattern and is not decoded;
+bytes 29..220 are 48 four-byte slots of which the last three are zero-filled, so **45 slots are
+used**; bytes 221..223 are a 3-byte tail.
+
+```
+0x0086 = 0xc400  0x0088 = 0xba00  0x008a = 0xb200  0x008c = 0xaa00
+0x008e = 0xc100  0x0090 = 0xbbbb  0x0092 = 0xb1b1  0x0094 = 0xa800
+0x0096 = 0xb600  0x0098 = 0x0000  0x009a = 0x0000  0x00d2 = 0x0000
+0x00d4 = 0x0000  0x00d6 = 0x0000  0x00d8 = 0x0000  0x0050 = 0x0501
+0x00d0 = 0x0000  0x0070 = 0x0000  0x0072 = 0x5678  0x0074 = 0x1234
+0x0020 = 0x4010  0x012a = 0x0382  0x0022 = 0x2001  0x0024 = 0x0014
+0x0080 = 0x0001  0x005c = 0x0100  0x0056 = 0x2004  0x0058 = 0x0203
+0x0032 = 0x020c  0x0066 = 0x0003  0x007c = 0x5800  0x0082 = 0x1580
+0x012a = 0x0008  0x005c = 0x0080  0x0054 = 0x0110  0x0062 = 0x0304
+0x0064 = 0x0019  0x0066 = 0x0003  0x007c = 0x5800  0x012a = 0x0008
+0x005c = 0x0100  0x0052 = 0x0008  0x0054 = 0x0100  0x0066 = 0x0003
+0x007c = 0x5800  0x0000 = 0x0000  0x0000 = 0x0000  0x0000 = 0x0000
+```
+
+Note `0x0072 = 0x5678` and `0x0074 = 0x1234` — together the constant `0x12345678` across two
+consecutive registers, which is a useful check that your entry decoding is aligned. Registers
+`0x5c`, `0x66`, `0x7c` and `0x12a` each recur three times with different values, so this is an
+ordered **write script**; replaying it as an unordered set will not work.
 
 ### What would have to be true for libfprint to support this part
 
