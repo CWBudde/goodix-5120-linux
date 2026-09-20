@@ -24,6 +24,9 @@ bridges to the sensor *and* drives the keyboard over i8042.
 
 Requires `libusb-1.0-0-dev` (gousb is cgo).
 
+The `justfile` wraps the offline ones (`just` lists them; `just check` is build + vet + both test
+tags). It has no recipe that touches the device, on purpose — `just live-help` says why.
+
 ```sh
 go build -buildvcs=false ./cmd/goodix-probe   # -buildvcs=false is used throughout the docs
 go test ./...
@@ -34,6 +37,13 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 ./goodix-probe --dry-run   # print the frames it would send; opens no USB device
 ./goodix-probe --replay    # full decode path against the scripted fake
 ./goodix-probe --bisect --replay --assume-keys   # bisect flow offline (no root, no USB)
+
+# The TLS-PSK bridge, rehearsed offline: no device is opened, and the "EC" is an
+# openssl s_client in Goodix framing. Needs openssl on PATH.
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --steps a8 --rehearse-rejection   # what a PSK the EC rejects looks like
 
 go build -buildvcs=false ./cmd/goodix-pcap
 ./goodix-pcap -in dump.pcapng                   # counts only, no payload bytes; reads a file, opens nothing
@@ -56,12 +66,18 @@ The safety guarantee is structural, and changes must preserve it:
 - **Destructive opcodes are compiled out.** `write_firmware` (`0xf0`) and `preset_psk_write` (`0xe0`) are registered only in
   `opcode_destructive.go` behind the `goodix_destructive` build tag (`opcode_safe.go` is the default-build counterpart).
   Tests assert a default build cannot name them.
-- **`internal/transport` is the single chokepoint.** Both the gousb transport (`usb.go`) and the replay fake (`replay.go`)
+- **`internal/transport` is the single chokepoint.** The gousb transport (`usb.go`), the replay fake (`replay.go`)
+  and the external-peer transport (`peer.go`) all
   embed `sender`, whose `Send` runs `check` before any byte is written: unregistered opcodes are always refused,
   any class above `Options.Ceiling` (zero value = `ClassSafe`) is refused unless `Options.Allow` names that exact
   opcode (never a destructive one), **and a payload that violates the opcode's registered `PayloadRule` is refused
   too** (class first, so a refusal names the worst reason). Refusals wrap `ErrRefused`; a payload refusal also wraps
   `proto.ErrPayload`. Don't add a write path that bypasses `sender`.
+- **`SendTLS` is the one write with no opcode**, for the `0xb0` packs that carry TLS records to the device. There is
+  no class to check, so the gate demands `Options.AllowTLSData` (off by default; only `--tls` sets it) and refuses
+  anything that is not a whole number of TLS records — half a record is the same shape of mistake as an argument-less
+  `0xe4`. `transport.NewPeer` exists so that a rehearsal richer than the scripted replay — one that really completes a
+  handshake — still passes through the same gate instead of getting a private write path.
 - **Every opcode needs a payload rule**, as a required argument to `register`. An empty-payload `0xe4` wedged the EC
   three times because nothing in the code knew it took an argument. `PayloadUnknown()` is the honest value for an
   opcode the vendor never sends; `TestPayloadRulesAreEvidenceBased` pins that set so it can only shrink.
@@ -71,13 +87,35 @@ The safety guarantee is structural, and changes must preserve it:
 - **`internal/capture` + `cmd/goodix-pcap`** read USBPcap captures offline. They may import `internal/proto` and
   nothing else from the repo — never `internal/transport`, never gousb — and purity tests parse the source to enforce
   it. `goodix-pcap` prints counts by default and refuses to print `0xe4` or `0xa6` payloads at all.
-- The only `Allow` user is `--bisect --allow-e4`, which admits `preset_psk_read` (`0xe4`) as a bisect step. It now
-  sends the vendor's 8-byte payload; the empty frame that wedged the EC is refused by the payload rule. See
-  `docs/bisect-runbook.md`.
+- The only `Allow` users are the `--bisect --allow-XX` flags, one per above-ceiling opcode, generated from the
+  `unlockable` table in `bisect.go` — so an opcode cannot become sendable without a flag, and the flag's help text is
+  where someone has to write down what the frame does and why it is safe enough to try.
+  `TestEveryAboveCeilingVendorFrameIsCatalogued` pins that table against the vendor catalogue in both directions. A
+  flag admits its opcode only when the run actually sends it (a `--steps` entry, or one of the commands `--tls` sends
+  itself); the ceiling stays `ClassSafe` and no flag can admit a destructive opcode. `--allow-e4` sends the vendor's
+  8-byte payload; the empty frame that wedged the EC is refused by the payload rule. See `docs/bisect-runbook.md`.
 - **`cmd/goodix-probe`** runs a fixed `steps` sequence; `safety_test.go` fails if any step is not `ClassSafe` and checks
   the ceiling end to end through the replay transport.
-- **`internal/tlspsk`, `internal/image`** are Tier 2 scaffolds with no call sites. TLS-PSK goes through an
+- **`internal/tlspsk`, `internal/image`, `internal/session`** are the TLS-PSK image path. TLS-PSK goes through an
   `openssl s_server` subprocess because Go's `crypto/tls` has no PSK suites (socket = ciphertext side, stdio = plaintext).
+  `internal/session` is the bridge between that and the device, **half duplex on purpose** so nothing writes to the
+  OUT endpoint while something else reads from it. Their one caller is `goodix-probe --tls`, which runs as the tail of
+  a bisect run and is therefore behind the same keyboard-safe procedure as any live step
+  (`docs/bisect-runbook.md`, PLAN.md Phase 5b/5c).
+- **A server flight goes to the device as ONE `0xb0` pack**, the way openssl writes it. Run 11 sent
+  ServerHello and ServerHelloDone as two packs and the EC went silent without an alert; this is the response,
+  and it is a **hypothesis, not a confirmed fact** — `--tls-record-per-pack` exists so the two can be
+  compared on hardware, and `TestServerFlightGoesOutAsOnePack` stops the default drifting back silently.
+  Records must be forwarded **verbatim**: the Finished MACs cover the handshake transcript, so a bridge that
+  edits a record on the way past breaks the handshake it is trying to fix.
+- **Handshake, change-cipher-spec and alert records are logged in full hex; application data never is.**
+  The rule lives in one function (`proto.TLSRecord.PlaintextHex`) and is by record *type*, so it holds at
+  every point in the session: those three types carry key agreement, a MAC or a reason code, never an image,
+  and the PSK appears in none of them. `TestPlaintextHexNeverPrintsAnImage` pins the half that matters.
+- **`session.LoopbackEC` is not a device and must never become one.** It is an `openssl s_client` in Goodix framing,
+  used to rehearse the bridge offline; like the EC it stays silent until `0xd0`. It goes through
+  `transport.NewPeer`, so a rehearsal refuses exactly what a live run refuses. `usb.go` remains the only code in the
+  repository that opens hardware.
 
 ## Protocol divergences from upstream (handled in code)
 

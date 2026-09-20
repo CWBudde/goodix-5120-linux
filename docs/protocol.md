@@ -186,6 +186,31 @@ pins the negotiation. The recovered device PSK reaches `Config.PSK` through `tls
 or `tlspsk.ParsePSKHex`. What stays unverified is only what a live handshake settles: whether the EC
 accepts that PSK, and the exact record framing over `d0`.
 
+### The bridge (our side, 2026-09-20)
+
+`internal/session` is the plumbing between the two. It is **half duplex on purpose**: read from the
+device, forward to the local endpoint, read whatever that has to say, forward it back, in turns. That
+matches how a handshake proceeds — each side speaks in flights — and it means nothing writes to the USB
+OUT endpoint while something else is reading from it.
+
+Records travel to the device through `transport.SendTLS`, which wraps them in a `0xb0` pack. That is a
+write path with **no opcode**, so the class ceiling has nothing to classify; the gate instead requires
+`Options.AllowTLSData` (off by default, set only by `--tls`) and refuses anything that is not a whole
+number of TLS records. Half a record is the same shape of mistake as an `0xe4` with its argument missing.
+
+**How success is detected:** the local endpoint's ChangeCipherSpec followed by its Finished. In TLS 1.2 a
+server sends those only after verifying the client's Finished, which it can only do if both ends derived
+the same keys — so reaching that point *is* the answer to "does the EC accept our PSK". A rejection
+arrives as a plaintext alert, whose description is readable: `bad_record_mac`, `decrypt_error`,
+`handshake_failure` and `unknown_psk_identity` are reported as `session.ErrPSKMismatch`, anything else as
+a plain alert. That classification is an INTERPRETATION — no alert ever says "wrong PSK".
+
+Rehearsed offline against `session.LoopbackEC`, an `openssl s_client` dressed in Goodix framing: it is the
+TLS client, it offers only `0x00ae` over TLS 1.2, it wraps its records in `b0` packs, and — like the EC —
+it says nothing at all until `0xd0` arrives. Both outcomes are covered, and the rejection really does come
+back as `bad_record_mac`. What that proves is our framing and sequencing against a real TLS
+implementation; it proves nothing about the EC, whose timing, pack sizes and choice of key are its own.
+
 ## Open questions
 
 Four of the six rows this table used to hold were answered between 2026-08 and 2026-09-20; they are
@@ -197,8 +222,9 @@ kept, struck, because knowing a question *is* settled is worth as much as the an
 | ~~Firmware version string~~ | **Resolved** — `GF_ITE_EC_20063`, via `0xa8` |
 | ~~Sensor resolution~~ | **Resolved — 80 × 64**, from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
 | ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
-| PSK variant | **The device key is recovered; acceptance is the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Whether the EC accepts it is unverified until the live `d0` handshake (Phase 5b) |
-| What the 224-byte `0x90` config actually *does* | **Open.** The bytes are known and the entry structure is a reasonable reading, but no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
+| PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
+| What the 224-byte `0x90` config actually *does* | **Open**, but it is *accepted*: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
+| How the EC wants a server flight framed | **Open, and it is what Run 11 stalled on.** One `0xb0` pack per flight, or one per record? The vendor capture cannot answer it — it holds 43 device→host TLS packs and no host→device TLS pack at all. The bridge now sends one pack per flight; `--tls-record-per-pack` restores the other |
 
 ## Image sample packing (transcribed, `tool.py::decode_image`)
 
@@ -533,6 +559,88 @@ the vendor init — `a8`, `ae`, `e4`, `a2`, `82`, `a6` — now runs live on this
 Step 5 stops here by design: `70`/`98`/`90` configure the sensor and `d0` starts the TLS handshake, which
 cannot complete without the PSK (Phase 5).
 
+### Run 11 — 2026-09-20 15:58, `sudo ./goodix-probe --bisect --tls --psk … --steps 96,a8,ae,a2,82,a6,a2,70,98,90` (observed)
+
+Phase 5a in one run plus the first attempt at 5b. Flags `--allow-96 --allow-a2 --allow-70 --allow-98
+--allow-90 --allow-d0 --allow-d4`. Run by the user with an external keyboard attached. No usbmon capture.
+**Result: the whole vendor init ran live with the keyboard alive after every one of the ten steps, the EC
+opened a TLS handshake on `0xd0` — and the handshake then stalled after the server's first flight.**
+
+```
+step             TX                                 RX (data)              keyboard
+1  0x96 enable   96 03 00 01 02 …                   nothing (no ACK)       alive
+2  0xa8          a8 03 00 00 00 …                   "GF_ITE_EC_20063"      alive
+3  0xae          ae 06 00 55 a2 52 00 00 …          02 02 31 … 12 12       alive
+4  0xa2 reset    a2 03 00 01 14 …                   ACK + 01 00 08         alive
+5  0x82          82 06 00 00 00 00 04 00 …          a2 04 25 00            alive
+6  0xa6 OTP      a6 03 00 00 00 …                   S2A755. + [WITHHELD]   alive
+7  0xa2 reset    a2 03 00 01 14 …                   ACK + 01 00 08         alive
+8  0x70 idle     70 03 00 14 00 …                   ACK only, then quiet   alive
+9  0x98 set_dac  98 09 00 [WITHHELD OTP-derived]    ACK + 01 01            alive
+10 0x90 config   90 e1 00 … (224 bytes)             ACK + 01 01            alive
+   0xd0 TLS      d0 03 00 00 00 …                   a ClientHello          alive
+```
+
+Counters: i8042 `irq1` 15545 → 15571, EC refreshes 0 → 69, sensor enumerated throughout.
+
+**New, and all of it live:**
+
+- **`0x96` gets no ACK and no data at all**, as the vendor log implies. Five seconds of silence, keyboard
+  fine. It is the one init frame that is write-only.
+- **`0x70`, `0x98` and `0x90` are all safe on this device.** `0x70` answers with an ACK and then nothing;
+  `0x98` and `0x90` answer `01 01`, byte-identical to the vendor log. The 224-byte `0x90` config recovered
+  from the Windows driver is therefore **accepted by the EC** — the largest single state change in the init,
+  and it went in without complaint.
+- **`0xae` now reports `… 12 12` where Run 10 saw `10 10`.** Same frame, different state; the two bytes
+  move with where the init has got to.
+- **`0xd0` makes the EC open a TLS 1.2 handshake as the client, in a `0xb0` pack**, exactly as the Tier-2
+  transcription said. This was previously unverified on hardware. The pack and the record:
+
+  ```
+  b0 34 00 e4 | 16 03 03 00 2f | 01 00 00 2b 03 03 <32-byte random>
+                                 00 | 00 04 00ae 00ff | 01 00
+  ```
+
+  A 52-byte record in a 56-byte pack. Decoded: ClientHello, TLS 1.2, **empty session id**, exactly two
+  cipher suites — **`0x00ae` = `TLS_PSK_WITH_AES_128_CBC_SHA256`** and `0x00ff`, the renegotiation SCSV —
+  one compression method (null), and **no extensions field at all**: not an empty one, absent. The 43-byte
+  handshake body is fully accounted for without it. So `0x00ae` is now confirmed **from the device**, not
+  only from the driver log, and the EC's TLS stack is a minimal one.
+
+**Where it stopped.** The host (openssl `s_server`) answered with an 81-byte ServerHello and a 4-byte
+ServerHelloDone, which the bridge sent as **two separate `0xb0` packs**. The EC replied with a single
+zero-length transfer and then said nothing for the whole 20-second handshake timeout. No alert, in either
+direction. Final counts: 1 record to the host, 2 to the device. Keyboard alive afterwards.
+
+The server flight was reproduced offline afterwards by replaying the EC's ClientHello above at the same
+openssl build, which returns:
+
+```
+16 03 03 00 51  ServerHello      77 bytes: TLS 1.2, 32-byte random, 32-byte session id,
+                                 cipher 00ae, compression 0, extensions: ff01 renegotiation_info
+16 03 03 00 04  ServerHelloDone   0 bytes
+```
+
+95 bytes, and openssl writes **both records in one socket write** — the split into two packs was the
+bridge's, not the server's.
+
+**What the silence means.** A stack that cannot parse a flight sends an alert; this one sent nothing, which
+looks more like an endpoint still waiting for the rest of a flight it reads one transfer at a time. That is
+now the leading explanation, so the bridge sends a flight as one pack (`session.Bridge.PumpHost`), with
+`--tls-record-per-pack` to restore this run's framing for comparison. **Unconfirmed** — and the vendor
+capture cannot settle it, because `dump.pcapng` is steady-state and contains 43 device→host TLS packs and
+**no host→device TLS pack at all**.
+
+If one pack per flight does not fix it, the remaining suspects are the flight's *contents*: the 32-byte
+session id and the `renegotiation_info` extension that the EC's own hello never asked for, and the absence
+of a ServerKeyExchange (openssl omits it with no PSK identity hint; RFC 4279 §2 permits either). Both are
+openssl's to change, and **a record cannot be rewritten in passing** — the Finished MACs cover the
+transcript, so editing a byte in the middle breaks the handshake it would be trying to fix.
+
+**The PSK is still untested.** The EC never sent a ClientKeyExchange, so no key material was ever used on
+either side. Phase 5b's question is still open, and this run says nothing either way about whether the
+recovered key is right.
+
 ### Device identity — observed
 
 ```
@@ -700,6 +808,20 @@ So the record length independently corroborates the 80 × 64 geometry with upstr
 which until now rested only on the chip ID and upstream's own tables. It cannot distinguish a bare
 frame from one with upstream's header and trailer: both fit. Nothing here is decoded — this is
 arithmetic over lengths observed on the wire, and it stays a hypothesis until a plaintext is measured.
+
+**Reproduced, not just calculated (2026-09-20).** The arithmetic above was checked against a real
+implementation rather than done twice. Encrypting exactly 7680 bytes with suite `0x00ae` under openssl
+3.5.5 produces a record whose header is `17 03 03 1e 40` and whose total size is 7749 bytes, inside a
+`b0` pack of 7753 — **the same lengths the vendor's traffic shows in `dump.pcapng`, byte for byte**. This
+is the `internal/session` rehearsal (`TestBridgeDecryptsApplicationData`, and
+`goodix-probe --bisect --replay --tls --capture`), where a synthetic 7680-byte frame goes through a real
+TLS-PSK session.
+
+That closes the padding question — 7680 plaintext really does produce a 7744-byte body under this
+suite — but it does **not** settle bare against wrapped: 7693 bytes pad to the same 7744. Only a measured
+plaintext does, which is what Phase 5c is for. `internal/image.TrimFrame` decides from the length that
+arrives and refuses anything that matches neither, rather than assuming an offset — a frame decoded from
+the wrong offset still looks like a fingerprint.
 
 ### Capture loop (steady state, `dump.pcapng`)
 

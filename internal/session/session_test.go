@@ -54,6 +54,13 @@ type rig struct {
 
 func newRig(t *testing.T, devicePSK, hostPSK []byte) *rig {
 	t.Helper()
+	return newRigWith(t, devicePSK, hostPSK, Options{})
+}
+
+// newRigWith is newRig with the bridge options under test. Logger and the two
+// timeouts are the rig's business; anything else the caller sets survives.
+func newRigWith(t *testing.T, devicePSK, hostPSK []byte, opts Options) *rig {
+	t.Helper()
 	requireOpenSSL(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -86,11 +93,10 @@ func newRig(t *testing.T, devicePSK, hostPSK []byte) *rig {
 	})
 	t.Cleanup(func() { _ = tr.Close() })
 
-	b := New(tr, sess, Options{
-		Logger:           logger,
-		DeviceTimeout:    200 * time.Millisecond,
-		HandshakeTimeout: 20 * time.Second,
-	})
+	opts.Logger = logger
+	opts.DeviceTimeout = 200 * time.Millisecond
+	opts.HandshakeTimeout = 20 * time.Second
+	b := New(tr, sess, opts)
 	return &rig{bridge: b, ec: ec, tr: tr, sess: sess, log: logBuf}
 }
 
@@ -284,5 +290,66 @@ func TestAlertClassification(t *testing.T) {
 				t.Errorf("alertError = %v, wrongly classified as a PSK mismatch", err)
 			}
 		})
+	}
+}
+
+// TestServerFlightGoesOutAsOnePack pins the change made after Run 11: the records
+// of one flight leave as a single TLS-data pack, the way openssl writes them, not
+// one pack each. Run 11's handshake stalled with the flight split in two, and a
+// rehearsal that quietly went back to splitting it would hide a regression in the
+// one thing that run changed.
+func TestServerFlightGoesOutAsOnePack(t *testing.T) {
+	psk := testPSK(0x5a)
+	r := newRig(t, psk, psk)
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
+	}
+	if n := strings.Count(r.log.String(), "as one pack"); n == 0 {
+		t.Errorf("no multi-record flight was coalesced; ServerHello and ServerHelloDone "+
+			"arrive together, so at least one flight should have been\nlog:\n%s", r.log)
+	}
+}
+
+// TestRecordPerPackRestoresRun11Framing checks the escape hatch still works, so
+// the two framings can be compared on hardware in consecutive runs. openssl
+// accepts either, which is exactly why the comparison has to happen live.
+func TestRecordPerPackRestoresRun11Framing(t *testing.T) {
+	psk := testPSK(0x5a)
+	r := newRigWith(t, psk, psk, Options{RecordPerPack: true})
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake with RecordPerPack = %v\nlog:\n%s", err, r.log)
+	}
+	if strings.Contains(r.log.String(), "as one pack") {
+		t.Errorf("RecordPerPack still coalesced a flight\nlog:\n%s", r.log)
+	}
+}
+
+// TestHandshakeRecordsAreLoggedInFull pins the diagnostic that Run 11 showed the
+// need for: a stalled handshake is only reproducible offline if its records are in
+// the log. Handshake records carry no image and no key, so they are logged whole —
+// and the image test above pins the other half of that rule.
+func TestHandshakeRecordsAreLoggedInFull(t *testing.T) {
+	psk := testPSK(0x5a)
+	r := newRig(t, psk, psk)
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
+	}
+	// 0x0100002b is a ClientHello header; the stand-in's differs from the EC's in
+	// its extensions, so the type byte and length prefix are what to look for.
+	if !strings.Contains(r.log.String(), ": 010000") {
+		t.Errorf("the ClientHello was not logged in full; a stalled handshake would leave "+
+			"nothing to reproduce offline\nlog:\n%s", r.log)
 	}
 }

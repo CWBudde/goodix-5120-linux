@@ -34,9 +34,17 @@ live-hardware bring-up.
 - **Image decode verified in code.** `internal/image` implements upstream's irregular 6-byte / 4-sample
   12-bit layout; 80 × 64 = 5120 samples = 7680 plaintext bytes exactly.
 
-**Two hard unknowns remain, and both need the device:** whether the EC accepts our recovered PSK (the TLS
-wall), and the exact `d0` record framing and image plaintext length. The user has some hardware access, so
-these are now schedulable — under the keyboard-safe procedure.
+**Since Run 11 (2026-09-20) the init is confirmed live all the way to `d0`**, including the 224-byte `0x90`
+config, and the EC's own ClientHello confirms cipher suite `0x00ae` from the device rather than from the
+driver log. **Three unknowns remain, all needing the device:** how the EC wants a server flight framed
+(what Run 11 stalled on), whether it accepts our recovered PSK (still untested — the stall came first), and
+the image plaintext length.
+
+**As of 2026-09-20 the code for those runs exists and is rehearsed offline.** `internal/session` bridges
+the device's TLS session to a local openssl endpoint, `goodix-probe --tls --psk …` drives it as the tail of
+a bisect run, and `--capture` decodes a frame to a PGM. The whole path — handshake, rejection, image
+decrypt, decode, PGM — runs against a stand-in that is a real `openssl s_client` in Goodix framing, so
+what is untested is the EC's behaviour and nothing else. See Phase 5 below for what each step still needs.
 
 ## Completed phases (detail is in the docs, not here)
 
@@ -74,23 +82,45 @@ the DPAPI master-key GUID, OTP bytes, the OTP-derived `0x98` DAC values, or any 
 ## Phase 5 — Bring the sensor up (live hardware, owner-driven)
 
 Gated on the keyboard-safe procedure in [`docs/bisect-runbook.md`](docs/bisect-runbook.md): one command
-per run, `--bisect`, external keyboard attached, owner runs it. Each step is a small addition to
-`cmd/goodix-probe`, gated behind an explicit `--allow-*` flag that mirrors `--allow-e4` / `--allow-a2`.
+per run, `--bisect`, external keyboard attached, owner runs it.
 
-- [ ] **5a — Finish the init: `70`, `98`, `90`, then `d0`.** Promote one config frame per run, checking the
-      keyboard after each; `90` (the 224-byte config) stays out of `steps` until deliberately promoted.
-      These are `ClassStateChanging` with payload rules already in `vendor.go`. Goal: reach the `d0`
-      TLS-start with the keyboard alive.
-- [ ] **5b — TLS-PSK handshake against the device. (The decision point for the whole project.)** Add a
-      session orchestrator wiring `internal/transport` ⇄ `internal/tlspsk` ⇄ the EC: the socket is
-      ciphertext to and from the device, the pipes are plaintext. Feed `Config.PSK` from the recovered key
-      (`tlspsk.LoadPSK captures/goodix-psk.bin`). **This is where the PSK wall is tested.** If the EC rejects
-      it, take the fallbacks below before any more driver work.
-- [ ] **5c — Capture and decode one real frame.** After the handshake, read the image records, strip the
-      8-byte header / 5-byte trailer, run `internal/image.Decode12BitRaw`, and write a PGM into gitignored
-      `captures/`. Confirms the 12-bit packing and the exact plaintext length (7680 vs ~7695) on hardware.
-- [ ] **5d — Finger-detection (FDT) loop.** Implement the `32` / `20` / `34` sequence for finger-down / up,
-      so a capture is triggered by touch rather than by hand.
+**5a is done on hardware (Run 11, 2026-09-20): the full vendor init runs live with the keyboard alive
+throughout, and `0xd0` makes the EC open a TLS handshake.** 5b is attempted and unresolved — the handshake
+stalls after the server's first flight, before any key material is used, so the PSK question is untouched.
+Every state-changing frame is behind its own `--allow-XX` flag
+whose help text says what it does, and `--tls` runs as the tail of a bisect run so the bridge inherits the
+keyboard checks. The runbook has the exact command lines.
+
+- [x] **5a — Finish the init: `96`, `70`, `98`, `90`, then `d0`. Done 2026-09-20 (Run 11).** All ten frames
+      went out in one run and **the keyboard stayed alive after every one of them**. `0x96` draws no reply at
+      all; `0x70` answers with an ACK only; `0x98` and `0x90` answer `01 01`, so the 224-byte config
+      recovered from Windows is accepted by the EC. `0xd0` makes the EC open a TLS 1.2 handshake. Details
+      and the ClientHello bytes are in [`docs/protocol.md`](docs/protocol.md), Run 11.
+- [ ] **5b — TLS-PSK handshake against the device. (The decision point for the whole project.)**
+      **Attempted 2026-09-20 (Run 11): the EC opened a handshake and it stalled before the PSK was used, so
+      the question is still open.** The EC's ClientHello confirms `0x00ae` from the device itself and shows a
+      minimal stack: empty session id, two cipher suites, **no extensions field at all**. The host's
+      ServerHello + ServerHelloDone went out as two `0xb0` packs; the EC answered with a zero-length transfer
+      and then nothing, and **sent no alert** — which is what a stack does when it is waiting, not when it
+      fails to parse. *Changed since:* a flight now goes out as one pack, the framing openssl itself uses,
+      with `--tls-record-per-pack` to put Run 11's framing back for comparison; handshake records are logged
+      in full (they carry no image and no key) so a stall can be reproduced offline, as Run 11's was. *Next:*
+      re-run. If it stalls the same way, the suspects are the flight's contents — the 32-byte session id and
+      the `renegotiation_info` extension the EC never asked for, and the missing ServerKeyExchange — and
+      neither can be fixed by rewriting a record in passing, because the Finished MACs cover the transcript.
+      Changing either means an openssl option or our own TLS-PSK server. **The PSK wall is still ahead**: if
+      the EC eventually rejects the key, the probe prints the fallbacks below and they come first.
+- [ ] **5c — Capture and decode one real frame.** *Built:* `--capture FILE` sends `0x20`, decrypts,
+      trims and writes a PGM (`0600`, gitignored). `image.TrimFrame` decides bare (7680) against wrapped
+      (7693) from the length that arrives and refuses to guess an offset. The 7744-byte record was
+      reproduced exactly from a synthetic 7680-byte frame, so the padding arithmetic is now verified
+      against openssl rather than only calculated. *To do:* the live run, and **write the plaintext length
+      down** — it is the measurement that settles the layout.
+- [ ] **5d — Finger-detection (FDT) loop.** Not started, and deliberately last. `proto.EncodeFDTArm` and
+      `DecodeFDTEvent` exist, but an arm carries six per-zone thresholds the vendor derives at runtime from
+      the previous readings, so there is no vendor payload to copy — the thresholds have to come from real
+      FDT events, which means 5c first. Then implement the `32` / `20` / `34` loop so a capture is
+      triggered by touch.
 
 **If the recovered PSK is rejected in 5b**, in order of preference:
 1. Re-audit the unseal (secondary entropy, master key) — 5b is the first real test of the recovered key.

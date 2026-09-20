@@ -55,6 +55,7 @@ func main() {
 		pskPath  = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
 		capture  = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
 		wrongPSK = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
+		perPack  = flag.Bool("tls-record-per-pack", false, "--tls: send each record of a server flight in its own b0 pack instead of one pack per flight. Run 11's framing, which stalled; kept so the two can be compared on hardware")
 	)
 
 	// One --allow-<opcode> flag per above-ceiling opcode, registered from the
@@ -75,7 +76,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if *useTLS || *pskPath != "" || *capture != "" {
+		if *useTLS || *pskPath != "" || *capture != "" || *perPack {
 			logger.Print("--tls, --psk and --capture only work with --bisect: the bridge runs as the tail of a " +
 				"bisect run so it inherits the keyboard checks (see docs/bisect-runbook.md)")
 			os.Exit(1)
@@ -107,6 +108,8 @@ func main() {
 			capture:  *capture,
 			sendD4:   allowed[opTLSEstablished],
 			getImage: allowed[opGetImage],
+
+			recordPerPack: *perPack,
 		}
 		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
 	}
@@ -468,6 +471,12 @@ func dryRunFrames(logger *log.Logger) {
 	logger.Printf("transcribed from the vendor ETW log (docs/protocol.md). The probe sends NONE of this.")
 	for i, st := range vendorInit {
 		printFrame(logger, fmt.Sprintf("#%d ", i+1), st)
+	}
+
+	logger.Printf("\n\n=== the vendor's capture loop, the part with a fixed payload ===")
+	logger.Printf("observed in dump.pcapng. Only --tls --capture sends this, and only behind --allow-20.")
+	for _, st := range vendorLoop {
+		printFrame(logger, "", st)
 	}
 }
 

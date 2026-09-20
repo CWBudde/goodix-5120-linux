@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -159,5 +160,55 @@ func TestDescribeTLSRecord(t *testing.T) {
 	}
 	if got := DescribeTLSRecord(observedImageHeader[:3]); got != "" {
 		t.Errorf("DescribeTLSRecord of a stub = %q, want \"\"", got)
+	}
+}
+
+// TestPlaintextHexNeverPrintsAnImage is the important half of the rule: an
+// application-data record is a fingerprint on this device, and no amount of
+// logging convenience may print one. The rule is by record type, so this holds
+// for every length and at every point in the session.
+func TestPlaintextHexNeverPrintsAnImage(t *testing.T) {
+	// The real thing: the record length seen from the device in dump.pcapng.
+	body := make([]byte, 7744)
+	for i := range body {
+		body[i] = byte(i)
+	}
+	rec := append([]byte{TLSApplicationData, 0x03, 0x03, 0x1e, 0x40}, body...)
+
+	if got := TLSPlaintextHex(rec); got != "" {
+		t.Errorf("TLSPlaintextHex printed %d characters of an image record", len(got))
+	}
+	if got := (TLSRecord{Type: TLSApplicationData, Body: body}).PlaintextHex(); got != "" {
+		t.Errorf("TLSRecord.PlaintextHex printed %d characters of an image record", len(got))
+	}
+}
+
+// TestPlaintextHexPrintsHandshakeRecords pins the other half. The bytes are the
+// EC's own ClientHello from Run 11 — a public handshake value, and the only
+// reason that stalled handshake could be reproduced offline.
+func TestPlaintextHexPrintsHandshakeRecords(t *testing.T) {
+	rec := []byte{TLSHandshake, 0x03, 0x03, 0x00, 0x06, 0x01, 0x00, 0x00, 0x02, 0x03, 0x03}
+	want := "010000020303"
+	if got := TLSPlaintextHex(rec); got != want {
+		t.Errorf("TLSPlaintextHex = %q, want %q", got, want)
+	}
+	for _, typ := range []byte{TLSChangeCipherSpec, TLSAlert} {
+		r := TLSRecord{Type: typ, Body: []byte{0x02, 0x14}}
+		if got := r.PlaintextHex(); got != "0214" {
+			t.Errorf("PlaintextHex for type 0x%02x = %q, want %q", typ, got, "0214")
+		}
+	}
+}
+
+// TestPlaintextHexTruncates keeps one very long handshake record from filling a
+// bisect log, without letting it look complete.
+func TestPlaintextHexTruncates(t *testing.T) {
+	body := make([]byte, MaxLoggedRecord+9)
+	got := (TLSRecord{Type: TLSHandshake, Body: body}).PlaintextHex()
+	if !strings.Contains(got, "(9 more byte(s))") {
+		t.Errorf("PlaintextHex of a %d-byte body did not say what it left out: %q", len(body), got)
+	}
+	if len(got) > 2*MaxLoggedRecord+32 {
+		t.Errorf("PlaintextHex returned %d characters for a %d-byte body", len(got), len(body))
 	}
 }

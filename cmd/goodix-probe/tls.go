@@ -45,6 +45,10 @@ type tlsConfig struct {
 	// bridge would like to send after the handshake.
 	sendD4   bool
 	getImage bool
+
+	// recordPerPack sends each record of a server flight in its own b0 pack, the
+	// framing Run 11 used. See session.Options.RecordPerPack.
+	recordPerPack bool
 }
 
 // opcodes returns the commands the bridge itself may send, so mainBisect can put
@@ -68,8 +72,8 @@ func (c tlsConfig) opcodes() []proto.Opcode {
 // costs a message rather than a live run.
 func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool) error {
 	if !c.enabled {
-		if c.pskPath != "" || c.capture != "" {
-			return errors.New("--psk and --capture only mean something with --tls")
+		if c.pskPath != "" || c.capture != "" || c.recordPerPack {
+			return errors.New("--psk, --capture and --tls-record-per-pack only mean something with --tls")
 		}
 		return nil
 	}
@@ -157,7 +161,10 @@ func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg
 	}
 	defer func() { _ = host.Close() }()
 
-	bridge := session.New(tr, host, session.Options{Logger: logger})
+	bridge := session.New(tr, host, session.Options{Logger: logger, RecordPerPack: cfg.recordPerPack})
+	if cfg.recordPerPack {
+		logger.Printf("  --tls-record-per-pack: each server record goes in its own b0 pack (Run 11's framing)")
+	}
 
 	// 0xd0 gets no ACK; the EC answers by opening a handshake, so the bridge
 	// must start reading immediately. This is why 0xd0 is not a --steps entry.
@@ -171,7 +178,8 @@ func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg
 	}
 
 	if err := bridge.Handshake(ctx); err != nil {
-		explainHandshakeFailure(logger, err)
+		toHost, toDevice := bridge.Counts()
+		explainHandshakeFailure(logger, err, cfg, toHost, toDevice)
 		return err
 	}
 
@@ -300,8 +308,10 @@ func sendAndCollect(logger *log.Logger, tr transport.Transport, op proto.Opcode)
 // explainHandshakeFailure turns the bridge's error into the next thing to do.
 // PLAN.md Phase 5b lists the fallbacks; this is that list at the point of
 // failure.
-func explainHandshakeFailure(logger *log.Logger, err error) {
+func explainHandshakeFailure(logger *log.Logger, err error, cfg tlsConfig, toHost, toDevice int) {
 	switch {
+	case errors.Is(err, session.ErrHandshakeTimeout):
+		explainStall(logger, cfg, toHost, toDevice)
 	case errors.Is(err, session.ErrPSKMismatch):
 		logger.Printf("\n  THE EC DID NOT ACCEPT THIS PSK.")
 		logger.Printf("  This is the PLAN.md Phase 5b wall. In order of preference:")
@@ -313,9 +323,38 @@ func explainHandshakeFailure(logger *log.Logger, err error) {
 	case errors.Is(err, session.ErrAlert):
 		logger.Printf("\n  The handshake was rejected, but not for a reason that means a key mismatch.")
 		logger.Printf("  Record the alert in docs/protocol.md: it is new information either way.")
-	case errors.Is(err, session.ErrHandshakeTimeout):
-		logger.Printf("\n  Neither side finished the handshake. Either the EC never started one —")
-		logger.Printf("  check whether the init actually reached the state the vendor reaches before 0xd0 —")
-		logger.Printf("  or its records are not arriving as b0 packs. The record counts above say which.")
+	}
+}
+
+// explainStall reads a timed-out handshake off the record counts. Which of these
+// happened decides what to change next, and they want opposite changes, so the
+// counts are worth printing rather than one generic message.
+func explainStall(logger *log.Logger, cfg tlsConfig, toHost, toDevice int) {
+	switch {
+	case toHost == 0:
+		logger.Printf("\n  The EC never started a handshake: nothing arrived as a b0 pack.")
+		logger.Printf("  That points at the init, not at the key — check whether the steps really reached")
+		logger.Printf("  the state the vendor reaches before 0xd0 (docs/protocol.md, the vendor's 14 frames).")
+	case toDevice == 0:
+		logger.Printf("\n  The EC opened a handshake and the host answered nothing, which is a fault on")
+		logger.Printf("  our side: openssl should reply to a ClientHello in under a millisecond. Check the")
+		logger.Printf("  local endpoint's stderr above, and that the cipher list still offers 0x00ae.")
+	case cfg.recordPerPack:
+		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
+		logger.Printf("  This run used --tls-record-per-pack, which is Run 11's framing. Try it WITHOUT that")
+		logger.Printf("  flag: the flight then goes out as one b0 pack, which is how openssl writes it.")
+	default:
+		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert —")
+		logger.Printf("  so it did not fail to parse what it got, it is waiting for something. The flight")
+		logger.Printf("  already went out as ONE pack, so the remaining suspects are its contents, not its")
+		logger.Printf("  framing. In order of cheapness:")
+		logger.Printf("    1. The ServerHello carries a 32-byte session id and a renegotiation_info")
+		logger.Printf("       extension; the EC's own ClientHello carries no extensions field at all.")
+		logger.Printf("    2. There is no ServerKeyExchange, because the host sets no PSK identity hint.")
+		logger.Printf("       RFC 4279 makes it optional, but a minimal client may wait for one.")
+		logger.Printf("  Both are openssl's output, and a record cannot be edited on the way past: the")
+		logger.Printf("  Finished MACs cover the transcript, so rewriting a byte here breaks the handshake")
+		logger.Printf("  it is meant to fix. Changing either means an openssl option or our own TLS-PSK")
+		logger.Printf("  server. Record the transcript above in docs/protocol.md first — it is the evidence.")
 	}
 }

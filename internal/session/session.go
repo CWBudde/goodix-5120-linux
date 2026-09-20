@@ -74,6 +74,12 @@ type Options struct {
 	HostIdle         time.Duration
 	HostBody         time.Duration
 	HandshakeTimeout time.Duration
+
+	// RecordPerPack sends each record of a host flight in its own TLS-data pack
+	// instead of one pack per flight. This was the behaviour in Run 11, where the
+	// handshake stalled after the server flight; see PumpHost. It is kept as an
+	// option because only hardware can say which framing the EC wants.
+	RecordPerPack bool
 }
 
 func (o Options) withDefaults() Options {
@@ -216,7 +222,7 @@ func (b *Bridge) Deliver(raw []byte) (bool, error) {
 	// something we would rather see reassembled than dropped.
 	if recs, err := proto.SplitTLSRecords(payload); err == nil {
 		for _, r := range recs {
-			b.opts.Logger.Printf("  TLS: device → host: %s", r)
+			b.logRecord("device → host", r.String(), r.PlaintextHex())
 			if r.Type == proto.TLSAlert {
 				return true, b.alertError("the device", r.Body)
 			}
@@ -233,44 +239,112 @@ func (b *Bridge) Deliver(raw []byte) (bool, error) {
 	return true, nil
 }
 
-// PumpHost forwards every record the local endpoint has ready to the device and
+// PumpHost forwards everything the local endpoint has ready to the device and
 // returns once it has nothing more to say.
+//
+// The records of one flight are gathered and sent as a SINGLE TLS-data pack,
+// because that is how they leave openssl: ServerHello and ServerHelloDone are
+// one 95-byte write on the socket, and splitting them into two packs is this
+// bridge's doing, not the server's.
+//
+// Run 11 (2026-09-20) is why that matters. The EC opened the handshake, the
+// bridge sent those two records as two packs, and the EC answered with a
+// zero-length transfer and then said nothing for the whole 20-second timeout —
+// no alert, which is what a stack sends when it cannot parse what it got. Silence
+// after a ServerHello that arrived alone looks instead like an endpoint still
+// waiting for the rest of a flight it reads one transfer at a time. Options.
+// RecordPerPack restores the split so the two can be compared on hardware;
+// neither framing is confirmed yet, and the vendor capture cannot settle it
+// because it holds no host-to-device TLS pack at all.
 func (b *Bridge) PumpHost() error {
-	for {
+	var (
+		flight   [][]byte
+		total    int
+		finished bool // change cipher spec then Finished, seen in this flight
+	)
+
+	for !finished {
 		rec, err := b.readHostRecord()
 		if errors.Is(err, errHostIdle) {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
 		}
 
 		typ := rec[0]
-		b.opts.Logger.Printf("  TLS: host → device: %s", proto.DescribeTLSRecord(rec))
+		b.logRecord("host → device", proto.DescribeTLSRecord(rec), proto.TLSPlaintextHex(rec))
 		if typ == proto.TLSAlert {
 			// A plaintext alert during the handshake carries a readable level
 			// and description; once the session is encrypted it does not, and
-			// the body is reported as opaque.
+			// the body is reported as opaque. Either way the handshake is over,
+			// so nothing gathered ahead of it is worth sending.
 			if err := b.alertError("the host", rec[proto.TLSRecordHeaderLen:]); err != nil {
 				return err
 			}
 		}
 
-		if err := b.dev.SendTLS(rec); err != nil {
-			return fmt.Errorf("session: sending a %s record to the device: %w", proto.TLSTypeName(typ), err)
-		}
-		b.toDevice++
+		flight = append(flight, rec)
+		total += len(rec)
 
 		switch {
 		case typ == proto.TLSChangeCipherSpec:
 			b.hostCCS = true
 		case typ == proto.TLSHandshake && b.hostCCS:
 			// Change cipher spec then Finished: the host has verified the EC's
-			// Finished, so the handshake is up.
-			b.done = true
-			return nil
+			// Finished, so the handshake is up. It still has to go out.
+			finished = true
 		}
 	}
+
+	if len(flight) == 0 {
+		return nil
+	}
+	if err := b.sendFlight(flight, total); err != nil {
+		return err
+	}
+	b.toDevice += len(flight)
+	if finished {
+		b.done = true
+	}
+	return nil
+}
+
+// sendFlight writes one flight to the device: one pack, or one pack per record
+// if Options.RecordPerPack says so.
+func (b *Bridge) sendFlight(flight [][]byte, total int) error {
+	if b.opts.RecordPerPack {
+		for _, rec := range flight {
+			if err := b.dev.SendTLS(rec); err != nil {
+				return fmt.Errorf("session: sending a %s record to the device: %w",
+					proto.TLSTypeName(rec[0]), err)
+			}
+		}
+		return nil
+	}
+
+	pack := make([]byte, 0, total)
+	for _, rec := range flight {
+		pack = append(pack, rec...)
+	}
+	if len(flight) > 1 {
+		b.opts.Logger.Printf("  TLS: host → device: %d records as one pack, %d bytes", len(flight), total)
+	}
+	if err := b.dev.SendTLS(pack); err != nil {
+		return fmt.Errorf("session: sending a %d-record flight (%d bytes) to the device: %w",
+			len(flight), total, err)
+	}
+	return nil
+}
+
+// logRecord logs one record, with its bytes when its type permits (see
+// proto.TLSRecord.PlaintextHex — an image never reaches this).
+func (b *Bridge) logRecord(dir, desc, hex string) {
+	if hex == "" {
+		b.opts.Logger.Printf("  TLS: %s: %s", dir, desc)
+		return
+	}
+	b.opts.Logger.Printf("  TLS: %s: %s: %s", dir, desc, hex)
 }
 
 // errHostIdle means the local endpoint had no record ready. It never leaves this
@@ -421,6 +495,18 @@ func (b *Bridge) alertError(side string, body []byte) error {
 	level, desc := body[0], body[1]
 	if level == 1 && desc == alertCloseNotify {
 		return fmt.Errorf("%w: %s closed the session (close_notify)", ErrAlert, side)
+	}
+
+	// unknown_psk_identity is about the *name* of the key, not the key: the two
+	// ends can hold identical PSKs and still land here if the EC asks for an
+	// identity the host was not configured with. It is still a rejection, so it
+	// still matches ErrPSKMismatch for a caller that only wants that, but saying
+	// "you do not share the same PSK" would send someone to re-audit an unseal
+	// that is fine.
+	if desc == alertUnknownPSKID {
+		return fmt.Errorf("%w (identity, not key: %s does not know the PSK identity the other end asked for)"+
+			": %s sent a %s alert: %s (0x%02x)",
+			ErrPSKMismatch, side, side, alertLevelName(level), alertName(desc), desc)
 	}
 
 	err := ErrAlert

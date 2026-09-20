@@ -47,6 +47,48 @@ const (
 // tlsVersionMajor is the major version of every TLS version through 1.3.
 const tlsVersionMajor = 0x03
 
+// MaxLoggedRecord bounds how much of a body PlaintextHex will return.
+const MaxLoggedRecord = 512
+
+// PlaintextHex returns the record body as hex when the record is of a type that
+// cannot carry an image, and "" otherwise.
+//
+// The rule is the record TYPE, deliberately, rather than whether the cipher is
+// on yet. Handshake, change-cipher-spec and alert records carry key agreement,
+// a MAC or a reason code; none of them ever carries a fingerprint, and the PSK
+// appears in none of them either, encrypted or not. Application data is the one
+// type that carries an image, and it gets nothing here at any point in the
+// session.
+//
+// Having the exact bytes matters: Run 11's handshake stopped dead after the
+// server flight, and the only reason it could be reproduced offline against
+// openssl was that the EC's ClientHello happened to fit in the transport's
+// 64-byte hex dump. A flight that does not fit would have left nothing to work
+// with.
+func (r TLSRecord) PlaintextHex() string { return plaintextHex(r.Type, r.Body) }
+
+// TLSPlaintextHex is TLSRecord.PlaintextHex for a whole record, header included.
+// A buffer that is not one well-formed record yields "".
+func TLSPlaintextHex(rec []byte) string {
+	typ, _, _, n, err := ParseTLSRecordHeader(rec)
+	if err != nil || len(rec) < TLSRecordHeaderLen+n {
+		return ""
+	}
+	return plaintextHex(typ, rec[TLSRecordHeaderLen:TLSRecordHeaderLen+n])
+}
+
+func plaintextHex(typ byte, body []byte) string {
+	switch typ {
+	case TLSHandshake, TLSChangeCipherSpec, TLSAlert:
+	default:
+		return ""
+	}
+	if len(body) > MaxLoggedRecord {
+		return fmt.Sprintf("%x… (%d more byte(s))", body[:MaxLoggedRecord], len(body)-MaxLoggedRecord)
+	}
+	return fmt.Sprintf("%x", body)
+}
+
 // ErrTLSRecord means a buffer is not a well-formed TLS record. A record that is
 // merely incomplete reports ErrShortBuffer instead, so a caller reading from a
 // stream can tell "read more" from "this is not TLS".

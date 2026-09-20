@@ -272,6 +272,35 @@ func scriptFor(ops []proto.Opcode) []transport.Exchange {
 		}}
 	}
 
+	// The Phase 5 frames are answered with an ACK in every one of the vendor
+	// driver's nine complete inits, so a rehearsal that saw silence instead would
+	// misrepresent the live run — collect would report "no ACK" for a command
+	// that is in fact acknowledged.
+	//
+	// Be precise about what these are: the ACK is on record from the driver log,
+	// the bytes below are OUR encoding of it rather than a capture, and the data
+	// replies the log also records (0x98 and 0x90 answer `01 01`) are deliberately
+	// not invented. 0x96 and 0xd0 get nothing: the log shows the driver not
+	// waiting for a reply to 0x96, and 0xd0 being answered by a handshake.
+	// 0x82 and 0xa6 are ClassSafe and need no flag, but they are in the same
+	// position: acknowledged in the log and in Runs 9 and 10, data reply not
+	// captured. 0xae is left out deliberately — it answers with NO ACK.
+	for _, op := range []proto.Opcode{
+		opReset, opIdle, opSetDAC, opUploadConfig, opTLSEstablished, opGetImage,
+		0x82, 0xa6,
+	} {
+		if _, done := byCmd[op]; done {
+			continue
+		}
+		st, ok := bisectable(op)
+		if !ok {
+			continue
+		}
+		byCmd[op] = transport.Exchange{Cmd: op, Payload: st.payload, Responses: [][]byte{
+			proto.Encode(proto.AckCmd, []byte{byte(op), 0x01}),
+		}}
+	}
+
 	out := make([]transport.Exchange, 0, len(ops))
 	for _, op := range ops {
 		ex, ok := byCmd[op]

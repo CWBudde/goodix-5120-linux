@@ -38,16 +38,42 @@ The log goes to stdout and to `goodix-bisect-<time>.log`. The file is flushed to
 Step markers (`goodix-probe: ...`) also go to the kernel log, so they line up with kernel messages in
 `journalctl -k`.
 
-`--steps` accepts an opcode only when it is `ClassSafe` **and** its payload is on record from the vendor
-driver — today `a8`, `ae`, `82` and `a6`. That is how PLAN.md Phase 4 adds one command per live run
-without widening what the plain probe sends. It cannot name a state-changing opcode on its own, so the
-run fails before the device is opened rather than halfway through.
+`--steps` accepts an opcode only when its payload is on record from the vendor driver — that is, when it
+appears in `vendorInit` or `vendorLoop` in `cmd/goodix-probe/vendor.go`. A `ClassSafe` one passes on its
+own: today `a8`, `ae`, `82` and `a6`. That is how one command is added per live run without widening what
+the plain probe sends, and a run that asks for something else fails before the device is opened rather
+than halfway through.
 
-Two state-changing opcodes can be unlocked, each by its own flag and one at a time: `--allow-e4` admits
-`preset_psk_read` (`0xe4`) and `--allow-a2` admits `reset` (`0xa2`). A flag lifts the ceiling for that
-one opcode and nothing else, and only when the opcode is actually in `--steps`; the ceiling itself stays
-`ClassSafe`. Both frames go out with the vendor's payload — `0xe4` with its 8-byte argument, `0xa2` with
-`01 14`.
+Every state-changing frame needs **its own flag**, and the flag's help text says what the frame does:
+
+| Flag | Opcode | What it sends |
+|---|---|---|
+| `--allow-96` | `0x96` enable_chip | `01 02`; the vendor's first frame, no reply expected |
+| `--allow-e4` | `0xe4` preset_psk_read | the vendor's 8-byte argument — **never the empty frame**; the reply holds a hash of the device PSK |
+| `--allow-a2` | `0xa2` reset | `01 14`; populates the chip-ID register |
+| `--allow-70` | `0x70` idle | `14 00` |
+| `--allow-98` | `0x98` set_dac | `c8 0b be 00 bc 00 bc 00` — DAC values derived from **this** machine's OTP |
+| `--allow-90` | `0x90` upload_config_mcu | the vendor's 224-byte register script; the largest state change in the init |
+| `--allow-d0` | `0xd0` request_tls_connection | `00 00`; no ACK — the EC opens a TLS handshake |
+| `--allow-d4` | `0xd4` tls_successfully_established | `00 00` |
+| `--allow-20` | `0x20` mcu_get_image | `01 00`; the frame comes back as an encrypted TLS record |
+
+A flag lifts the ceiling for that one opcode and nothing else, and only when the run actually sends it —
+as a `--steps` entry, or as one of the commands `--tls` sends itself. The ceiling stays `ClassSafe`, and
+no flag can admit a destructive opcode: `0xf0` and `0xe0` are not in this build at all.
+`TestEveryAboveCeilingVendorFrameIsCatalogued` pins the table above against the vendor catalogue in both
+directions, so a new frame cannot become sendable without someone writing down why.
+
+Rehearse any selection offline first. The replay now answers the Phase 5 frames with the ACK the driver
+log records for them, so a rehearsal shows the same shape of exchange as the live run:
+
+```sh
+./goodix-probe --bisect --replay --assume-keys --allow-a2 --allow-70 --allow-98 --allow-90 \
+  --steps a8,ae,a2,82,a6,a2,70,98,90
+```
+
+The data replies are **not** invented: `0x98` and `0x90` answer `01 01` in the log, and the rehearsal
+sends only the ACK. `0xae` gets no ACK at all there, which is correct — it never does.
 
 ## Before
 
@@ -150,6 +176,108 @@ Rehearse offline first:
 
 ```sh
 ./goodix-probe --bisect --replay --assume-keys --allow-a2 --steps a8,ae,a2,82,a6
+```
+
+## `--tls` — the TLS-PSK handshake (PLAN.md Phase 5b)
+
+This is the step the project turns on: **does the EC accept the PSK recovered from Windows?**
+
+`--tls` runs as the tail of a bisect run, not as a mode of its own, so it inherits everything above — one
+command per step, a key press after each, the flushed log — and the keyboard is checked once more after
+the bridge. The bridge sends `0xd0` itself, at the moment it can catch the EC's ClientHello, so **do not
+put `d0` in `--steps`**: the step loop drains the device after every command and would throw the hello
+away. The probe refuses that combination rather than letting it happen.
+
+```sh
+# 1. Recover the PSK first, if it is not already there (docs/dpapi-runbook.md).
+#    It must be the raw 32 bytes, and it must stay in gitignored captures/.
+./goodix-dpapi -sys … -sec … -mkdir … -blob …/Goodix_Cache.bin -goodix -out captures/goodix-psk.bin
+
+# 2. Rehearse offline. No device is opened; the "EC" is an openssl s_client
+#    wearing Goodix framing, so the TLS bytes are real but the device is not.
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --steps a8
+
+# 3. Rehearse the failure too, so its output is familiar before it matters.
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --steps a8 --rehearse-rejection
+
+# 4. Live, with an external keyboard attached. Steps first, then the bridge.
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin \
+  --allow-96 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
+  --steps 96,a8,ae,a2,82,a6,a2,70,98,90
+```
+
+Read the result off the last lines:
+
+- **`handshake complete`** — the EC accepted the key. Phase 5b is answered, and 5c is next.
+- **`THE EC DID NOT ACCEPT THIS PSK`** — the PLAN.md Phase 5b wall. The probe prints the fallbacks; take
+  them in the order given, and record the alert in `docs/protocol.md` first.
+- **`did not complete in time`** — the probe reads the record counts and says which of three things
+  happened: the EC never started a handshake (`0 record(s) to the host` — that points at the init, not the
+  key), the host never answered, or **the EC started one and went quiet after the server flight**, which is
+  what Run 11 did.
+
+### What Run 11 found, and what changed because of it
+
+Run 11 (2026-09-20) got the whole init through live and the EC opened a handshake, then stalled: the host's
+ServerHello and ServerHelloDone went out as **two** `0xb0` packs, the EC answered with a zero-length
+transfer, and nothing followed. No alert either way — and an alert is what a TLS stack sends when it cannot
+parse what it got, so silence looks like an endpoint still waiting for the rest of a flight.
+
+So a flight now goes out as **one pack**, which is how openssl writes it — ServerHello and ServerHelloDone
+leave the socket in a single 95-byte write. Nothing about this is confirmed: the vendor capture holds 43
+device→host TLS packs and **no host→device TLS pack at all**, so hardware is the only way to tell. Run the
+command above as it stands first. If it stalls the same way, the other framing is one flag apart:
+
+```sh
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --tls-record-per-pack \
+  --allow-96 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
+  --steps 96,a8,ae,a2,82,a6,a2,70,98,90
+```
+
+Handshake records are now logged in **full hex**, both directions. That is deliberate and it is bounded by
+record type: a handshake, change-cipher-spec or alert record carries key agreement, a MAC or a reason code,
+never an image and never the PSK, while application data — the one type that carries a fingerprint — is
+never logged at any point. It matters because Run 11's stall could only be reproduced offline against
+openssl thanks to the EC's ClientHello being in the log, and the next flight will be larger than the
+transport's 64-byte hex dump.
+
+**Keep the log for a stalled run.** It is the transcript, and it is what makes the failure reproducible
+without the device.
+
+Two things the rehearsal cannot tell you, because it is openssl and not an embedded controller: whether
+the EC accepts the key, and whether it wants a server flight as one `b0` pack or as one pack per record.
+What it does check is our side — the framing, the sequencing, the PSK file, and the refusals.
+
+Note the PSK is passed as a **path**, never as hex on the command line: an argument lands in the shell
+history and in `ps` output. The log says how many bytes were loaded and nothing else.
+
+## `--capture` — one real frame (PLAN.md Phase 5c)
+
+With the handshake up, `--capture` asks for a frame with `0x20`, decrypts it, and writes a PGM:
+
+```sh
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --capture captures/frame-1.pgm \
+  --allow-96 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --allow-20 \
+  --steps 96,a8,ae,a2,82,a6,a2,70,98,90
+```
+
+**The output is biometric data.** It is written `0600`, `.gitignore` covers `*.pgm` and `captures/`, and it
+must never go into an issue report.
+
+The number to write down is the **plaintext length**. 7680 bytes means bare packed samples; 7693 means
+upstream's 8-byte header and 5-byte trailer around them. The 7744-byte record seen on the wire is
+consistent with both, so this run is what settles it (`docs/protocol.md`, "How big is an image, really").
+Anything else, and the probe refuses to guess an offset — a frame decoded from the wrong offset still
+looks like a fingerprint, so the mistake would not show in the picture. Record the length either way.
+
+Rehearse it first; the stand-in sends a synthetic gradient, so the PGM from a rehearsal is a ramp, not a
+fingerprint:
+
+```sh
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
 ```
 
 ## Afterwards
