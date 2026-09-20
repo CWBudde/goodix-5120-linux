@@ -94,6 +94,22 @@ flow.
       If Disable/Enable still produces no init, **Uninstall** (keep the driver) + **Scan for hardware
       changes**. Needed for the full 224-byte `0x90` config, which the log truncates, and to match
       the log against the wire byte for byte.
+      Attempt 2, `disable-enable.pcapng` (2026-09-19 22:24): **0 frames** — the sensor was not on the
+      captured hub at all. 18 transfers, all at one timestamp, all from the descriptor sweep: the
+      camera, the Bluetooth radio, one more. USBPcap renumbers its interfaces per boot and per hub
+      topology, and the dock that was attached for the first two captures was gone. Identify the
+      interface before capturing.
+      Attempts 3 and 4, `disable-enable2.pcapng` (23:13) and `disable-enable3.pcapng` (23:26): right
+      hub (bus 1, device 3), and both hold the **Disable** and nothing else — `96 [00 02]`, one `ae`,
+      then the driver unloads. Attempt 4 ran 84.6 s, **74.7 s of it after the unload**, with not one
+      byte from the sensor, while other devices on the same hub transferred to the last second. So
+      the Enable produces nothing capturable. New from them: the driver's shutdown command,
+      `enable_chip(0)`, which the debug log never showed (`docs/protocol.md`, "Disable device,
+      Windows"). Still no `0x90`.
+      **Next step is the `.evtx`, not another capture.** It says whether an init ran at 23:26 at all,
+      which decides between "the Enable runs no init" (then force one: Win+L and sign in with the
+      finger, capture running) and "USBPcap cannot see it" (then Uninstall + Scan for hardware
+      changes instead of Disable/Enable).
       Runbook: [`docs/windows-capture-runbook.md`](docs/windows-capture-runbook.md) — rewritten
       2026-09-20 down to just this capture and the three files to carry back with it.
 - [ ] **Keep the debug log in every Windows session.** Copy

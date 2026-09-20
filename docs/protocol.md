@@ -513,18 +513,67 @@ Arm payloads confirm the documented shape: `0c 01`/`0e 01`/`0d 01`, then six `80
 `uint16` that only `0x32` carries and that changes between arms (a timestamp). The `0x80` before each
 threshold is constant in all 91 arms.
 
-The `0xae` reply is byte-identical in both captures, with `isTlsConnected` set:
+The `0xae` reply is the same in all four captures except its last two bytes, with `isTlsConnected`
+set every time:
 
 ```
-02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 04 04
+02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 04 04   restart.pcapng, dump.pcapng   21:12
+02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 0a 0a   disable-enable2.pcapng        23:13
+02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 0e 0e   disable-enable3.pcapng        23:26
 ```
+
+Bytes 0-17 are identical across all of them. Bytes 18 and 19 always carry the same value as each
+other, and across these three observations that value only goes up: `04`, `0a`, `0e`. A counter of
+some kind — of inits, or of power transitions — is the obvious guess, but three points in wall-clock
+order are not enough to call it, and the first two are from different boots. **Hypothesis, not
+observed.** They are not the TX timestamp: the host supplies that, and it differs within a session.
+
+### Disable device, Windows (observed twice, 2026-09-19 23:13 and 23:26)
+
+`disable-enable2.pcapng` and `disable-enable3.pcapng` each caught a Device Manager **Disable** — the
+shutdown half of the Disable/Enable that is meant to produce an init. The two are the same sequence
+to the byte, differing only in the `ae` timestamp and the trailing counter of its reply:
+
+| t | direction | frame |
+|---|---|---|
+| +7.6 s | TX | `96` enable_chip, payload `00 02` |
+| +7.6 s | TX | `ae` get MCU state, payload `55` + timestamp |
+| +7.6 s | RX | 20-byte state, `isTlsConnected` still set |
+| +9.1 s / +9.8 s | — | the pending bulk IN completes with `USBD_STATUS_CANCELED`: the driver is unloading |
+
+**The init's `96` carries `01 02`; this one carries `00 02`** — the same command with its first byte
+cleared. So `enable_chip` does take a boolean, upstream's name is right, and the driver does have a
+shutdown command after all. It sends no `a2` reset, no `70` idle, and does not wait for a reply to
+the `96`; the `ae` that follows is the last thing it asks.
+
+This qualifies, and does not contradict, the D0Exit finding below: idle exit sends nothing, an
+explicit Disable sends `enable_chip(0)`.
+
+Not answered by this capture: whether the EC drops its TLS session when the chip is disabled. The
+state read here is from *before* the `96` took effect, or from a chip that had not yet powered down —
+the reply says TLS is up either way. The following Enable is not in the file.
+
+No USB re-enumeration appears anywhere in either capture. The only control transfers on the device
+are the six of USBPcap's injected descriptor sweep at t=0, so Device Manager's Disable did not reset
+or re-address the USB device.
+
+**The Enable produces nothing.** `disable-enable3.pcapng` ran **84.6 s** — 74.7 s of it after the
+driver unloaded — and in that time the sensor sent and received not one byte, and no new device
+number appeared on the bus. Other devices on the same hub (a headset, a mouse, a disk) kept
+transferring to the last second of the file, so the capture itself was alive throughout. Either the
+Enable did not happen inside the capture window, or a Device Manager re-enable does not re-enumerate
+the device where USBPcap can see it. The debug log for that timestamp would settle it, and has not
+been collected yet.
 
 ### Power
 
 - **D0Exit (S0 idle, after 10 s idle) sends nothing to the EC.** The driver stops its read pipe and
   leaves the EC armed in FDT-down mode with its TLS session up. On D0Entry it sends only `ae` and
-  re-arms `32` if needed. No shutdown or D3Final sequence appears anywhere in the log. The driver has
-  no quiesce command; the host just stops reading.
+  re-arms `32` if needed. No shutdown or D3Final sequence appears anywhere in the log; on idle, the
+  host just stops reading.
+- **An explicit Device Manager Disable is different: it sends `96` `enable_chip` with `00 02`**, then
+  one `ae`, then the driver unloads. See "Disable device, Windows" above. So the driver does have a
+  quiesce command — the log never showed it because no init in the log was preceded by a Disable.
 - So the EC tolerates the host going away, which fits Run 2: the keyboard died right after the empty
   `0xe4`, not at exit.
 
