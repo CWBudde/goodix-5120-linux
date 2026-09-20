@@ -196,13 +196,16 @@ Blocked on the PSK. The options, in order of preference:
 
 Then:
 
-- TLS server side in `internal/tlspsk`: the host is the **server**, suite `0x00ae`. The recovered PSK is
-  now wired in — `tlspsk.LoadPSK` reads the raw 32-byte key `goodix-dpapi -out` writes to gitignored
-  `captures/`, and `tlspsk.ParsePSKHex` takes the `-print-psk` hex form, so `Config.PSK` gets the device key
-  without the secret entering the repo. The subprocess wrapper and its end-to-end PSK handshake test already
-  pass. Still open: confirm `openssl s_server -psk` actually offers `PSK-AES128-CBC-SHA256` (suite `0x00ae`),
-  and there is deliberately still **no call site** — driving the real device over `d0` is live-hardware work,
-  gated as before.
+- TLS server side in `internal/tlspsk`: the host is the **server**, suite `0x00ae`. Done except the call
+  site. The recovered PSK is wired in — `tlspsk.LoadPSK` reads the raw 32-byte key `goodix-dpapi -out` writes
+  to gitignored `captures/`, and `tlspsk.ParsePSKHex` takes the `-print-psk` hex form, so `Config.PSK` gets
+  the device key without the secret entering the repo. **The suite is confirmed:** on this machine's openssl
+  (3.5.5) `PSK-AES128-CBC-SHA256` (`0x00ae`, `TLS_PSK_WITH_AES_128_CBC_SHA256`) is offered and negotiates at
+  the default security level with the `s_server` config the package already uses — no `@SECLEVEL=0` needed
+  here. `TestNegotiatesDeviceSuite` pins it (a client offering only `0x00ae` over TLS 1.2 negotiates it), and
+  `Config.Cipher` is an optional knob for stricter distros that drop legacy CBC PSK suites. There is
+  deliberately still **no call site** — driving the real device over `d0` is live-hardware work, gated as
+  before.
 - Image decode for 80 × 64 (`internal/image`). The 12-bit packing from upstream is a hypothesis for this
   sensor. **7744 is the TLS *record* length, not the plaintext** — the plaintext is 7680–7695 bytes; see
   `docs/protocol.md`, "How big is an image, really". It has to be measured, but the arithmetic already
@@ -217,8 +220,10 @@ Then:
 1. **Phase 2:** post the two drafts.
 2. ~~**Phase 4:** steps 1–4, one command per run, external keyboard attached.~~ **Done 2026-09-20,
    Runs 5–10.**
-3. **Phase 5:** PSK unsealed (2026-09-20) and wired into `internal/tlspsk` (`LoadPSK`/`ParsePSKHex`). Next is
-   confirming the `openssl s_server` cipher suite and the 80 × 64 image decode.
+3. **Phase 5:** PSK unsealed (2026-09-20), wired into `internal/tlspsk` (`LoadPSK`/`ParsePSKHex`), and the
+   `0x00ae` suite confirmed available in the openssl the package drives (`TestNegotiatesDeviceSuite`). The
+   80 × 64 image decode is verified correct against upstream's packing (`internal/image`, 7680 bytes →
+   5120 pixels). What remains is all live-hardware: the `d0` handshake and a real frame, both gated.
 
 Optional and blocking nothing: the init capture in Phase 3.
 

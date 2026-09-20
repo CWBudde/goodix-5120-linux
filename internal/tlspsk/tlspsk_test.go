@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -290,6 +291,129 @@ func TestReadWriteAfterClose(t *testing.T) {
 	}
 	if _, err := s.Read(make([]byte, 1)); err == nil {
 		t.Fatal("Read after Close should fail")
+	}
+}
+
+// DeviceCipher is the OpenSSL name for TLS_PSK_WITH_AES_128_CBC_SHA256
+// (code point 0x00AE), the only suite the Goodix 51x0 offers as the TLS client.
+const DeviceCipher = "PSK-AES128-CBC-SHA256"
+
+// hasCipher reports whether this machine's openssl lists name among its
+// available ciphers (at any security level via @SECLEVEL=0), so the suite test
+// can skip rather than fail on a stripped-down openssl.
+func hasCipher(t *testing.T, name string) bool {
+	t.Helper()
+	// PSK suites are not part of openssl's "ALL" group, so query them by name;
+	// @SECLEVEL=0 keeps a raised default security level from hiding the legacy
+	// CBC suite. No -s: that flag narrows the listing to the default protocol
+	// (TLS 1.3 here) and would hide this TLS 1.2 suite.
+	out, err := exec.Command(DefaultOpenSSL, "ciphers", "PSK:@SECLEVEL=0").Output()
+	if err != nil {
+		return false
+	}
+	return slices.Contains(strings.Split(strings.TrimSpace(string(out)), ":"), name)
+}
+
+// TestNegotiatesDeviceSuite pins the scaffold to the device's actual suite:
+// with the server configured exactly as Start does by default, a client that
+// offers only PSK-AES128-CBC-SHA256 over TLS 1.2 — as the 51x0 does — must
+// negotiate that suite. This is the regression check that the openssl the
+// package drives still speaks 0x00AE.
+func TestNegotiatesDeviceSuite(t *testing.T) {
+	requireOpenSSL(t)
+	if !hasCipher(t, DeviceCipher) {
+		t.Skipf("openssl on this machine does not offer %s; skipping suite pin", DeviceCipher)
+	}
+
+	s, err := Start(context.Background(), testConfig())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// s_client stands in for the sensor and relays its ciphertext through
+	// Session.Device(), just as the e2e test does. s_server serves one
+	// connection at a time and Session already holds it, so s_client connects
+	// to a throwaway listener owned by the test.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			accepted <- c
+		} else {
+			close(accepted)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	// The device offers only 0x00AE over TLS 1.2; reproduce that exactly. No
+	// -quiet, so s_client prints the negotiated suite to stdout.
+	client := exec.CommandContext(ctx, DefaultOpenSSL, "s_client",
+		"-psk", ReferencePSKHex,
+		"-connect", ln.Addr().String(),
+		"-cipher", DeviceCipher,
+		"-tls1_2",
+	)
+	clientIn, err := client.StdinPipe()
+	if err != nil {
+		t.Fatalf("client stdin: %v", err)
+	}
+	var out bytes.Buffer
+	client.Stdout = &out
+	client.Stderr = &out
+	if err := client.Start(); err != nil {
+		t.Fatalf("starting s_client: %v", err)
+	}
+	defer func() {
+		_ = clientIn.Close()
+		_ = client.Process.Kill()
+		_ = client.Wait()
+	}()
+
+	var deviceConn net.Conn
+	select {
+	case c, ok := <-accepted:
+		if !ok {
+			t.Fatal("accept failed")
+		}
+		deviceConn = c
+	case <-time.After(10 * time.Second):
+		t.Fatal("s_client never connected")
+	}
+	defer func() { _ = deviceConn.Close() }()
+
+	go func() { _, _ = io.Copy(s.Device(), deviceConn) }()
+	go func() { _, _ = io.Copy(deviceConn, s.Device()) }()
+
+	// Let the handshake complete, then tell s_client to quit so it flushes its
+	// session summary and exits.
+	time.Sleep(700 * time.Millisecond)
+	_, _ = clientIn.Write([]byte("Q\n"))
+
+	done := make(chan struct{})
+	go func() { _ = client.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("s_client did not exit after quit")
+	}
+
+	got := out.String()
+	if !strings.Contains(got, DeviceCipher) {
+		t.Fatalf("negotiated cipher does not mention %s; s_client output:\n%s", DeviceCipher, got)
+	}
+	// Guard against a false positive from the echoed -cipher argument or a
+	// handshake failure: require the positive handshake marker too.
+	if !strings.Contains(got, "Cipher is "+DeviceCipher) &&
+		!strings.Contains(got, "Cipher    : "+DeviceCipher) {
+		t.Fatalf("no successful-handshake marker for %s; s_client output:\n%s", DeviceCipher, got)
 	}
 }
 

@@ -129,6 +129,97 @@ func TestDecode12BitPackedErrors(t *testing.T) {
 	}
 }
 
+// pack12Bit is the inverse of the Decode12BitRaw layout, defined only in the
+// test so a round-trip can guard the (deliberately irregular) unpack against
+// accidental change. samples must be a multiple of SamplesPer12BitGroup and
+// each value must fit in 12 bits.
+func pack12Bit(samples []uint16) []byte {
+	out := make([]byte, 0, len(samples)/SamplesPer12BitGroup*BytesPer12BitGroup)
+	for i := 0; i < len(samples); i += SamplesPer12BitGroup {
+		s0, s1, s2, s3 := samples[i], samples[i+1], samples[i+2], samples[i+3]
+		b0 := byte((s0>>8)&0x0f) | byte(s1&0x0f)<<4
+		b1 := byte(s0)
+		b2 := byte(s2)
+		b3 := byte(s1 >> 4)
+		b4 := byte(s3 >> 4)
+		b5 := byte((s2>>8)&0x0f) | byte(s3&0x0f)<<4
+		out = append(out, b0, b1, b2, b3, b4, b5)
+	}
+	return out
+}
+
+// Round-trip synthetic 12-bit samples through pack12Bit and Decode12BitRaw.
+// The values cover the full 0..4095 range so every nibble position is
+// exercised; no real sensor frame is involved.
+func TestDecode12BitRawRoundTrip(t *testing.T) {
+	const w, h = 80, 64 // 5120 samples, the believed 5120 geometry
+	samples := make([]uint16, w*h)
+	for i := range samples {
+		samples[i] = uint16((i * 7) & 0x0fff) // spread across 0..4095
+	}
+	raw := pack12Bit(samples)
+	if len(raw) != w*h/SamplesPer12BitGroup*BytesPer12BitGroup {
+		t.Fatalf("packed %d bytes, want %d", len(raw), w*h/SamplesPer12BitGroup*BytesPer12BitGroup)
+	}
+	got, err := Decode12BitRaw(raw, w, h)
+	if err != nil {
+		t.Fatalf("Decode12BitRaw: %v", err)
+	}
+	if len(got) != len(samples) {
+		t.Fatalf("got %d samples, want %d", len(got), len(samples))
+	}
+	for i := range samples {
+		if got[i] != samples[i] {
+			t.Fatalf("sample %d round-trips to 0x%03x, want 0x%03x", i, got[i], samples[i])
+		}
+	}
+}
+
+// The 5120 is believed to be 80x64 = 5120 pixels, 12-bit packed at four
+// samples per six bytes = exactly 7680 bytes of plaintext (see docs/protocol.md
+// "How big is an image, really"). This pins that arithmetic and the pixel count
+// with synthetic zero data; the 12-bit packing itself remains a hypothesis.
+func TestDecode12Bit80x64(t *testing.T) {
+	const w, h = 80, 64
+	const wantBytes = 7680
+	const wantPixels = 5120
+	if w*h != wantPixels {
+		t.Fatalf("%dx%d = %d, want %d pixels", w, h, w*h, wantPixels)
+	}
+	if got := w * h / SamplesPer12BitGroup * BytesPer12BitGroup; got != wantBytes {
+		t.Fatalf("packed size %d, want %d bytes", got, wantBytes)
+	}
+	img, err := Decode12BitPacked(make([]byte, wantBytes), w, h)
+	if err != nil {
+		t.Fatalf("Decode12BitPacked: %v", err)
+	}
+	if len(img.Pix) != wantPixels {
+		t.Fatalf("got %d pixels, want %d", len(img.Pix), wantPixels)
+	}
+}
+
+// A buffer exactly one byte short of a full group must fail; the exact length
+// must succeed. Guards the len(raw) < need boundary.
+func TestDecode12BitLengthBoundary(t *testing.T) {
+	const w, h = 4, 1 // one group, 6 bytes
+	if _, err := Decode12BitRaw(make([]byte, BytesPer12BitGroup-1), w, h); !errors.Is(err, ErrShortFrame) {
+		t.Fatalf("one byte short: got %v, want ErrShortFrame", err)
+	}
+	if _, err := Decode12BitRaw(make([]byte, BytesPer12BitGroup), w, h); err != nil {
+		t.Fatalf("exact length: unexpected error %v", err)
+	}
+	// Trailing bytes beyond the needed count are tolerated: the decoder reads
+	// only the leading need bytes, so a caller must strip any header/trailer
+	// (e.g. upstream's 8-byte header + 5-byte trailer) before decoding.
+	got, err := Decode12BitRaw(make([]byte, BytesPer12BitGroup+13), w, h)
+	if err != nil {
+		t.Fatalf("trailing bytes: unexpected error %v", err)
+	}
+	if len(got) != w*h {
+		t.Fatalf("got %d samples, want %d", len(got), w*h)
+	}
+}
+
 // The upstream 51x0 driver reads 10573 bytes from the TLS server, strips an
 // 8-byte header and a 5-byte trailer, and decodes the remaining 10560 bytes as
 // an 80x88 frame. This checks our decoder agrees on the arithmetic, without

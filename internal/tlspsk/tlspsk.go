@@ -123,6 +123,20 @@ type Config struct {
 	// Timeout bounds how long Start waits for the subprocess to accept a
 	// connection. Zero means DefaultTimeout.
 	Timeout time.Duration
+	// Cipher, when non-empty, is passed to `s_server -cipher <Cipher>` to
+	// constrain the TLS 1.2 cipher list the server offers. Empty (the default)
+	// leaves openssl's own default list untouched, which is what upstream does
+	// and what the ReferencePSK path relies on.
+	//
+	// The 51x0 device is the client and offers only 0x00AE
+	// (TLS_PSK_WITH_AES_128_CBC_SHA256, openssl name PSK-AES128-CBC-SHA256), a
+	// TLS 1.2 CBC-SHA256 suite. On the openssl this was validated against
+	// (3.5.5) it negotiates fine at the default security level with an empty
+	// Cipher, so no value is needed here. This knob exists for distributions
+	// whose default s_server list drops legacy CBC PSK suites or raises the
+	// security level past level 2, where forcing e.g.
+	// "PSK-AES128-CBC-SHA256:@SECLEVEL=0" restores the suite.
+	Cipher string
 }
 
 func (c Config) withDefaults() Config {
@@ -193,13 +207,17 @@ func Start(ctx context.Context, cfg Config) (*Session, error) {
 	// -accept 127.0.0.1:<port> binds loopback only. Upstream uses
 	// `-port <port>`, which binds all interfaces; restricting to loopback is
 	// OUR change, since the device bridge is always local.
-	cmd := exec.CommandContext(runCtx, bin,
+	args := []string{
 		"s_server",
 		"-nocert",
 		"-psk", hex.EncodeToString(cfg.PSK),
 		"-accept", fmt.Sprintf("127.0.0.1:%d", port),
 		"-quiet",
-	)
+	}
+	if cfg.Cipher != "" {
+		args = append(args, "-cipher", cfg.Cipher)
+	}
+	cmd := exec.CommandContext(runCtx, bin, args...)
 	// Kill rather than interrupt, and do not let CommandContext's Wait block
 	// on the pipes.
 	cmd.Cancel = func() error { return cmd.Process.Kill() }
