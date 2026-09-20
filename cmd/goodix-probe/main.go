@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -19,10 +20,12 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"goodix5120/internal/proto"
+	"goodix5120/internal/session"
 	"goodix5120/internal/transport"
 )
 
@@ -47,19 +50,40 @@ func main() {
 		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
 		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
-		allowE4    = flag.Bool("allow-e4", false, "bisect: also accept preset_psk_read (0xe4) in --steps. Sent with the vendor's 8-byte payload; the EMPTY form wedged the EC in Runs 1, 2 and 4 and is now refused outright (see docs/bisect-runbook.md)")
-		allowA2    = flag.Bool("allow-a2", false, "bisect: also accept reset (0xa2) in --steps. State-changing; the vendor sends it before reading the chip ID, which without it reads a pre-reset value (Run 9). Sent with the vendor payload 01 14 (see docs/bisect-runbook.md)")
+
+		useTLS   = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
+		pskPath  = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
+		capture  = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
+		wrongPSK = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
 	)
+
+	// One --allow-<opcode> flag per above-ceiling opcode, registered from the
+	// catalogue in bisect.go so an entry cannot be added without its flag.
+	allowFlags := make(map[proto.Opcode]*bool, len(unlockable))
+	for _, u := range unlockable {
+		allowFlags[u.op] = flag.Bool(u.flag, false, u.help)
+	}
+
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", 0)
 
-	if *allowE4 && !*bisect {
-		logger.Print("--allow-e4 only works with --bisect")
-		os.Exit(1)
+	if !*bisect {
+		for _, u := range unlockable {
+			if *allowFlags[u.op] {
+				logger.Printf("--%s only works with --bisect", u.flag)
+				os.Exit(1)
+			}
+		}
+		if *useTLS || *pskPath != "" || *capture != "" {
+			logger.Print("--tls, --psk and --capture only work with --bisect: the bridge runs as the tail of a " +
+				"bisect run so it inherits the keyboard checks (see docs/bisect-runbook.md)")
+			os.Exit(1)
+		}
 	}
-	if *allowA2 && !*bisect {
-		logger.Print("--allow-a2 only works with --bisect")
+	if *wrongPSK && !(*useTLS && *replay) {
+		logger.Print("--rehearse-rejection only works with --tls --replay: it is a rehearsal of the failure, " +
+			"and deliberately sending a live EC a key it will reject teaches nothing")
 		os.Exit(1)
 	}
 
@@ -69,14 +93,22 @@ func main() {
 	}
 
 	if *bisect {
+		allowed := make(map[proto.Opcode]bool, len(allowFlags))
 		var allow []proto.Opcode
-		if *allowE4 {
-			allow = append(allow, opPSKRead)
+		for op, set := range allowFlags {
+			if *set {
+				allowed[op] = true
+				allow = append(allow, op)
+			}
 		}
-		if *allowA2 {
-			allow = append(allow, opReset)
+		tls := tlsConfig{
+			enabled:  *useTLS,
+			pskPath:  *pskPath,
+			capture:  *capture,
+			sendD4:   allowed[opTLSEstablished],
+			getImage: allowed[opGetImage],
 		}
-		os.Exit(mainBisect(*replay, *assumeKeys, allow, *stepList, *logPath, *timeout, *keyWait))
+		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
 	}
 
 	opts := transport.Options{
@@ -109,7 +141,9 @@ func main() {
 // mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
 // survived every step, 2 if it stopped (or was not working to begin with), 1
 // on any other failure.
-func mainBisect(replay, assumeKeys bool, allow []proto.Opcode, stepList, logPath string, timeout, keyWait time.Duration) int {
+func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
+	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration) int {
+
 	stderr := log.New(os.Stderr, "", 0)
 	if assumeKeys && !replay {
 		stderr.Print(errAssumeKeysLive)
@@ -118,6 +152,12 @@ func mainBisect(replay, assumeKeys bool, allow []proto.Opcode, stepList, logPath
 	ops, err := parseSteps(stepList, allow...)
 	if err != nil {
 		stderr.Printf("--steps: %v", err)
+		return 1
+	}
+	// Check the flag combination before anything is opened: a --tls run that
+	// cannot work should cost a message, not a live run.
+	if err := tls.validate(ops, allowed); err != nil {
+		stderr.Printf("%v", err)
 		return 1
 	}
 
@@ -148,16 +188,17 @@ func mainBisect(replay, assumeKeys bool, allow []proto.Opcode, stepList, logPath
 		Verbose: true, // the raw bytes are the point of a bisect run
 		Logger:  logger,
 	}
-	// Admit above-ceiling opcodes to the transport, but only the ones that are
-	// actually steps in this run: a flag set without the matching --steps entry
-	// unlocks nothing. The ceiling itself stays ClassSafe.
+	// Admit above-ceiling opcodes to the transport, but only the ones this run
+	// can actually send: the steps, plus the commands the TLS bridge sends at
+	// points of its own. A flag set without either unlocks nothing. The ceiling
+	// itself stays ClassSafe.
 	var above []proto.Opcode
-	for _, op := range ops {
-		if class, ok := op.Class(); ok && class != proto.ClassSafe {
+	for _, op := range slices.Concat(ops, tls.opcodes()) {
+		if class, ok := op.Class(); ok && class != proto.ClassSafe && !slices.Contains(above, op) {
 			above = append(above, op)
 		}
 	}
-	allowed := "none"
+	allowedDesc := "none"
 	if len(above) > 0 {
 		opts.Allow = above
 		names := make([]string, len(above))
@@ -168,10 +209,24 @@ func mainBisect(replay, assumeKeys bool, allow []proto.Opcode, stepList, logPath
 				names[i] = fmt.Sprintf("0x%02x", byte(op))
 			}
 		}
-		allowed = strings.Join(names, ", ")
+		allowedDesc = strings.Join(names, ", ")
 	}
+	// The raw TLS data path stays shut unless this is a --tls run.
+	opts.AllowTLSData = tls.enabled
+
+	// closeRehearsal tears down the `--tls --replay` stand-in, once open has
+	// brought one up.
+	var rehearsal *session.LoopbackEC
 	open := func() (transport.Transport, error) {
-		if replay {
+		switch {
+		case replay && tls.enabled:
+			tr, ec, err := startRehearsal(context.Background(), logger, tls, opts, replayWrongPSK)
+			if err != nil {
+				return nil, err
+			}
+			rehearsal = ec
+			return tr, nil
+		case replay:
 			return transport.NewReplay(scriptFor(ops), opts), nil
 		}
 		return transport.OpenUSB(opts)
@@ -182,9 +237,25 @@ func mainBisect(replay, assumeKeys bool, allow []proto.Opcode, stepList, logPath
 		mode = "replay (no USB)"
 	}
 	logger.Printf("goodix-probe bisect — %s, ceiling=%s, allowed above it: %s, steps=%s, log=%s",
-		mode, proto.ClassSafe, allowed, stepList, logPath)
+		mode, proto.ClassSafe, allowedDesc, stepList, logPath)
+	if tls.enabled {
+		logger.Printf("  --tls: after the steps, request a TLS session and bridge the handshake (PLAN.md Phase 5b)")
+	}
 
-	err = runBisect(logger, host, open, ops, timeout, keyWait)
+	var after func(transport.Transport) error
+	if tls.enabled {
+		after = func(tr transport.Transport) error {
+			// rehearsal is nil for a live run and is set by open() otherwise.
+			return runTLS(context.Background(), logger, tr, tls, rehearsal)
+		}
+	}
+
+	err = runBisect(logger, host, open, ops, timeout, keyWait, after)
+	if rehearsal != nil {
+		if cerr := rehearsal.Close(); cerr != nil {
+			logger.Printf("tearing down the rehearsal stand-in: %v", cerr)
+		}
+	}
 	switch {
 	case err == nil:
 		return 0

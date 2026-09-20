@@ -56,7 +56,7 @@ func bisectReplaySteps(t *testing.T, list string, presses ...bool) (string, *fak
 	opened := false
 	open := func() (transport.Transport, error) { opened = true; return tr, nil }
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, nil)
 	return buf.String(), host, tr.(replayCounters), opened, err
 }
 
@@ -211,7 +211,7 @@ func TestBisectAllowE4(t *testing.T) {
 	// baseline ok, attach ok, 0xe4 dead — what Run 2 saw.
 	host := &fakeHost{presses: []bool{true, true, false}}
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, nil)
 	out := buf.String()
 	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "preset_psk_read") {
 		t.Fatalf("err = %v, want errKeyboardLost after preset_psk_read\n%s", err, out)
@@ -248,7 +248,7 @@ func TestBisectAllowA2(t *testing.T) {
 	// baseline ok, attach ok, reset ok — the keyboard survives the reset.
 	host := &fakeHost{presses: []bool{true, true, true}}
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, nil)
 	if err != nil {
 		t.Fatalf("runBisect with --allow-a2 = %v\n%s", err, buf.String())
 	}

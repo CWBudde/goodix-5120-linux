@@ -13,10 +13,16 @@ import (
 
 // Exchange is one scripted command and the transfers the device sends back.
 type Exchange struct {
-	// Cmd is the opcode the caller is expected to send at this step.
+	// Cmd is the opcode the caller is expected to send at this step. It is
+	// ignored when TLS is set.
 	Cmd proto.Opcode
-	// Payload is the expected outbound payload. Nil means "do not check".
+	// Payload is the expected outbound payload — the TLS records themselves
+	// when TLS is set. Nil means "do not check".
 	Payload []byte
+	// TLS marks an exchange the caller is expected to reach with SendTLS rather
+	// than Send. A script that expects a command where the caller sends TLS
+	// data, or the reverse, fails rather than quietly passing.
+	TLS bool
 	// Responses are the raw transfers the device sends after Cmd, in order.
 	// Each one satisfies one Recv. Empty means the device stays silent.
 	Responses [][]byte
@@ -47,28 +53,54 @@ func NewReplay(script []Exchange, opts Options) Transport {
 
 // record is the frameWriter half of the replay: it checks the outbound command
 // against the script and queues the scripted responses.
-func (t *replayTransport) record(_ context.Context, cmd proto.Opcode, payload, _ []byte) error {
+func (t *replayTransport) record(_ context.Context, o outbound) error {
 	if t.closed {
 		return errors.New("replay transport is closed")
 	}
 	if t.next >= len(t.script) {
-		return fmt.Errorf("replay script exhausted after %d exchanges: unexpected send of %s (0x%02x)",
-			len(t.script), cmd.Name(), byte(cmd))
+		return fmt.Errorf("replay script exhausted after %d exchanges: unexpected send of %s",
+			len(t.script), describeOutbound(o))
 	}
 
 	want := t.script[t.next]
-	if cmd != want.Cmd {
+	switch {
+	case want.TLS != o.tls:
+		return fmt.Errorf("replay mismatch at exchange %d: script expects %s but %s was sent",
+			t.next, describeExchange(want), describeOutbound(o))
+	case !o.tls && o.cmd != want.Cmd:
 		return fmt.Errorf("replay mismatch at exchange %d: script expects %s (0x%02x) but %s (0x%02x) was sent",
-			t.next, want.Cmd.Name(), byte(want.Cmd), cmd.Name(), byte(cmd))
+			t.next, want.Cmd.Name(), byte(want.Cmd), o.cmd.Name(), byte(o.cmd))
 	}
-	if want.Payload != nil && !bytes.Equal(want.Payload, payload) {
+	if want.Payload != nil && !bytes.Equal(want.Payload, o.payload) {
+		// A TLS payload is ciphertext, and the plaintext under it is a
+		// fingerprint image, so the mismatch reports lengths rather than bytes.
+		if o.tls {
+			return fmt.Errorf("replay TLS mismatch at exchange %d: script expects %d record byte(s) but %d were sent",
+				t.next, len(want.Payload), len(o.payload))
+		}
 		return fmt.Errorf("replay payload mismatch at exchange %d for %s (0x%02x): script expects %s but %s was sent",
-			t.next, want.Cmd.Name(), byte(want.Cmd), hex.EncodeToString(want.Payload), hex.EncodeToString(payload))
+			t.next, want.Cmd.Name(), byte(want.Cmd), hex.EncodeToString(want.Payload), hex.EncodeToString(o.payload))
 	}
 
 	t.next++
 	t.queue = append(t.queue, want.Responses...)
 	return nil
+}
+
+// describeOutbound names what was sent, for a mismatch message.
+func describeOutbound(o outbound) string {
+	if o.tls {
+		return fmt.Sprintf("TLS data (%d byte(s))", len(o.payload))
+	}
+	return fmt.Sprintf("%s (0x%02x)", o.cmd.Name(), byte(o.cmd))
+}
+
+// describeExchange names what the script expected, for a mismatch message.
+func describeExchange(e Exchange) string {
+	if e.TLS {
+		return "TLS data"
+	}
+	return fmt.Sprintf("%s (0x%02x)", e.Cmd.Name(), byte(e.Cmd))
 }
 
 // Recv returns the oldest unread transfer, or ErrTimeout if none is queued.
@@ -83,7 +115,7 @@ func (t *replayTransport) Recv(time.Duration) ([]byte, error) {
 
 	out := t.queue[0]
 	t.queue = t.queue[1:]
-	t.opts.logf("transport: RX (replay) %d bytes: %s", len(out), hex.EncodeToString(out))
+	t.opts.logf("transport: RX (replay) %d bytes: %s", len(out), dump(out))
 	return out, nil
 }
 

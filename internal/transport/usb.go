@@ -2,15 +2,12 @@ package transport
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/gousb"
-
-	"goodix5120/internal/proto"
 )
 
 const (
@@ -188,13 +185,14 @@ func bulkEndpoints(alt gousb.InterfaceSetting) (in, out gousb.EndpointDesc, ok b
 }
 
 // writeFrame pads the frame to a multiple of the packet size and writes it in
-// packet-sized chunks.
-func (t *usbTransport) writeFrame(ctx context.Context, _ proto.Opcode, _, frame []byte) error {
+// packet-sized chunks. A TLS-data pack is written exactly like a command pack:
+// only the gate upstream treats the two differently.
+func (t *usbTransport) writeFrame(ctx context.Context, o outbound) error {
 	if t.out == nil {
 		return errors.New("transport is closed")
 	}
 
-	padded := padFrame(frame)
+	padded := padFrame(o.frame)
 	for off := 0; off < len(padded); off += packetSize {
 		chunk := padded[off : off+packetSize]
 		n, err := t.out.WriteContext(ctx, chunk)
@@ -235,7 +233,7 @@ func (t *usbTransport) Recv(timeout time.Duration) ([]byte, error) {
 	}
 
 	out := buf[:n]
-	t.opts.logf("transport: RX %d bytes: %s", len(out), hex.EncodeToString(out))
+	t.opts.logf("transport: RX %d bytes: %s", len(out), dump(out))
 	return out, nil
 }
 

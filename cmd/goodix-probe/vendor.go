@@ -111,6 +111,20 @@ var vendorInit = []step{
 	{0xae, mcuStateRequest, "get MCU state", "now reports isTlsConnected=1"},
 }
 
+// vendorLoop is the part of the vendor's steady-state capture loop whose payload
+// is a fixed constant. Observed in `dump.pcapng` and corroborated by the driver
+// log (docs/protocol.md, "Capture loop").
+//
+// It holds one frame, and the omissions are the point. The finger-detect arms
+// (`0x32`, `0x34`, `0x36`) carry six per-zone thresholds the driver derives at
+// runtime from the previous readings, so there is no vendor payload to copy —
+// which is why PLAN.md Phase 5d comes after a frame has been captured by hand.
+// `0x50` (nav mode) appears in the driver log but in neither USB capture, so its
+// payload is hearsay and it stays out.
+var vendorLoop = []step{
+	{0x20, []byte{0x01, 0x00}, "get one image", "the frame arrives as an encrypted TLS record, not as a message"},
+}
+
 // steps is what the probe sends to live hardware. It is deliberately one
 // command.
 //
@@ -126,23 +140,26 @@ var steps = []step{
 }
 
 // bisectable is the set of opcodes --steps may name. An opcode qualifies when
-// it appears in vendorInit, so its payload is on record, and is ClassSafe, so
-// the transport's default ceiling would pass it.
+// its payload is on record from the vendor driver — that is, when it appears in
+// vendorInit or vendorLoop — and either it is ClassSafe, so the transport's
+// default ceiling would pass it, or it is catalogued in `unlockable` so a flag
+// can admit it. parseSteps still refuses the latter unless that flag is set.
 //
-// Two above-ceiling exceptions are catalogued so --allow-e4 / --allow-a2 can
-// admit them: preset_psk_read (0xe4), which now goes out with the vendor's
-// 8-byte argument rather than the empty frame that wedged the EC, and reset
-// (0xa2). parseSteps still refuses either unless its flag is set.
+// So bisect cannot send a frame the vendor driver has never been observed to
+// send, and cannot get above the ceiling except for an opcode someone wrote down
+// a reason for.
 func bisectable(op proto.Opcode) (step, bool) {
-	for _, s := range vendorInit {
-		if s.cmd != op || !s.known() {
-			continue
-		}
-		if class, ok := op.Class(); ok && class == proto.ClassSafe {
-			return s, true
-		}
-		if op == opPSKRead || op == opReset {
-			return s, true
+	for _, catalogue := range [][]step{vendorInit, vendorLoop} {
+		for _, s := range catalogue {
+			if s.cmd != op || !s.known() {
+				continue
+			}
+			if class, ok := op.Class(); ok && class == proto.ClassSafe {
+				return s, true
+			}
+			if _, ok := unlockFor(op); ok {
+				return s, true
+			}
 		}
 	}
 	return step{}, false

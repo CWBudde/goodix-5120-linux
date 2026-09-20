@@ -32,6 +32,13 @@ type Transport interface {
 	// by the configured safety ceiling.
 	Send(cmd proto.Opcode, payload []byte) error
 
+	// SendTLS transmits whole TLS records as the payload of a TLS-data pack.
+	// This is the reverse direction of the records the device sends after
+	// `0xd0`, and it carries no opcode, so the class ceiling has nothing to
+	// classify: the path is refused outright unless Options.AllowTLSData is
+	// set. Records must be complete — see checkTLSData.
+	SendTLS(records []byte) error
+
 	// Recv returns the raw bytes read from the IN endpoint. A short read is
 	// normal and is not an error. A zero timeout means "use Options.Timeout".
 	// If nothing arrives in time the error wraps ErrTimeout.
@@ -53,6 +60,17 @@ type Options struct {
 	// deliberate experiment (confirming that preset_psk_read wedges the EC). It
 	// never admits an unregistered or a destructive opcode. Nil admits nothing.
 	Allow []proto.Opcode
+
+	// AllowTLSData opens the raw TLS data path, i.e. SendTLS. It is off by
+	// default, so a caller that has no business bridging a TLS session cannot
+	// put opaque bytes on the wire by accident.
+	//
+	// It is deliberately a separate switch rather than a Ceiling value or an
+	// Allow entry: a TLS-data pack carries no opcode, so there is no class to
+	// compare and no registry entry to look up. What the gate can still check
+	// is that the caller asked for this path and that the bytes are whole TLS
+	// records; both are checked in checkTLSData.
+	AllowTLSData bool
 
 	// Timeout bounds a single transfer. Zero means DefaultTimeout.
 	Timeout time.Duration
@@ -81,6 +99,23 @@ func (o Options) logf(format string, args ...any) {
 		return
 	}
 	o.Logger.Printf(format, args...)
+}
+
+// maxDump is how many bytes of a transfer a verbose log line may contain.
+//
+// It is a cap rather than a nicety. Once the TLS session is up, an inbound
+// transfer is a 7749-byte pack holding an encrypted fingerprint image, and
+// `--bisect` turns verbose logging on unconditionally. The header and the first
+// bytes are what a human reads; the rest only fills the log with ciphertext of
+// biometric data.
+const maxDump = 64
+
+// dump renders a transfer for a log line, truncated to maxDump bytes.
+func dump(b []byte) string {
+	if len(b) <= maxDump {
+		return hex.EncodeToString(b)
+	}
+	return fmt.Sprintf("%s… (%d more byte(s))", hex.EncodeToString(b[:maxDump]), len(b)-maxDump)
 }
 
 // ErrRefused is the classification sentinel for a command the safety gate
@@ -131,6 +166,32 @@ func checkPayload(cmd proto.Opcode, payload []byte) error {
 	return nil
 }
 
+// checkTLSData is the gate for the raw TLS data path. A TLS-data pack has no
+// opcode, so there is no class and no payload rule to consult; what can be
+// checked is checked.
+//
+// Two rules:
+//  1. The path is off unless the caller asked for it. Bridging a TLS session is
+//     a deliberate act (PLAN.md Phase 5b), not something a probe does in
+//     passing, and an opaque byte path with no opcode deserves its own switch.
+//  2. The buffer must hold whole TLS records and nothing else. Half a record is
+//     a frame no working driver produces, and this project has one hard-won
+//     rule about frames like that: an 0xe4 whose argument was missing wedged
+//     the EC and killed the keyboard three times. A truncated record is the same
+//     shape of mistake, so it is refused here rather than sent and puzzled over.
+func checkTLSData(records []byte, allowed bool) error {
+	if !allowed {
+		return fmt.Errorf("%w: the raw TLS data path is closed; set Options.AllowTLSData to bridge TLS records to the device", ErrRefused)
+	}
+	if len(records) == 0 {
+		return fmt.Errorf("%w: refusing to send an empty TLS-data pack", ErrRefused)
+	}
+	if _, err := proto.SplitTLSRecords(records); err != nil {
+		return fmt.Errorf("%w: TLS data is not a whole number of records: %w", ErrRefused, err)
+	}
+	return nil
+}
+
 // check is the full gate: class first, then payload, so a refusal names the
 // most serious reason. It is deliberately the only way into the frame writers.
 //
@@ -146,10 +207,23 @@ func check(cmd proto.Opcode, payload []byte, ceiling proto.Class, allow []proto.
 	return checkPayload(cmd, payload)
 }
 
-// frameWriter transmits one fully encoded frame. The command and payload are
-// passed alongside the frame so implementations that script or assert on
+// outbound is one thing to transmit. The decoded command and payload travel
+// alongside the encoded frame so implementations that script or assert on
 // traffic (the replay fake) can inspect them without re-decoding.
-type frameWriter func(ctx context.Context, cmd proto.Opcode, payload, frame []byte) error
+type outbound struct {
+	// frame is the fully encoded pack, ready for the wire.
+	frame []byte
+
+	// tls reports that this is a TLS-data pack rather than a command. When it
+	// is true cmd is meaningless and payload holds the raw TLS records.
+	tls bool
+
+	cmd     proto.Opcode
+	payload []byte
+}
+
+// frameWriter transmits one fully encoded frame.
+type frameWriter func(ctx context.Context, out outbound) error
 
 // sender pairs the shared safety gate with a concrete frame writer. Every
 // Transport in this package embeds one, which is what guarantees the USB path
@@ -166,11 +240,35 @@ func (s *sender) Send(cmd proto.Opcode, payload []byte) error {
 	}
 
 	frame := proto.Encode(cmd, payload)
-	s.opts.logf("transport: TX %s (0x%02x) %d bytes: %s", cmd.Name(), byte(cmd), len(frame), hex.EncodeToString(frame))
+	s.opts.logf("transport: TX %s (0x%02x) %d bytes: %s", cmd.Name(), byte(cmd), len(frame), dump(frame))
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.opts.Timeout)
 	defer cancel()
-	return s.write(ctx, cmd, payload, frame)
+	return s.write(ctx, outbound{frame: frame, cmd: cmd, payload: payload})
+}
+
+// SendTLS applies the TLS-data half of the gate, then wraps the records in a
+// pack and transmits it.
+//
+// The bytes are logged by record header only — type, version and length. A
+// record body from this device is a fingerprint image, and the host's own
+// handshake records are derived from the PSK, so neither is hex-dumped even
+// under Options.Verbose.
+func (s *sender) SendTLS(records []byte) error {
+	if err := checkTLSData(records, s.opts.AllowTLSData); err != nil {
+		return err
+	}
+
+	frame := proto.EncodePack(proto.FlagTLSData, records)
+	if recs, err := proto.SplitTLSRecords(records); err == nil {
+		for _, r := range recs {
+			s.opts.logf("transport: TX TLS %s", r)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.opts.Timeout)
+	defer cancel()
+	return s.write(ctx, outbound{frame: frame, tls: true, payload: records})
 }
 
 // resolveTimeout picks the per-call timeout, falling back to the configured one.

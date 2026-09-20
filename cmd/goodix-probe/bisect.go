@@ -46,24 +46,60 @@ var errKeyboardLost = errors.New("internal keyboard stopped responding")
 // done, so a bisect run would prove nothing.
 var errBaseline = errors.New("internal keyboard not responding before the run")
 
-// opPSKRead is preset_psk_read. An 0xe4 with an EMPTY payload wedged the EC in
-// Runs 1, 2 and 4, so it is not a probe step. --allow-e4 admits it to a bisect
-// run, and only there (docs/bisect-runbook.md).
-//
-// What it sends has changed. Run 4 settled the question the empty frame was
-// there to answer, and the transport now refuses that frame outright, so
-// --allow-e4 sends the vendor's 8-byte argument instead — the form the Windows
-// driver uses in all eight of its inits and gets an ACK plus 41 bytes for.
-const opPSKRead proto.Opcode = 0xe4
+// The opcodes above the safe ceiling that a bisect run can be told to send.
+// Every one of them is a frame the Windows driver sends with a payload that is
+// on record; none is destructive, and none could be, because the transport
+// refuses a destructive opcode whatever the allowlist says.
+const (
+	opEnableChip     proto.Opcode = 0x96
+	opGetImage       proto.Opcode = 0x20
+	opIdle           proto.Opcode = 0x70
+	opPSKRead        proto.Opcode = 0xe4
+	opRequestTLS     proto.Opcode = 0xd0
+	opReset          proto.Opcode = 0xa2
+	opSetDAC         proto.Opcode = 0x98
+	opTLSEstablished proto.Opcode = 0xd4
+	opUploadConfig   proto.Opcode = 0x90
+)
 
-// opReset is the sensor reset (0xa2). It is ClassStateChanging: the vendor
-// driver sends it immediately before reading the chip ID, and without it that
-// register reads a pre-reset value rather than 0x2504 (Run 9,
-// docs/protocol.md). --allow-a2 admits it to a bisect run, and only there; it is
-// never a probe step. It is neither secret-bearing nor destructive, but it
-// changes sensor state (it can drop the EC's TLS session), so it stays above the
-// safe ceiling and is unlocked deliberately, the way opPSKRead is.
-const opReset proto.Opcode = 0xa2
+// unlock is one above-ceiling opcode together with the flag that admits it and
+// the help text that flag carries.
+//
+// One flag per opcode is deliberate friction, and it is why this is a table of
+// hand-written entries rather than a list generated from the catalogue: the
+// reason a command is safe enough to try, and what it does to the device, is
+// something a person has to have written down. The flags are still *registered*
+// from this table, so adding an opcode cannot mean forgetting the flag.
+type unlock struct {
+	op   proto.Opcode
+	flag string
+	help string
+}
+
+// unlockable is the complete set. TestEveryAboveCeilingVendorFrameIsCatalogued
+// pins it against the vendor catalogue in both directions, so a new
+// state-changing frame cannot appear with no flag and no explanation.
+var unlockable = []unlock{
+	{opEnableChip, "allow-96", "bisect: also accept enable_chip (0x96) in --steps. The vendor's FIRST frame on every init, payload 01 02; the driver does not wait for a reply. State-changing"},
+	{opPSKRead, "allow-e4", "bisect: also accept preset_psk_read (0xe4) in --steps. Sent with the vendor's 8-byte payload; the EMPTY form wedged the EC in Runs 1, 2 and 4 and is now refused outright (see docs/bisect-runbook.md). Its reply contains a hash of the device PSK — keep it out of the repo"},
+	{opReset, "allow-a2", "bisect: also accept reset (0xa2) in --steps. State-changing; the vendor sends it before reading the chip ID, which without it reads a pre-reset value (Run 9). Sent with the vendor payload 01 14 (see docs/bisect-runbook.md)"},
+	{opIdle, "allow-70", "bisect: also accept mcu_switch_to_idle_mode (0x70) in --steps. Payload 14 00; the vendor's frame 9, the first of the three config frames that precede the TLS request (PLAN.md Phase 5a)"},
+	{opSetDAC, "allow-98", "bisect: also accept set_dac (0x98) in --steps. Payload c8 0b be 00 bc 00 bc 00 — DAC values the vendor derives from THIS machine's OTP, so they are specific to this sensor (PLAN.md Phase 5a)"},
+	{opUploadConfig, "allow-90", "bisect: also accept upload_config_mcu (0x90) in --steps. Writes the vendor's 224-byte register script into the sensor MCU. It writes no flash, but it is the largest state change in the init — promote it on a run of its own (PLAN.md Phase 5a)"},
+	{opRequestTLS, "allow-d0", "bisect: also accept request_tls_connection (0xd0). Payload 00 00; answered with NO ACK — the EC then opens a TLS handshake as the client. With --tls the bridge sends this itself, so leave it out of --steps"},
+	{opTLSEstablished, "allow-d4", "bisect: also accept tls_successfully_established (0xd4). Payload 00 00; the vendor sends it right after the handshake completes. With --tls the bridge sends it on success"},
+	{opGetImage, "allow-20", "bisect: also accept mcu_get_image (0x20). Payload 01 00; asks the EC for one frame, which arrives as an encrypted TLS record. Needed by --capture (PLAN.md Phase 5c)"},
+}
+
+// unlockFor returns the catalogue entry for op.
+func unlockFor(op proto.Opcode) (unlock, bool) {
+	for _, u := range unlockable {
+		if u.op == op {
+			return u, true
+		}
+	}
+	return unlock{}, false
+}
 
 // parseSteps turns a comma-separated opcode list (hex, e.g. "a8,ae") into steps.
 // An opcode is accepted only if it is in the vendor catalogue, so its payload is
@@ -98,14 +134,13 @@ func parseSteps(list string, allow ...proto.Opcode) ([]proto.Opcode, error) {
 // needsAllow explains that op is above the safe ceiling and names the flag that
 // admits it.
 func needsAllow(op proto.Opcode) error {
-	switch op {
-	case opPSKRead:
-		return fmt.Errorf("opcode 0xe4 wedges the EC when sent empty; it needs --allow-e4 (see docs/bisect-runbook.md)")
-	case opReset:
-		return fmt.Errorf("opcode 0xa2 (reset) is state-changing; it needs --allow-a2 (see docs/bisect-runbook.md)")
-	default:
+	u, ok := unlockFor(op)
+	if !ok {
 		return fmt.Errorf("opcode 0x%02x is above the safe ceiling and cannot be sent by bisect", byte(op))
 	}
+	class, _ := op.Class()
+	return fmt.Errorf("opcode 0x%02x (%s) is %s; it needs --%s (see docs/bisect-runbook.md)",
+		byte(op), op.Name(), class, u.flag)
 }
 
 // defaultBisectSteps is every probe step, in order.
@@ -120,8 +155,13 @@ func defaultBisectSteps() string {
 // runBisect runs attach and then each opcode, draining the device and checking
 // the internal keyboard after every one. It returns errKeyboardLost at the
 // first step the keyboard does not survive.
+//
+// after, when non-nil, runs once every step has passed and is followed by one
+// more keyboard check. That is where --tls hangs its TLS bridge: it needs the
+// device in the state the steps left it in, and it needs the same keyboard
+// safety net as a step.
 func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Transport, error),
-	ops []proto.Opcode, timeout, keyWait time.Duration) error {
+	ops []proto.Opcode, timeout, keyWait time.Duration, after func(transport.Transport) error) error {
 
 	logger.Printf("bisect: attach, then %d command(s); keyboard check after each step", len(ops))
 	logger.Printf("bisect: press a harmless key (Shift) on the INTERNAL keyboard when asked")
@@ -164,6 +204,23 @@ func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Trans
 		}
 		drain(logger, tr, timeout)
 		if err := checkKeyboard(logger, host, label, keyWait); err != nil {
+			return err
+		}
+	}
+
+	if after != nil {
+		host.Mark("after-steps hook: starting")
+		if err := after(tr); err != nil {
+			// The hook's own failure is not a keyboard failure, and the keyboard
+			// is worth checking either way: whatever it just did to the device is
+			// exactly the kind of thing that wedges the EC.
+			logger.Printf("\n  after the steps: %v", err)
+			if kerr := checkKeyboard(logger, host, "the after-steps hook", keyWait); kerr != nil {
+				return kerr
+			}
+			return err
+		}
+		if err := checkKeyboard(logger, host, "the after-steps hook", keyWait); err != nil {
 			return err
 		}
 	}

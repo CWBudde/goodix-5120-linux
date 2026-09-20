@@ -54,15 +54,17 @@ func TestOpcodeFixturesMatchProtoRegistry(t *testing.T) {
 type stubWriter struct {
 	frames [][]byte
 	cmds   []proto.Opcode
+	tls    []bool
 	err    error
 }
 
-func (w *stubWriter) write(_ context.Context, cmd proto.Opcode, _, frame []byte) error {
+func (w *stubWriter) write(_ context.Context, o outbound) error {
 	if w.err != nil {
 		return w.err
 	}
-	w.cmds = append(w.cmds, cmd)
-	w.frames = append(w.frames, append([]byte(nil), frame...))
+	w.cmds = append(w.cmds, o.cmd)
+	w.frames = append(w.frames, append([]byte(nil), o.frame...))
+	w.tls = append(w.tls, o.tls)
 	return nil
 }
 

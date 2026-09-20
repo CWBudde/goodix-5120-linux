@@ -34,7 +34,7 @@ func TestSendRefusesTheFrameThatWedgedTheEC(t *testing.T) {
 			Ceiling: proto.ClassStateChanging,
 			Allow:   []proto.Opcode{opPSKRead},
 		}.withDefaults(),
-		write: func(context.Context, proto.Opcode, []byte, []byte) error {
+		write: func(context.Context, outbound) error {
 			written++
 			return nil
 		},
@@ -71,7 +71,7 @@ func TestSendRefusesTheFrameThatWedgedTheEC(t *testing.T) {
 func TestSendRefusesPayloadlessCommandsThatNeedOne(t *testing.T) {
 	s := &sender{
 		opts: Options{Ceiling: proto.ClassStateChanging}.withDefaults(),
-		write: func(context.Context, proto.Opcode, []byte, []byte) error {
+		write: func(context.Context, outbound) error {
 			t.Error("a refused frame reached the writer")
 			return nil
 		},

@@ -72,10 +72,10 @@ func TestVendorInitPayloadsSatisfyTheirRules(t *testing.T) {
 	}
 }
 
-// opUploadConfig is upload_config_mcu. Its 224-byte payload is on record as of
-// 2026-09-20, but it is ClassStateChanging and nothing has ever sent it from
-// Linux, so it stays out of `steps`.
-const opUploadConfig proto.Opcode = 0x90
+// opUploadConfig (upload_config_mcu, 0x90) is declared in bisect.go, next to the
+// flag that admits it. Its 224-byte payload is on record as of 2026-09-20, but it
+// is ClassStateChanging and nothing has ever sent it from Linux, so it stays out
+// of `steps` and needs --allow-90 even in a bisect run.
 
 // uploadConfigLogPrefix is the first 57 payload bytes of the `0x90` frame as
 // the vendor driver's own ETW debug log prints them — the log truncates there,
