@@ -104,15 +104,33 @@ them are security material.
 
 ## Pre-post checklist
 
+Mechanically verified 2026-09-20 against the two draft bodies in isolation (this file's front matter
+excluded, since it is not posted). Method recorded next to each tick, because "checked" is worth
+nothing without it.
+
 - [x] The `0x90` decision is made (publish), and both drafts carry the bytes and the entry table.
-- [ ] No PSK material: no PSK hash from the `0xe4` reply, no bytes of `Goodix_Cache.bin`, no DPAPI
-      master-key GUID.
-- [ ] No OTP bytes, including the ASCII prefix, and no `0x98` DAC values unless item 1 above is decided.
-- [ ] No capture files attached, and nothing derived from a fingerprint image.
+      Both copies reassemble to **224 bytes, `sum & 0xff == 0xaa`, byte-identical to
+      `uploadConfigPayload` in `cmd/goodix-probe/vendor.go`** — so the drafts and the code cannot
+      disagree.
+- [x] No PSK material: no PSK hash from the `0xe4` reply, no bytes of `Goodix_Cache.bin`, no DPAPI
+      master-key GUID. `Goodix_Cache.bin` is *named* twice, as a filename and a byte count; none of its
+      contents appear, and the provider GUID appears nowhere.
+- [x] No OTP bytes, including the ASCII prefix, and no `0x98` DAC values. Neither the ASCII prefix nor
+      the `sensorid` run appears in either draft, and `set_dac`'s bytes are absent — the frame is
+      described, not printed. (Item 1 above could still change the DAC half; as drafted, nothing is
+      printed.)
+- [x] Every hex run in both drafts is accounted for, with nothing unclassified left over: the 224-byte
+      `0x90` config, the 8-byte wedging frame `a0 04 00 a4 e4 01 00 c5`, the `0xe4` argument
+      `03 00 02 bb 00 00 00 00`, and the one `0x32` FDT frame that item 2 flags.
 - [x] Draft B carries a real `lsusb -v` dump, not a reconstruction.
-- [ ] Cross-links between the two posts filled in once the first one has a URL.
-- [ ] Dates, counts and the recovery procedure re-read against `docs/protocol.md` — they have drifted
-      in this repository before (see the report accompanying this file).
+- [x] Dates, counts and the recovery procedure re-read against `docs/protocol.md`: 18 inits of which 9
+      complete, chip ID `0x2504`, 80 × 64, the 7744-byte record giving 7680–7695 bytes of plaintext,
+      the wedge seen three times (2026-08-17 and twice on 2026-09-19), and the ~30 s cold power cycle.
+      All agree.
+- [ ] No capture files attached, and nothing derived from a fingerprint image. **Cannot be ticked
+      here** — it is a property of the act of posting, not of this file. Attach nothing.
+- [ ] Cross-links between the two posts filled in once the first one has a URL. **Blocked until one of
+      them is posted.**
 
 ---
 ---

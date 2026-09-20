@@ -57,12 +57,19 @@ Both write-ups are drafted and postable as-is in [`docs/upstream-report.md`](doc
       working copy auto-pushes on commit, so every commit has been world-readable from the moment it
       was made. This was never an open decision; treating it as one was an error. Both drafts link it.
 - [ ] Work through that file's **CHECK BEFORE POSTING** list. Items 4 (board identifier), 5 (the real
-      `lsusb -v` dump) and 6 (the public repository) are resolved; 1, 2, 3 and 7 remain.
-- [ ] Post Draft A at [goodix-fp-linux-dev/goodix-fp-dump][dump] — `5120` over USB on Huawei `HVY-WXX9`,
+      `lsusb -v` dump) and 6 (the public repository) are resolved; **1, 2, 3 and 7 remain and are all
+      owner decisions.** The *mechanical* half of the pre-post checklist was verified 2026-09-20 —
+      both drafts carry no PSK material, no OTP bytes or ASCII prefix, no DAC values, every hex run
+      accounted for, and all figures agreeing with `docs/protocol.md`.
+- [ ] Post Draft A at [goodix-fp-linux-dev/goodix-fp-dump][dump] — **owner posts, not Claude.** The
+      only `gh` credential on this machine is the *company* account `MeKo-Christian`, while the repo
+      the drafts link is `CWBudde`; which identity this goes out under is a deliberate choice. Content:
+      `5120` over USB on Huawei `HVY-WXX9`,
       the framing and ACK corrections, and the warning that **`0xe4` without its payload wedges the EC
       and the keyboard**, confirmed in isolation, with the cold power cycle that recovers it.
-- [ ] Post Draft B at the [libfprint tracker][issues] — the same device facts with the `lsusb -v`
-      descriptor and the plaintext init sequence.
+- [ ] Post Draft B at the [libfprint tracker][issues] — **owner posts.** It is GitLab at
+      freedesktop.org: no `glab` on this machine and no account, so there is no tooling path at all.
+      Same device facts, with the `lsusb -v` descriptor and the plaintext init sequence.
 - [ ] Fill the two cross-link placeholders once the first post has a URL.
 
 Never publish: the PSK hash from the `0xe4` reply, `Goodix_Cache.bin`, the DPAPI master-key GUID, OTP
