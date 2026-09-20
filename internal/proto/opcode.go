@@ -117,7 +117,7 @@ func init() {
 	register(0xf4, "check_firmware", ClassStateChanging, PayloadUnknown())
 
 	// 0xd2 is deliberately absent. PLAN.md lists it speculatively, but it
-	// appears in neither the vendor driver's eight inits nor either USB
+	// appears in neither the vendor driver's nine complete inits nor either USB
 	// capture. Registering an opcode nobody has observed would widen the safety
 	// boundary for nothing.
 

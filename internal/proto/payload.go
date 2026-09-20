@@ -16,7 +16,7 @@ var ErrPayload = errors.New("proto: payload length violates the opcode's rule")
 // this exists to prevent. An 0xe4 with an empty payload wedged the embedded
 // controller and killed the laptop's internal keyboard three times (Runs 1, 2
 // and 4 in docs/protocol.md); the vendor's 0xe4 carrying its 8-byte argument is
-// answered normally in all eight driver inits. The opcode was never the hazard.
+// answered normally in all nine complete driver inits. The opcode was never the hazard.
 // The missing argument was.
 type PayloadRule struct {
 	min, max int // max < 0 means no upper bound

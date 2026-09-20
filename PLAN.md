@@ -61,6 +61,18 @@ Made the probe match the device, verified against the replay transport: two read
 The findings are useful right now. Publishing them stops the next person from repeating the keyboard
 incident.
 
+**Drafted 2026-09-20, not posted.** Both write-ups are ready in
+[`docs/upstream-report.md`](docs/upstream-report.md), each postable as-is. Two things gate posting, and
+both are the repository owner's call, not a technical blocker:
+
+- [ ] **Decide whether the 224-byte `0x90` config may be republished.** It was lifted verbatim from a
+      shipped proprietary DLL, so this is a licensing question. The drafts describe the config fully and
+      leave a marked placeholder where the bytes would go. **This is the same decision as the public-repo
+      item below** — the bytes are in `cmd/goodix-probe/vendor.go`, so publishing the repository
+      publishes them too. The trade-off is laid out at the top of `docs/upstream-report.md`.
+- [ ] Work through that file's "CHECK BEFORE POSTING" list (seven smaller calls) and paste a real
+      `lsusb -v -d 27c6:5120` dump, which the repository does not currently hold verbatim.
+
 - [ ] Open an issue or discussion at [goodix-fp-linux-dev/goodix-fp-dump][dump]: `5120` over USB
       (not SPI) on Huawei `HVY-WXX9`, identifies as `GF_ITE_EC_20063`, chip ID `0x2504`, 80 × 64.
       Include the confirmed framing, the `0xb0` ACK convention and ACK + data per command. Add the
@@ -70,8 +82,9 @@ incident.
 - [ ] Comment on or open an issue at the [libfprint tracker][issues] with the same device facts, the
       `lsusb -v` descriptor, the vendor init sequence (plaintext part, no PSK material) and the warning.
 - [ ] Optional: push this repo publicly and link it from both.
-- [ ] Ask upstream whether anyone has seen an `ITE_EC` firmware string on other Goodix parts, and
-      whether anyone has unsealed a Windows-provisioned PSK (`Goodix_Cache.bin`) before.
+- [x] Ask upstream whether anyone has seen an `ITE_EC` firmware string on other Goodix parts, and
+      whether anyone has unsealed a Windows-provisioned PSK (`Goodix_Cache.bin`) before. *(Carried into
+      both drafts as questions; asked when they are posted.)*
 
 Never publish: the PSK hash from the `0xe4` reply, the sealed blob, OTP bytes, or captures.
 
@@ -100,9 +113,17 @@ flow.
       the EC to lose its TLS session, which Device Manager → **Disable/Enable device** does because
       it re-enumerates the device. A `WbioSrvc` restart does neither: `restart.pcapng` holds exactly
       **2 frames** on the device — one `0xae`, reply `isTlsConnected=1` — and then steady state.
-      If Disable/Enable still produces no init, **Uninstall** (keep the driver) + **Scan for hardware
-      changes**. Needed for the full 224-byte `0x90` config, which the log truncates, and to match
-      the log against the wire byte for byte.
+      Do **not** fall back to **Uninstall** + **Scan for hardware changes**: that is more
+      re-enumeration, and re-enumeration is the failure, not the trigger (see below). What it is still
+      worth having is the match of log against wire, byte for byte, and the `d0` handshake as it
+      actually appears — the `0x90` it used to be needed for is recovered.
+      **Why all three attempts failed (2026-09-20):** the log shows a complete init inside two of the
+      three capture windows — 23:13:23.144 in `disable-enable2.pcapng` and 23:25:41.462 in
+      `disable-enable3.pcapng` — and neither is on the wire, with no new device address appearing.
+      USBPcap does not follow a device across the PnP re-enumeration, and a full init *requires* one.
+      The procedure was right all three times. The fix is in the runbook: Disable first, start the
+      capture while the device is absent with every `USBPcapN` interface selected and *Capture from
+      newly connected devices* on, then Enable.
       Attempt 2, `disable-enable.pcapng` (2026-09-19 22:24): **0 frames** — the sensor was not on the
       captured hub at all. 18 transfers, all at one timestamp, all from the descriptor sweep: the
       camera, the Bluetooth radio, one more. USBPcap renumbers its interfaces per boot and per hub
@@ -132,9 +153,11 @@ flow.
       with `internal/proto` reproduces the logged first 64 bytes byte for byte. Full bytes and the
       register-script reading are in `docs/protocol.md`, "The 224-byte `0x90` config — recovered".
       **This was the last missing frame of the vendor init.**
-      Follow-up: `cmd/goodix-probe/vendor.go` still carries synthetic bytes of the right length for the
-      `0x90`, per the Phase 3c plan. They can now be replaced with the real config, and the vendor-init
-      replay fixture becomes complete.
+      **Done 2026-09-20:** `cmd/goodix-probe/vendor.go` carries the real config as `uploadConfigPayload`,
+      the replay fixture no longer substitutes synthetic bytes, and three tests pin it — 224 bytes,
+      `sum & 0xff == 0xaa`, and agreement with the 57 bytes the debug log prints. The vendor-init
+      sequence is now complete, byte for byte. `0x90` stays out of `steps`: knowing the bytes is not
+      permission to send them.
 - [x] **Keep the debug log in every Windows session.** Copied 2026-09-20 to `captures/` (gitignored).
       It is circular (20 MB, 320 chunks) and has already wrapped, so it is worth re-copying after every
       capture attempt — it is the best source we have, and the only thing that says whether the init
@@ -195,8 +218,10 @@ Done 2026-09-19, all of it against the replay transport and the two captures. No
 - [x] **Decoders** for the `0xae` state and the FDT event and arm frames, written against bytes read
       out of the captures. Only `isTlsConnected` could be pinned to a bit; see the correction in
       `docs/protocol.md`.
-- [x] **Replay fixture of the vendor init**, `96` through the second `ae`. Secrets and unknowns are
-      synthetic and named, so a real byte pasted in fails a test.
+- [x] **Replay fixture of the vendor init**, `96` through the second `ae`. Secrets are synthetic and
+      named, so a real secret pasted in fails a test. There are no unknowns left: since 2026-09-20 every
+      OUTBOUND frame is the vendor's own, the `0x90` config included. The synthetic bytes that remain are
+      all inbound — the `0xe4` PSK hash, the `0xa6` OTP, the TLS records.
 - [x] **Replay fixture of the capture loop**, with the image packs as scrubbed bytes.
 - [x] **`cmd/goodix-pcap`**, an offline USBPcap reader (`internal/capture`). It imports only
       `internal/proto`, prints counts rather than bytes by default, and refuses `0xe4` and `0xa6`
@@ -267,7 +292,9 @@ Then:
 - TLS server side in `internal/tlspsk`: the host is the **server**, with suite `0x00ae`. Check whether
   `openssl s_server -psk` offers `PSK-AES128-CBC-SHA256`.
 - Image decode for 80 × 64 (`internal/image`). The 12-bit packing from upstream is a hypothesis for this
-  sensor; the 7744-byte plaintext has to be measured.
+  sensor. **7744 is the TLS *record* length, not the plaintext** — the plaintext is 7680–7695 bytes; see
+  `docs/protocol.md`, "How big is an image, really". It has to be measured, but the arithmetic already
+  corroborates 80 × 64.
 - FDT loop (`32`/`20`/`34`) for finger detection, then a libfprint driver or a TOD module, developed
   together with upstream.
 
@@ -276,9 +303,9 @@ Then:
 ## Recommended order
 
 1. ~~Phase 3c: align the code with the vendor sequence, offline.~~ Done 2026-09-19.
-2. ~~Phase 3: get the 224-byte `0x90` config.~~ Done 2026-09-20, out of `gfusb.dll`. Put the real
-   config into `cmd/goodix-probe/vendor.go` in place of the synthetic bytes, completing the vendor-init
-   replay fixture. An init capture is still worth having as corroboration, but gates nothing.
+2. ~~Phase 3: get the 224-byte `0x90` config, and put it in `cmd/goodix-probe/vendor.go`.~~ Done
+   2026-09-20, out of `gfusb.dll`. An init capture is still worth having as corroboration, but gates
+   nothing.
 3. Phase 2: publish, now including the `0xe4` payload warning and Run 4's confirmation in isolation.
 4. Phase 4: steps 1–4 above, one per run.
 5. Phase 5 only once the PSK question has an answer.

@@ -110,7 +110,7 @@ never sends them and a guessed rule would read like evidence.
 | `0xa2` | `reset` | 2 (`01 14`) |
 | `0x70` | `mcu_switch_to_idle_mode` | 2 (`14 00`) |
 | `0x98` | `set_dac` | 8, from the OTP |
-| `0x90` | `upload_config_mcu` | 224, **not on record** |
+| `0x90` | `upload_config_mcu` | 224, recovered from `gfusb.dll` — see below |
 | `0xd0` | `request_tls_connection` | 2 (`00 00`); no ACK |
 | `0xd4` | `tls_successfully_established` | 2 (`00 00`) |
 | `0x20` | `mcu_get_image` | 2 (`01 00`) |
@@ -119,7 +119,7 @@ never sends them and a guessed rule would read like evidence.
 | `0xf4` | `check_firmware` | none recorded |
 | `0xe4` | `preset_psk_read` | 8 (`03 00 02 bb 00 00 00 00`) |
 
-`0xd2` is **not** registered. It is named in `PLAN.md`, but appears in neither the eight driver inits
+`0xd2` is **not** registered. It is named in `PLAN.md`, but appears in neither the nine complete driver inits
 nor either USB capture, and registering an opcode nobody has observed widens the boundary for nothing.
 No sensor-register *write* is registered either: the vendor init contains none.
 
@@ -166,13 +166,17 @@ applies to this 5120 is **unknown** and is a Tier 2 question.
 
 ## Open questions
 
-| Question | How to answer |
+Four of the six rows this table used to hold were answered between 2026-08 and 2026-09-20; they are
+kept, struck, because knowing a question *is* settled is worth as much as the answer.
+
+| Question | Status |
 |---|---|
-| Does the 5120 accept 51x0 framing at all? | probe: `nop` → expect ACK `0x01` |
-| Firmware version string | probe: `0xa8` |
-| Sensor resolution | unknown for the 5120. Upstream `driver_51x0.py` declares `SENSOR_WIDTH = 80`, `SENSOR_HEIGHT = 88`. Must be measured, not assumed |
-| PSK variant | see below — the TLS pre-shared key is transcribed; whether the 5120 accepts it is unverified |
-| 12-bit sample packing for image decode | **resolved** — transcribed from upstream `tool.py`, see below |
+| ~~Does the 5120 accept 51x0 framing at all?~~ | **Resolved — yes.** Every pack and message checksum verifies across both USB captures and all nine complete driver inits. The old answer here said "probe: `nop` → expect ACK `0x01`"; **do not do that** — the vendor driver never sends `nop` to an ITE EC part, and it drew no reply in Runs 2 and 3 |
+| ~~Firmware version string~~ | **Resolved** — `GF_ITE_EC_20063`, via `0xa8` |
+| ~~Sensor resolution~~ | **Resolved — 80 × 64**, from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
+| ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
+| PSK variant | **Open, and the wall.** The transcribed upstream key is not this device's: Windows provisioned a random PSK and sealed it (`Goodix_Cache.bin`, DPAPI). Whether the 5120 accepts the upstream key is unverified |
+| What the 224-byte `0x90` config actually *does* | **Open.** The bytes are known and the entry structure is a reasonable reading, but no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
 
 ## Image sample packing (transcribed, `tool.py::decode_image`)
 
@@ -324,7 +328,7 @@ baseline      —                           —                                 
 
 Consequence: the empty-payload `0xe4` has now killed the internal keyboard three times (Runs 1, 2, 4) and
 is the only frame ever shown to do so. The vendor's `0xe4` **with** its 8-byte argument is answered
-normally in all 8 driver inits, so the payload — not the opcode — is what the EC cannot survive.
+normally in all nine complete driver inits, so the payload — not the opcode — is what the EC cannot survive.
 
 ### Device identity — observed
 
@@ -394,6 +398,17 @@ Sources:
   reading — "2026-08-11 to 2026-09-19, 8 complete inits" — came from `strings -el`, which cannot date
   a record or tell a complete init from a short-circuited one. The record-level figures are the
   correct ones.
+  **The log is itself secret-bearing (observed, 2026-09-20).** It does not only record lengths: it
+  dumps received frames in full hex. The 64-byte OTP appears 18 times as `data::0xa641…` and again
+  under five other labels (`Got sensor OTP::`, `got file OTP::`, `USED OTP::`, …), and the `0xe4`
+  reply — a hash of the device PSK — appears 18 times as `data::0xe42a…`. The OTP's first 32 bytes
+  also appear as **`sensorid:0x…`**, a label that names neither OTP nor secret and uses a single
+  colon, so a search for `::` misses it entirely. Consequences: the log stays gitignored like any
+  capture, **no excerpt of it may be pasted into a document, an issue or a commit message without
+  being checked against those labels**, and `cmd/goodix-evtx` withholds all of them at parse time
+  rather than at the print site, so there is no unredacted path through it. Host-sent `Send data::`
+  frames are *not* withheld — the `0x90` config and the whole init live there, and recovering them is
+  the point of the tool.
 - **USBPcap captures** (`restart.pcapng`: `Restart-Service WbioSrvc`; `dump.pcapng`: 43 finger
   captures). Both show steady-state traffic only. No init runs, because the EC keeps its TLS session
   (see "Power"). Every pack and message checksum in both captures verifies. The driver doesn't zero the
@@ -463,6 +478,25 @@ The `0xe4` reply carries a hash of the device's PSK, so don't record it here.
   Tier 2 question; nothing to do now.
 - Images arrive as a single `b0` pack of 7749 bytes holding one TLS application-data record
   (`17 03 03 1e 40`, 7744 bytes). They are only readable with the PSK.
+
+#### How big is an image, really (hypothesis, arithmetic only, 2026-09-20)
+
+7744 is the length of the *record*, so it is an upper bound on the plaintext and not the plaintext
+itself. Suite `0x00ae` is `TLS_PSK_WITH_AES_128_CBC_SHA256` (observed in the ClientHello), which in
+TLS 1.2 puts a 16-byte explicit IV in front of the ciphertext and a 32-byte MAC plus 1–16 bytes of
+padding inside it:
+
+    7744 − 16 IV      = 7728 ciphertext   (a whole number of AES blocks, as it must be)
+    7728 − 32 MAC − padding(1..16) = 7680 .. 7695 bytes of plaintext
+
+80 × 64 = 5120 samples at 12 bits, packed four samples per six bytes, is **7680 bytes exactly** — the
+bottom of that range, reached with a full 16-byte padding block. Upstream's 8-byte header and 5-byte
+trailer would make 7693, also inside it.
+
+So the record length independently corroborates the 80 × 64 geometry with upstream's 12-bit packing,
+which until now rested only on the chip ID and upstream's own tables. It cannot distinguish a bare
+frame from one with upstream's header and trailer: both fit. Nothing here is decoded — this is
+arithmetic over lengths observed on the wire, and it stays a hypothesis until a plaintext is measured.
 
 ### Capture loop (steady state, `dump.pcapng`)
 

@@ -25,7 +25,7 @@ not advisable. See [The keyboard incident](#the-keyboard-incident).
 
 | | |
 |---|---|
-| Machine | Huawei `HVY-WXX9`, board `M1060` |
+| Machine | Huawei `HVY-WXX9` (DMI `product_name`); board `HVY-WXX9-PCB`, board version `M1060` |
 | OS | Ubuntu 26.04 LTS, kernel 7.0.0-29-generic |
 | Device | `27c6:5120`, `bcdDevice 2.00` |
 | Reports itself as | `GF_ITE_EC_20063` |
@@ -161,7 +161,7 @@ into one chip, and a command on one of them silenced another. See [`docs/acpi.md
 **Which command — answered, twice.** Run 2 (2026-09-19) bisected it to `preset_psk_read` (`0xe4`), and
 Run 4 the same evening reduced it further: attach, then `0xe4` and nothing else, and the keyboard still
 died. So one command is sufficient — no `nop`, no `0xa8` before it. The Windows driver sends the same
-opcode in all 8 of its inits without trouble, because it sends an 8-byte argument with it. What this
+opcode in all nine of its complete inits without trouble, because it sends an 8-byte argument with it. What this
 project sent, three times, was `0xe4` with an **empty payload**. The opcode is not the hazard; the
 missing argument is. See `docs/protocol.md`, Runs 2 and 4.
 
@@ -228,6 +228,8 @@ cycle recovery known in advance, and with no work open elsewhere on the machine.
 | `internal/transport` | gousb transport, replay fake, the enforcement chokepoint |
 | `internal/capture` | pcapng and USBPcap decoding; stdlib and `proto` only, so it cannot reach a device |
 | `cmd/goodix-pcap` | offline reader for the vendor captures; prints counts, not payload bytes |
+| `internal/evtx` | EVTX record scanner for the driver debug log; stdlib only, imports nothing from the repo |
+| `cmd/goodix-evtx` | offline reader for the debug log; prints a summary, withholds the OTP and the PSK hash |
 | `internal/tlspsk` | Tier 2 scaffold — TLS-PSK via an `openssl s_server` subprocess |
 | `internal/image` | Tier 2 scaffold — PGM writer and 12-bit unpacker |
 | `cmd/goodix-probe` | the read-only probe |

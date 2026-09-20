@@ -105,7 +105,7 @@ func TestRegisteredIsSorted(t *testing.T) {
 // to the evidence that the device tolerates the command.
 //
 // 0xd2 is deliberately absent — PLAN.md lists it, but it appears in neither the
-// vendor driver's eight inits nor either USB capture.
+// vendor driver's nine complete inits nor either USB capture.
 func TestRegisteredSetIsExact(t *testing.T) {
 	want := []Opcode{
 		0x00, 0x20, 0x32, 0x34, 0x36, 0x50, 0x70, 0x82, 0x90, 0x96,

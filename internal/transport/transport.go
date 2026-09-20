@@ -123,7 +123,7 @@ func checkOpcode(cmd proto.Opcode, ceiling proto.Class, allow []proto.Opcode) er
 // wedged the embedded controller and killed the laptop's internal keyboard in
 // Runs 1, 2 and 4 (docs/protocol.md), and Run 4 sent it alone, so nothing else
 // is required to trigger it. The vendor's 0xe4 carrying eight bytes is answered
-// normally in all eight driver inits.
+// normally in all nine complete driver inits.
 func checkPayload(cmd proto.Opcode, payload []byte) error {
 	if err := cmd.CheckPayload(len(payload)); err != nil {
 		return fmt.Errorf("%w: %s (0x%02x) rejected: %w", ErrRefused, cmd.Name(), byte(cmd), err)
