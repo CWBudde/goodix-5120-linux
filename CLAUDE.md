@@ -39,6 +39,11 @@ go build -buildvcs=false ./cmd/goodix-pcap
 ./goodix-pcap -in dump.pcapng                   # counts only, no payload bytes; reads a file, opens nothing
 ./goodix-pcap -in dump.pcapng -devices          # every device address in the capture: which hub, who kept transferring
 go test ./internal/capture -capture "$PWD/dump.pcapng"   # checks the payload rules against real vendor traffic
+
+go build -buildvcs=false ./cmd/goodix-evtx
+./goodix-evtx -in log.evtx                      # summary only: counts, id range, span, message shapes; no record text
+./goodix-evtx -in log.evtx -grep "Send data::0xa0e4"     # record text needs -grep or -text, and is bounded by -n
+go test ./internal/evtx -log "$PWD/captures/Goodix-FingerprintProvider%4Debug.evtx"   # re-derives the 17545 / 18 / 9 figures
 ```
 
 ## Architecture

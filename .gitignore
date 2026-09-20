@@ -1,6 +1,7 @@
 # Build output
 /goodix-probe
 /goodix-pcap
+/goodix-evtx
 /dist/
 
 # Captured sensor data — may contain biometric material, never commit
