@@ -385,9 +385,15 @@ Sources:
   not the protocol driver. The PDB path names the build `Milan_Watt\MilanSpi\x64\Release_GF3658`.
 - **Driver debug log.** The INF enables the ETW channel `Goodix-FingerprintProvider/Debug`, and the driver
   logs every frame it sends and receives in hex. It is at
-  `Windows\System32\winevt\Logs\Goodix-FingerprintProvider%4Debug.evtx`, 20 MB, covering 2026-08-11 to
-  2026-09-19, with **8 complete driver inits**. The init sequence below comes from this log, not
-  from USB captures. Read offline from Linux with `strings -el`.
+  `Windows\System32\winevt\Logs\Goodix-FingerprintProvider%4Debug.evtx`, 20 MB. The init sequence below
+  comes from this log, not from USB captures.
+  **Recounted 2026-09-20**, by parsing the EVTX records instead of running `strings` over them:
+  **17545 records, 2026-08-15 17:29:14 to 2026-09-19 23:27:07, holding 18 inits of which 9 are
+  complete.** The file is a circular 320-chunk log and has already wrapped (its header names first
+  chunk 28, last chunk 27), so anything older than that span is overwritten and gone. The earlier
+  reading — "2026-08-11 to 2026-09-19, 8 complete inits" — came from `strings -el`, which cannot date
+  a record or tell a complete init from a short-circuited one. The record-level figures are the
+  correct ones.
 - **USBPcap captures** (`restart.pcapng`: `Restart-Service WbioSrvc`; `dump.pcapng`: 43 finger
   captures). Both show steady-state traffic only. No init runs, because the EC keeps its TLS session
   (see "Power"). Every pack and message checksum in both captures verifies. The driver doesn't zero the
@@ -396,12 +402,17 @@ Sources:
 Device facts, from the log: **chip ID `0x2504`**, "ChicagoHS", sensor type 12, **80 × 64 pixels**
 (not upstream's 80 × 88). The OTP begins with ASCII `S2A755.`. The driver treats this as an
 "ITE EC project": it sends **no `nop`** ("not to send nop for ITE EC projects") and does **no firmware
-update** ("no firmware update for EC projects"). None of the 8 inits sends `0xe0`, `0xf0`, `0xf2`, `0xf4` or `0xf6`.
+update** ("no firmware update for EC projects"). None of the 9 complete inits sends `0xe0`, `0xf0`, `0xf2`, `0xf4` or `0xf6`.
 
 ### Init sequence
 
-Identical in all 8 inits. Payloads are message payloads (checksum omitted). ACK means a `b0` message
-`[cmd] 01`. The `0x90` config (224 bytes) is truncated in the log.
+Identical in all 9 complete inits. The most recent (2026-09-19 23:25:41) was re-read frame by frame
+at record level on 2026-09-20 and matches this table exactly, including the reply lengths — the log
+writes those as `recvd data cmd-len: 0x<cmd>-<n>`, where `n` counts the payload **plus** its checksum
+byte, so `0xe4-42` is the 41-byte payload below and `0xa6-65` the 64-byte OTP.
+Payloads are message payloads (checksum omitted). ACK means a `b0` message
+`[cmd] 01`. The `0x90` config (224 bytes) is truncated in the log to its first 57 payload bytes, but
+is **known in full** from `gfusb.dll` — see "The 224-byte `0x90` config — recovered" below.
 
 | # | TX | payload | reply |
 |---|---|---|---|
@@ -439,12 +450,14 @@ The `0xe4` reply carries a hash of the device's PSK, so don't record it here.
 - Pack flag `0xb0` carries raw TLS records in both directions. After `d0`, the **EC is the TLS client**:
   it sends ClientHello, and the host (mbedTLS inside `gfusb.dll`) is the server.
 - TLS 1.2, one cipher suite offered: **`0x00ae` = `TLS_PSK_WITH_AES_128_CBC_SHA256`**. PSK
-  identity `Client_identity`. No certificates.
+  identity `Client_identity`. Corroborated 2026-09-20 from the 23:25:41 handshake in the log, whose
+  ClientHello (`16 03 03 00 2f 01 00 00 2b 03 03 …`) offers exactly `00ae` and nothing else.
 - The PSK is **not** the upstream zero key. It is 32 random bytes that the driver generated during
   provisioning, sealed on the host (`gf_seal_data`; the log says "read 332 bytes", and
   `C:\ProgramData\Goodix\Goodix_Cache.bin` is exactly 332 bytes, dated 2021-03-16) and written to the
-  EC with `0xe0`. The sealing key derives from host entropy (`generate_entropy2: generate rootkey`);
-  how is unknown. At each init the driver unseals it, hashes it and compares with the
+  EC with `0xe0`. **The sealing is DPAPI** (observed 2026-09-20 — see "`Goodix_Cache.bin` is DPAPI"
+  below), not TPM or SGX, whatever `gf_sgx_seal_data` and "IntelME pmk hash" suggest elsewhere in the
+  strings. At each init the driver unseals it, hashes it and compares with the
   hash from `0xe4` ("hash equal"). A Linux driver therefore needs either that PSK, unsealed from the
   Windows side, or its own `0xe0` provisioning, which would break Windows Hello and is destructive.
   Tier 2 question; nothing to do now.
@@ -527,6 +540,9 @@ other, and across these three observations that value only goes up: `04`, `0a`, 
 some kind — of inits, or of power transitions — is the obvious guess, but three points in wall-clock
 order are not enough to call it, and the first two are from different boots. **Hypothesis, not
 observed.** They are not the TX timestamp: the host supplies that, and it differs within a session.
+The debug log adds two more readings at `0e 0e` (2026-09-19 23:25:22 and 23:25:41), which bracket a
+Disable, a re-enumeration and an Enable without moving — so whatever it counts, it is not USB
+attachments.
 
 ### Disable device, Windows (observed twice, 2026-09-19 23:13 and 23:26)
 
@@ -549,21 +565,163 @@ the `96`; the `ae` that follows is the last thing it asks.
 This qualifies, and does not contradict, the D0Exit finding below: idle exit sends nothing, an
 explicit Disable sends `enable_chip(0)`.
 
-Not answered by this capture: whether the EC drops its TLS session when the chip is disabled. The
-state read here is from *before* the `96` took effect, or from a chip that had not yet powered down —
-the reply says TLS is up either way. The following Enable is not in the file.
+**Answered 2026-09-20, from the debug log: the EC does not drop its TLS session.** After the Enable
+re-enumerated the device, the `ae` at 23:25:41.273 read back
+`02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 0e 0e` — byte for byte what the Disable read
+19 s earlier, `isTlsConnected` still set, trailing counter still `0e`. So a Device Manager
+Disable/Enable does not reset the EC's session; the driver re-handshakes because *it* lost its key
+material, not because the EC did. (The counter's failure to move across this pair says little either
+way: the read happens inside the init that would have bumped it.)
 
 No USB re-enumeration appears anywhere in either capture. The only control transfers on the device
 are the six of USBPcap's injected descriptor sweep at t=0, so Device Manager's Disable did not reset
 or re-address the USB device.
 
-**The Enable produces nothing.** `disable-enable3.pcapng` ran **84.6 s** — 74.7 s of it after the
-driver unloaded — and in that time the sensor sent and received not one byte, and no new device
-number appeared on the bus. Other devices on the same hub (a headset, a mouse, a disk) kept
-transferring to the last second of the file, so the capture itself was alive throughout. Either the
-Enable did not happen inside the capture window, or a Device Manager re-enable does not re-enumerate
-the device where USBPcap can see it. The debug log for that timestamp would settle it, and has not
-been collected yet.
+**The Enable produces nothing *in the capture*.** `disable-enable3.pcapng` ran **84.6 s** — 74.7 s of
+it after the driver unloaded — and in that time the sensor sent and received not one byte, and no new
+device number appeared on the bus. Other devices on the same hub (a headset, a mouse, a disk) kept
+transferring to the last second of the file, so the capture itself was alive throughout.
+
+**Resolved 2026-09-20 by the debug log: the Enable ran a complete init, 26.6 s into that capture, and
+USBPcap recorded none of it.** See "Why three Disable/Enable captures hold no init" below. The two
+candidate explanations were "the Enable did not happen inside the capture window" and "USBPcap cannot
+see it"; it is the second.
+
+### The Windows partition, read offline (observed, 2026-09-20)
+
+The Windows system partition (`/dev/nvme0n1p3`) was mounted **read-only** on Linux and three things
+were taken off it: the driver debug log, the driver package, and `C:\ProgramData\Goodix\Goodix_Cache.bin`.
+Nothing on the partition was written, and no Windows binary was run. All three land in gitignored
+directories (`/captures/`, `/windows-driver/`) and none of them enters the repository.
+
+One trap, recorded because it produced a false finding before it was caught: **`cp` from an `ntfs3`
+mount uses `copy_file_range()`, which that driver mishandles and which silently yields a file of the
+right size filled with zeros.** Eight of the nine driver-package files arrived corrupted that way, and
+a zero-filled `gfusb.dll` searches clean — which briefly made the `0x90` config look as though it were
+not in the DLL at all. Copy with `cat src > dst` and check `md5sum` against the source. The two
+`.evtx` copies were verified byte-identical with `cmp`, so nothing drawn from the debug log is affected.
+
+No EVTX tooling exists on this machine, so the log was read with a small record scanner rather than a
+binary-XML parser: EVTX records carry their own header — magic `0x00002a2a`, size, record id and a
+FILETIME — and their substitution values are stored as plain UTF-16LE, which is enough to recover
+"what was logged, and when". Template-owned static text is not reconstructed, and does not need to be.
+
+### `Goodix_Cache.bin` is DPAPI (observed, 2026-09-20)
+
+`C:\ProgramData\Goodix\Goodix_Cache.bin`, 332 bytes, mtime **2021-03-16 19:32:15**, unchanged since —
+this is the sealed PSK the TLS section describes. Its header is:
+
+```
+01 00 00 00                                       blob version 1
+d0 8c 9d df 01 15 d1 11 8c 7a 00 c0 4f c2 97 eb   provider GUID
+01 00 00 00                                       master-key version
+<16 bytes>                                        master-key GUID
+```
+
+The provider GUID above is the well-known DPAPI constant `df9d8cd0-1501-11d1-8c7a-00c04fc297eb`,
+written in Microsoft's mixed-endian GUID layout. (The master-key GUID identifies *this* machine's key
+and is not recorded.) **The blob is `CryptProtectData`
+output: DPAPI, not TPM- and not SGX-sealed.** That settles how the PSK is stored.
+
+It is user- or machine-scoped DPAPI protected by a master key, so recovering the plaintext offline
+needs that master key, which is a separate question and not answered here. The rest of the blob's
+bytes are deliberately **not** recorded: they are the sealed PSK. The file stays gitignored and
+unpublished.
+
+### The 224-byte `0x90` config — recovered (observed, 2026-09-20)
+
+**The last outbound frame of the vendor init that nobody had the bytes for is now known in full.**
+Extracted statically from `gfusb.dll`; the debug log alone could never have produced it.
+
+The complete frame on the wire is **232 bytes**: pack `a0 e4 00 84`, message `90 e1 00`, the 224-byte
+payload below, then the message checksum `8f`.
+
+```
+7011607100712c9d1cb918d100d100d100ba000180ca000400840015b3860000
+c4880000ba8a0000b28c0000aa8e0000c19000bbbb9200b1b1940000a8960000
+b6980000009a000000d2000000d4000000d6000000d800000050000105d00000
+00700000007200785674003412200010402a0182032200012024001400800001
+005c000001560004205800030232000c02660003007c000058820080152a0108
+005c008000540010016200040364001900660003007c0000582a0108005c0000
+015200080054000001660003007c000058000000000000000000000000007815
+```
+
+Four independent checks, each of which would fail on a window off by one byte or one length:
+
+- **19 occurrences in `gfusb.dll`, all byte-identical** — eighteen in `.rdata` (first at file offset
+  `0xd04e2`), one in `.data` at `0x310aa0`. No variant ambiguity about which blob is the config.
+- **Its first 57 bytes are exactly what the debug log shows**, in all nine complete inits over a month.
+- **`sum(payload) & 0xff == 0xaa`**, the vendor's own message-checksum convention. This is what pins
+  the 224-byte boundary.
+- **Re-encoding it with this repository's own framing rules reproduces the logged first 64 bytes byte
+  for byte**, pack checksum `0x84` included, and yields message checksum `0x8f`.
+
+`goodix.dat`, `goodix_calib.dat` and the `SYSTEM`/`SOFTWARE` registry hives were also searched and do
+**not** contain it; the config lives in the DLL.
+
+**Structure — interpretation, not fact.** 29-byte header, then 48 four-byte entries of
+`[register LE16][value LE16]`, then a 3-byte tail. It is a write **script, not a map**: registers
+`0x5c`, `0x66`, `0x7c` and `0x12a` each recur three times with different values, so order is
+significant and it cannot be replayed as an unordered set. Register sequence:
+
+```
+86 88 8a 8c 8e 90 92 94 96 98 9a d2 d4 d6 d8 50 d0 70 72 74 20 12a 22 24 80
+5c 56 58 32 66 7c 82 12a 5c 54 62 64 66 7c 12a 5c 52 54 66 7c
+```
+
+Registers `0x0072 = 0x5678` and `0x0074 = 0x1234` put `0x12345678` across two consecutive registers —
+a recognisable test or magic constant, and a useful sanity check on the entry decoding. The 29-byte
+header does not fit the entry pattern and is **not** decoded.
+
+**Consequence:** the vendor-init replay fixture can carry the real `0x90` instead of synthetic bytes,
+and a USB capture of an init is no longer needed to obtain it. Such a capture is still worth having
+as corroboration — see below for why none of the three attempts produced one.
+
+### What triggers a full init (observed, 2026-09-20)
+
+Not the MCU's TLS flag — the driver's own lifecycle state. Both of these happened within 19 s:
+
+| time | driver state | `isTlsConnected` | what it sent |
+|---|---|---|---|
+| 23:25:22.459 | `DriverState:Uninstall`, "resume from S0 idle", prev state 4/5 | 1 | one `ae`, then "get pov images directly", then "Initialization done successfully" — **no config, no handshake** |
+| 23:25:41.224 | `DriverState:Install`, prev state `5(D3Final)` | 1 | the complete 13-frame sequence, `96` through `d4`, including the 224-byte `0x90` and a fresh TLS handshake |
+
+So a resume short-circuits on `isTlsConnected`, exactly as the state-byte note above says, while a
+**fresh driver start runs the full init regardless of what the MCU reports** — at 23:25:41 the EC still
+had its session up and the driver re-initialised anyway, because the driver had lost its own key
+material. `DriverState:Install` follows a PnP start, which follows a re-enumeration.
+
+That is the crux of the capture problem: **a full init requires a re-enumeration, and a
+re-enumeration is the one thing the capture tool cannot follow.**
+
+Also from the Disable side, at 23:25:22.396: the `96 [00 02]` quiesce write returned
+`Usb write error!! status:0xc000000e` in the driver's log, yet USBPcap recorded the frame on the wire
+anyway. Log and capture otherwise agree on all three Disable frames to the millisecond, which is what
+makes the correlation below trustworthy.
+
+### Why three Disable/Enable captures hold no init (observed, 2026-09-20)
+
+**USBPcap does not follow the device across a PnP re-enumeration.** The procedure was right every
+time; the capture tool missed the result. Correlating the log's 9 complete inits against the capture
+windows:
+
+| capture | window | complete init in that window |
+|---|---|---|
+| `disable-enable2.pcapng` | 23:13:09.726 + 22.295 s | **23:13:23.144** |
+| `disable-enable3.pcapng` | 23:25:14.831 + 84.581 s | **23:25:41.462** |
+
+Both captures contained a complete init and neither recorded one byte of it. Taking
+`disable-enable3.pcapng` in detail: the sensor's last captured transfer is at 23:25:24.680, the init
+begins **16.8 s later**, and neither it nor any new device address appears anywhere in the file —
+while the other devices on the hub kept transferring to the last second. The device came back and the
+capture never saw it.
+
+(`disable-enable.pcapng`, attempt 2, is not in the table: it was on the wrong hub, and the nearest
+complete init, 22:25:05.889, falls outside its window in any case.)
+
+The consequence for the runbook is that **more re-enumeration is not the fix** — Uninstall plus "Scan
+for hardware changes" is a stronger PnP removal and would fail the same way. See
+[`docs/windows-capture-runbook.md`](windows-capture-runbook.md).
 
 ### Power
 

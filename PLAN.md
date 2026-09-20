@@ -19,7 +19,7 @@ What we know, with details in [`docs/protocol.md`](docs/protocol.md):
 - **The device is an ITE EC** (`GF_ITE_EC_20063`) in front of a Goodix sensor with chip ID `0x2504`
   ("ChicagoHS", 80 × 64 pixels). The vendor driver treats it as an "EC project": **no `nop`, and no
   firmware update, ever.**
-- **The vendor init sequence is known** from the driver's own debug log, identical over 8 inits:
+- **The vendor init sequence is known** from the driver's own debug log, identical over 9 complete inits:
   `96 → a8 → ae → e4 → a2 → 82 → a6 → a2 → 70 → 98 → 90 → d0 (TLS) → d4`, then FDT calibration and
   arming `32`. Every command carries a payload, even when it is only `00 00`.
 - **Cause of the wedge, confirmed:** we sent `0xe4` **without its 8-byte argument**. The vendor sends
@@ -38,8 +38,10 @@ What we know, with details in [`docs/protocol.md`](docs/protocol.md):
 What is ahead, in order:
 
 1. ~~**Phase 3c:** bring the code in line with the vendor sequence, offline.~~ **Done 2026-09-19.**
-2. **Phase 3:** get the missing pieces. That means a real init on the wire (the full `0x90` config),
-   the ACPI and EC identity, and a first look at how the PSK is sealed.
+2. ~~**Phase 3:** get the missing pieces.~~ **Done 2026-09-20.** The 224-byte `0x90` config — the last
+   frame of the vendor init nobody had — was recovered from `gfusb.dll`. ACPI, EC identity, the driver
+   package, the debug log and the PSK-sealing question are all answered too (the sealing is DPAPI).
+   What remains open in Phase 3 is optional corroboration, not a blocker.
 3. **Phase 2:** publish. The findings now include the vendor sequence, the `0xe4` payload and Run 4.
 4. **Phase 4:** live plaintext runs that follow the vendor sequence, one step at a time.
 5. **Phase 5:** solve the PSK, then TLS and images.
@@ -81,13 +83,20 @@ Goal: learn the command sequence the EC actually expects instead of guessing it 
 flow.
 
 - [x] **Windows driver analysis.** 2026-09-19: `gfusb.dll` 1.1.122.127 (UMDF), from strings and its
-      ETW debug log, which records every frame of 8 inits. No firmware images; the driver skips
-      firmware updates for EC projects. See `docs/protocol.md`, "Vendor driver, Windows".
+      ETW debug log. No firmware images; the driver skips firmware updates for EC projects. See
+      `docs/protocol.md`, "Vendor driver, Windows".
+      **2026-09-20:** the driver package itself is now on disk — the Windows partition was mounted
+      read-only and `gfusb.inf_amd64_4652ced462eef64a` copied to `windows-driver/` (gitignored), which
+      is what `pnputil /export-driver` was only a way of reaching. Re-reading the log at EVTX record
+      level also corrected its figures: **17545 records, 2026-08-15 to 2026-09-19, 18 inits of which
+      9 are complete** — not the "8 inits" that `strings -el` suggested, which cannot date a record.
 - [x] **Windows USB capture, steady state.** 2026-09-19: a `WbioSrvc` restart plus a 43-capture session.
       No init on the wire, because a service restart doesn't reload the UMDF driver. Every checksum
       verifies.
 - [x] Record everything in `docs/protocol.md` and mark each item as observed or hypothesis.
-- [ ] **Capture a real init on the wire.** An init needs the **UMDF driver host** to reload *and*
+- [ ] **Capture a real init on the wire.** *(No longer blocking: the `0x90` it was needed for has been
+      recovered from `gfusb.dll`. Now worth having as corroboration — log against wire, and the `d0`
+      handshake as it actually appears — not as a gate.)* An init needs the **UMDF driver host** to reload *and*
       the EC to lose its TLS session, which Device Manager → **Disable/Enable device** does because
       it re-enumerates the device. A `WbioSrvc` restart does neither: `restart.pcapng` holds exactly
       **2 frames** on the device — one `0xae`, reply `isTlsConnected=1` — and then steady state.
@@ -101,24 +110,43 @@ flow.
       interface before capturing.
       Attempts 3 and 4, `disable-enable2.pcapng` (23:13) and `disable-enable3.pcapng` (23:26): right
       hub (bus 1, device 3), and both hold the **Disable** and nothing else — `96 [00 02]`, one `ae`,
-      then the driver unloads. Attempt 4 ran 84.6 s, **74.7 s of it after the unload**, with not one
-      byte from the sensor, while other devices on the same hub transferred to the last second. So
-      the Enable produces nothing capturable. New from them: the driver's shutdown command,
-      `enable_chip(0)`, which the debug log never showed (`docs/protocol.md`, "Disable device,
-      Windows"). Still no `0x90`.
-      **Next step is the `.evtx`, not another capture.** It says whether an init ran at 23:26 at all,
-      which decides between "the Enable runs no init" (then force one: Win+L and sign in with the
-      finger, capture running) and "USBPcap cannot see it" (then Uninstall + Scan for hardware
-      changes instead of Disable/Enable).
+      then the driver unloads. New from them: the driver's shutdown command, `enable_chip(0)`, which
+      the debug log never showed (`docs/protocol.md`, "Disable device, Windows").
+      **Diagnosed 2026-09-20 from the debug log: the procedure was right every time and USBPcap
+      missed the result.** Both captures contain a **complete** init — 23:13:23.144 and 23:25:41.462,
+      the latter 26.6 s into an 84.6 s capture — and neither recorded a byte of it, nor any new device
+      address. **USBPcap does not follow the device across the PnP re-enumeration** that the Enable
+      causes. A full init needs that re-enumeration: the driver short-circuits any init that is only a
+      resume, whatever TLS state the MCU reports (`docs/protocol.md`, "What triggers a full init"), so
+      there is no gentler trigger to fall back on.
+      **Uninstall + Scan for hardware changes is therefore struck out** — a stronger PnP removal fails
+      the same way. Next attempt instead: Disable *first*, then start the capture with **every**
+      `USBPcapN` interface selected and *Capture from newly connected devices* confirmed on, then
+      Enable, so USBPcap holds no stale device object.
       Runbook: [`docs/windows-capture-runbook.md`](docs/windows-capture-runbook.md) — rewritten
-      2026-09-20 down to just this capture and the three files to carry back with it.
-- [ ] **Keep the debug log in every Windows session.** Copy
-      `Goodix-FingerprintProvider%4Debug.evtx` out after each capture. It is circular (20 MB) and
-      the best source we have.
-- [ ] **PSK sealing, first look (read-only).** Where does the unseal key come from (`gf_unseal_data`,
-      `generate_entropy2: generate rootkey`, `gf_sgx_seal_data`, "IntelME pmk hash")? DPAPI, TPM/SGX,
-      or a machine-derived key? Static analysis of `gfusb.dll` only, local, never published. This
-      decides Phase 5.
+      2026-09-20 down to just this capture; the three files it used to ask for are collected.
+- [x] **The 224-byte `0x90` config — recovered 2026-09-20 from `gfusb.dll`,** by static extraction;
+      nothing executed, nothing published. The DLL holds the blob **19 times, all byte-identical**
+      (eighteen in `.rdata`, one in `.data`). Its first 57 bytes match what the debug log shows in all
+      nine complete inits, `sum(payload) & 0xff == 0xaa` pins the 224-byte boundary, and re-encoding it
+      with `internal/proto` reproduces the logged first 64 bytes byte for byte. Full bytes and the
+      register-script reading are in `docs/protocol.md`, "The 224-byte `0x90` config — recovered".
+      **This was the last missing frame of the vendor init.**
+      Follow-up: `cmd/goodix-probe/vendor.go` still carries synthetic bytes of the right length for the
+      `0x90`, per the Phase 3c plan. They can now be replaced with the real config, and the vendor-init
+      replay fixture becomes complete.
+- [x] **Keep the debug log in every Windows session.** Copied 2026-09-20 to `captures/` (gitignored).
+      It is circular (20 MB, 320 chunks) and has already wrapped, so it is worth re-copying after every
+      capture attempt — it is the best source we have, and the only thing that says whether the init
+      you were trying to catch actually ran.
+- [x] **PSK sealing, first look (read-only).** 2026-09-20, answered without any static analysis:
+      `C:\ProgramData\Goodix\Goodix_Cache.bin` (332 bytes, written once on 2021-03-16) carries the
+      DPAPI provider GUID `df9d8cd0-1501-11d1-8c7a-00c04fc297eb` in its header. **The PSK is sealed
+      with DPAPI** — `CryptProtectData`, not TPM and not SGX, whatever `gf_sgx_seal_data` and
+      "IntelME pmk hash" suggest in the strings. See `docs/protocol.md`, "`Goodix_Cache.bin` is
+      DPAPI". The blob stays gitignored and unpublished.
+      What this does **not** answer, and what Phase 5 now turns on: recovering the plaintext needs the
+      DPAPI master key, which is user- or machine-scoped. That is a separate question and untouched.
 - [x] **ACPI tables.** 2026-09-20, DSDT + 13 SSDTs, read only — no method called. Answer:
       **nothing in ACPI can reset the EC or cut power to the sensor's USB port.** The port
       (`\_SB.PCI0.GP17.XHC0.RHUB.PRT4`, PCI `0000:04:00.3` port 4 = `1-4`) has `_ADR`, `_UPC` and
@@ -142,7 +170,7 @@ confirmed that the probe without `0xe4` is safe to repeat. `0xe4` is now `ClassS
 - [x] **Confirm `0xe4` alone, live.** Run 4, 2026-09-19 22:41: attach, then the empty `0xe4` and nothing
       else. ACK after 4 ms, then silence, then a dead internal keyboard. So **one frame is sufficient**
       — `nop` and `0xa8` are not preconditions — and what is fatal is the **empty payload**, not the
-      opcode: the vendor sends `0xe4` with its 8-byte argument in all 8 inits and gets ACK plus data.
+      opcode: the vendor sends `0xe4` with its 8-byte argument in all 9 complete inits and gets ACK plus data.
       Recorded as Run 4 in `docs/protocol.md`. Nothing more is to be learned from that frame, and
       Phase 3c makes it unbuildable.
 
@@ -187,6 +215,10 @@ byte for byte (opcode *and* payload). Both halves are now enforced in code rathe
 prints the probe's frames next to the whole vendor sequence for a human to compare. `d0` and beyond
 still can't be met, until the PSK is solved.
 
+**2026-09-20:** every byte the vendor sends up to `d0` is now known, the `0x90` config included, so
+the gate's *data* half is fully satisfied. Nothing here loosens: the gate was never only about having
+the bytes, and the live-run discipline below is unchanged.
+
 Setup for every run:
 
 - [ ] Plug in an external USB keyboard, or better, drive the machine over SSH from a second computer.
@@ -206,8 +238,11 @@ Proposed order, one new step per run, always in vendor order, prefix from the ve
 3. `+ e4 [03 00 02 bb 00 00 00 00]` → expect ACK + 41 bytes. **This tests the wedge hypothesis.**
    Only with the external keyboard attached, and only after steps 1–2 passed twice.
 4. `+ a2 [01 14]`, `82 [00 00 00 04 00]`, `a6 [00 00]` → reset, chip ID `0x2504`, OTP.
-5. Stop there. `70`/`98`/`90` configure the sensor (`90` needs the full config from a wire capture),
-   and `d0` starts a handshake we can't finish without the PSK.
+5. Stop there. `70`/`98`/`90` configure the sensor, and `d0` starts a handshake we can't finish
+   without the PSK. **The data half of this step is now met** (2026-09-20): the full 224-byte `0x90`
+   config is known, so "needs the full config from a wire capture" no longer applies. What still gates
+   it is unchanged and has nothing to do with missing bytes — live-hardware safety, one command per
+   run, and the PSK question beyond `d0`.
 
 **Never, under any circumstances:** run upstream's `driver_51x0.main()` or any IAP/firmware-write path.
 It would try to flash `GF_ST411SEC_APP_12117.bin` onto the ITE EC that also runs the keyboard.
@@ -241,9 +276,9 @@ Then:
 ## Recommended order
 
 1. ~~Phase 3c: align the code with the vendor sequence, offline.~~ Done 2026-09-19.
-2. Phase 3: capture an init on the wire (Disable/Enable), look at the PSK sealing, ACPI and EC identity.
-   The Disable/Enable capture is the only thing still blocking a complete vendor-init fixture, since
-   the `0x90` config is the one outbound frame nobody has the bytes for.
+2. ~~Phase 3: get the 224-byte `0x90` config.~~ Done 2026-09-20, out of `gfusb.dll`. Put the real
+   config into `cmd/goodix-probe/vendor.go` in place of the synthetic bytes, completing the vendor-init
+   replay fixture. An init capture is still worth having as corroboration, but gates nothing.
 3. Phase 2: publish, now including the `0xe4` payload warning and Run 4's confirmation in isolation.
 4. Phase 4: steps 1–4 above, one per run.
 5. Phase 5 only once the PSK question has an answer.

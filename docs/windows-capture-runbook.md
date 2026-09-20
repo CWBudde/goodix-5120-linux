@@ -1,8 +1,13 @@
 # Windows capture runbook: the one capture that is still missing
 
-Two USBPcap captures exist and both show **steady state**. The vendor driver's init has never been
-seen on the wire. This runbook is now only about getting that one capture, plus three files worth
-carrying back in the same session.
+The vendor driver's init has never been seen on the wire. This runbook is about getting that one
+capture.
+
+**Updated 2026-09-20, and the diagnosis changed.** The Windows partition was read offline and the
+debug log now says what the captures could not: the Disable/Enable procedure **worked every time**,
+and two of the three attempts contain a complete init that USBPcap simply did not record. USBPcap
+does not follow the device across a PnP re-enumeration. So the thing to change is the capture method,
+not the clicking — and the three other files this runbook used to ask for have all been collected.
 
 ## What we already have, and why it was not enough
 
@@ -11,11 +16,11 @@ carrying back in the same session.
 | `restart.pcapng` | `Restart-Service WbioSrvc` | **2** — one `0xae`, one reply |
 | `dump.pcapng` | 43 finger captures | 382, all steady state |
 | `disable-enable.pcapng` | Disable/Enable attempt, 2026-09-19 22:24 | **0** — the sensor is not on that hub at all |
-| `disable-enable2.pcapng` | Disable/Enable attempt, 2026-09-19 23:13 | **3** — the Disable only, over 22 s |
-| `disable-enable3.pcapng` | Disable/Enable attempt, 2026-09-19 23:26 | **3** — the same Disable, over 85 s. The Enable produces nothing |
-| `Goodix-FingerprintProvider%4Debug.evtx` | driver debug log | 8 complete inits, the `0x90` config truncated |
+| `disable-enable2.pcapng` | Disable/Enable attempt, 2026-09-19 23:13 | **3** — the Disable only. A complete init ran at 23:13:23, inside the window, uncaptured |
+| `disable-enable3.pcapng` | Disable/Enable attempt, 2026-09-19 23:26 | **3** — the same Disable. A complete init ran at 23:25:41, 26.6 s in, uncaptured |
+| `Goodix-FingerprintProvider%4Debug.evtx` | driver debug log | 18 inits, **9 complete**; the `0x90` config truncated to 57 of 224 bytes |
 
-(Counts from `./goodix-pcap -in <file>`.)
+(Counts from `./goodix-pcap -in <file>`; init times from the log, read 2026-09-20.)
 
 The restart capture is the miss, and it shows exactly why it missed. Restarting `WbioSrvc` does not
 reload the **UMDF driver host**. `gfusb.dll` stayed loaded, the EC still had its TLS session, so the
@@ -27,14 +32,20 @@ Manager → Disable → Enable does both, because it re-enumerates the USB devic
 
 ## What is missing, exactly
 
-One frame: **`0x90` upload_config, 224 bytes.** The debug log truncates it, which makes it the only
-outbound frame in the entire vendor init that nobody has the bytes for. It blocks a complete
-vendor-init replay fixture, and with it PLAN.md Phase 4 step 5.
+One frame used to be missing: **`0x90` upload_config, 224 bytes** — the only outbound frame in the
+entire vendor init that nobody had the bytes for, blocking a complete vendor-init replay fixture and
+with it PLAN.md Phase 4 step 5.
 
-Secondary, from the same capture: the log-versus-wire comparison byte for byte, and the `d0` TLS
-handshake as it actually appears on the wire.
+**Recovered 2026-09-20 — this is no longer missing.** The driver truncates its own hex dump at 64
+bytes of the pack, so the log yields only 57 of the 224 payload bytes and never will yield more
+(verified at raw EVTX record level). The full 224 bytes were instead extracted statically from
+`gfusb.dll`, which holds the blob 19 times over, byte-identical; its first 57 bytes match the log and
+its checksum pins the boundary. See `docs/protocol.md`, "The 224-byte `0x90` config — recovered".
 
-## Attempts 3 and 4: the Disable is captured, the Enable is silent
+So **this capture is no longer a blocker** — it is now corroboration: the log-versus-wire comparison
+byte for byte, and the `d0` handshake as it appears on the wire. Worth getting, no longer urgent.
+
+## Attempts 3 and 4: the Disable is captured, the Enable is not
 
 Both found the sensor — bus 1, device 3, right hub, every checksum verifying — and both hold the
 same three frames, the **Disable**:
@@ -57,29 +68,42 @@ Worth having anyway: the init's `96` carries `01 02` and this one carries `00 02
 have a shutdown command, which the debug log never showed (`docs/protocol.md`, "Disable device").
 But the 224-byte `0x90` is still missing.
 
-### Settle it with the debug log before capturing again
+### Settled 2026-09-20: the init ran, USBPcap missed it
 
-Two explanations are still open, and the `.evtx` separates them for free:
+The debug log answers it. Both properly aimed attempts contain a **complete** init:
 
-- **the Enable never ran an init** — the log will have no init at ~23:26;
-- **it ran and USBPcap could not see it** — the log will have one, and then the capture approach is
-  what has to change, not the clicking.
+| capture | window | complete init inside it |
+|---|---|---|
+| `disable-enable2.pcapng` | 23:13:09.726 + 22.295 s | 23:13:23.144 |
+| `disable-enable3.pcapng` | 23:25:14.831 + 84.581 s | 23:25:41.462 |
 
-So the next trip starts with step 3 below, not with Wireshark. Copy the log out first and let it
-decide.
+In attempt 4 the sensor's last captured transfer is 23:25:24.680, the init starts **16.8 s later**,
+and neither it nor any new device address appears anywhere in the file. The clicking was right all
+three times. **USBPcap does not follow the device across the PnP re-enumeration** the Enable causes.
 
-### If the log says an init did run
+Two consequences, and the second one reverses earlier advice in this file:
 
-Then the Disable/Enable path is not capturable this way, and the thing to try instead is the
-stronger reload: Device Manager → **Uninstall device** — do *not* tick "delete the driver" — then
-**Action → Scan for hardware changes**, with the capture running. That is a real PnP removal and
-re-enumeration rather than a stack restart.
+- A full init **requires** a re-enumeration. The driver short-circuits any init that is merely a
+  resume, whatever the MCU reports — see "What triggers a full init" in `docs/protocol.md`. So there
+  is no gentler trigger to fall back on: no Win+L fingerprint sign-in, no service restart.
+- **Uninstall device + Scan for hardware changes is now a bad suggestion.** It is a *stronger* PnP
+  removal, so it fails the same way, harder. Do not use it.
 
-### If the log says no init ran
+### What to try instead
 
-Then the Enable alone does not initialise the chip, and something has to ask for it. Lock the screen
-(Win+L) and sign in with the finger, with the capture still running. That opens a WinBio session,
-which is the one thing in these captures that has never been tried right after an Enable.
+Give USBPcap no stale device object to lose track of, and do not bet on one interface:
+
+1. Device Manager → **Disable device** *first*, before Wireshark is anywhere near it. Wait ~5 s.
+2. **Now** start the capture, with **every** `\\.\USBPcapN` interface selected at once, and confirm
+   *Capture from newly connected devices* is ticked (along with the other two options).
+3. Wait ~5 s, then **Enable device**. The sensor is now a genuinely new arrival rather than one
+   USBPcap already holds a removed object for.
+4. Wait ~20 s, touch the sensor once, stop, save.
+
+If that still comes back with three frames, the next thing to try is a capture started before a
+**full shutdown and cold boot** (Shift + *Shut down*, not Fast Startup) — the first init after boot is
+also a `DriverState:Install` — though a boot-time capture needs USBPcap running as a service, which
+is a bigger change than it sounds.
 
 ## Pick the interface first — the USBPcap number is not stable
 
@@ -166,47 +190,65 @@ captured, because then nothing in the file says the new address is the same devi
 as a note — bulk traffic appearing at an unidentified address after the sensor fell silent — and
 `-devices` plus `-bus`/`-device` decodes it by hand.
 
-## The session: four things, one boot
+## The session: one thing, not four
 
 External USB keyboard plugged in, as before.
 
-### 1. The init capture — the point of the exercise
+**Only the capture is still outstanding.** The other three files this runbook used to ask for were
+collected on 2026-09-20 by mounting the Windows partition read-only from Linux, which needs no
+Windows session at all — see "Already collected" below.
 
-1. Start the capture on the USBPcap interface you identified above — not "the same one as last
-   time".
-2. Wait ~5 s.
-3. Device Manager → **Biometric devices** → the Goodix device → right-click → **Disable device**.
-   Confirm. Wait ~5 s.
-4. Right-click → **Enable device**. Wait ~20 s, until it is idle.
-5. Touch the sensor once, so the file also ends in a known steady state.
-6. Stop the capture, **File → Save As** → `01-init-disable-enable.pcapng`.
+### The init capture — the point of the exercise
 
-Check it before moving on — see below.
+Follow "What to try instead" above: **Disable first, then start the capture on every interface, then
+Enable.** Then:
 
-### 2. The driver package
+1. Wait ~20 s, until it is idle.
+2. Touch the sensor once, so the file also ends in a known steady state.
+3. Stop the capture, **File → Save As** → `01-init-disable-enable.pcapng`.
 
-There is no copy of `gfusb.dll` on the Linux side, and the PSK-sealing question (PLAN.md Phase 3) is
-static analysis of that DLL. In an **admin** PowerShell:
+Check it before shutting down — see below. Copy the debug log out again in the same session too: it
+is a ring buffer, and it is what tells you whether the init you were trying to catch actually ran.
 
-```powershell
-pnputil /enum-drivers > C:\goodix-captures\drivers.txt
-# find the oemNN.inf whose provider is Goodix, then:
-pnputil /export-driver oemNN.inf C:\goodix-captures\driver
+## Already collected (2026-09-20) — no Windows session needed
+
+All three came off the Windows partition mounted **read-only** from Linux. No Windows binary was run,
+nothing was written to the partition, and none of the files enters the repository.
+
+```sh
+sudo mkdir -p /mnt/Windows && sudo mount -t ntfs3 -o ro /dev/nvme0n1p3 /mnt/Windows
 ```
 
-### 3. The debug log
+Read-only matters: if the last Windows session ended with Fast Startup or hibernation the volume is
+dirty, and a read-write mount of a hibernated NTFS volume is how a Windows install is lost.
 
-`C:\Windows\System32\winevt\Logs\Goodix-FingerprintProvider%4Debug.evtx` — copy it again. It is a
-20 MB ring buffer, and the Disable/Enable init will be its newest entry. That is what makes the
-log-versus-wire comparison possible.
+**Copy with `cat`, not `cp`.** `cp` from an `ntfs3` mount uses `copy_file_range()`, which that driver
+mishandles: it silently produces a file of the **correct size filled with zeros**. Eight of the nine
+driver-package files came across that way on the first attempt, and a zero-filled DLL searches clean,
+which is exactly how a false negative gets recorded as a finding. Copy with `cat src > dst` and verify:
 
-### 4. The sealed PSK blob
+```sh
+cat /mnt/Windows/path/to/file > dest/file
+md5sum /mnt/Windows/path/to/file dest/file   # must match
+```
 
-`C:\ProgramData\Goodix\Goodix_Cache.bin`, 332 bytes. Its first 20 bytes settle the sealing question
-on the spot: a DPAPI blob starts with
-`01 00 00 00 d0 8c 9d df 01 15 d1 11 8c 7a 00 c0 4f c2 97 eb`. Anything else points at TPM/SGX.
-**Never commit it and never publish it** — `*.bin` is gitignored, and PLAN.md lists the sealed blob
-as never-publish.
+(Both `.evtx` copies were checked with `cmp` against the source and are byte-identical, so every
+finding drawn from the debug log stands.)
+
+- **The driver package.** `Windows/System32/DriverStore/FileRepository/gfusb.inf_amd64_4652ced462eef64a`
+  → `windows-driver/` (gitignored). This is what `pnputil /export-driver` was only ever a way of
+  reaching. It holds `gfusb.dll`, `EngineAdapter.dll`, `AlgoChicago.dll`, `AlgoMilan.dll`,
+  `GoodixEventLog.dll`, `SessionService.exe` and `gfusb.inf`.
+- **The debug log.** `Windows/System32/winevt/Logs/Goodix-FingerprintProvider%4Debug.evtx` →
+  `captures/` (gitignored). Still worth re-copying after every capture attempt.
+- **The sealed PSK blob.** `ProgramData/Goodix/Goodix_Cache.bin`, 332 bytes. **Answer: DPAPI**, not
+  TPM/SGX — it begins `01 00 00 00 d0 8c 9d df 01 15 d1 11 8c 7a 00 c0 4f c2 97 eb`, the DPAPI
+  provider GUID. **Never commit it and never publish it** — `*.bin` is gitignored, and PLAN.md lists
+  the sealed blob as never-publish.
+
+There is no EVTX tooling on this machine, so the log is read with a small record scanner rather than
+`strings -el`, which cannot date a record. See `docs/protocol.md`, "The Windows partition, read
+offline".
 
 ## Check the capture worked, before you shut down
 
@@ -216,8 +258,8 @@ In Wireshark, on the saved file. First, is the sensor even on this hub:
 usb.idVendor == 0x27c6
 ```
 
-Zero packets means the wrong interface again — nothing else in the file matters. Then, the frame
-this whole trip is for:
+Zero packets means the wrong interface again — nothing else in the file matters. Then the frame that
+tells you an init ran (its bytes are known now, so this is a success check, not the prize):
 
 ```
 usb.capdata[0] == a0 && usb.capdata[4] == 90
@@ -239,8 +281,10 @@ Quicker smoke test: `usb.capdata[0] == a0` should give a few dozen packets, not 
 rejects the slice syntax, just compare the packet count against `restart.pcapng` — an init is
 visibly bigger than two frames, and a re-enumeration shows up as a burst of descriptor requests.
 
-**If no init ran:** Device Manager → **Uninstall device** — do *not* tick "delete the driver" — then
-**Action → Scan for hardware changes**, with the capture still running. That forces the reload.
+**If no init ran:** do *not* reach for Uninstall device + Scan for hardware changes. That is more
+re-enumeration, which is the thing USBPcap cannot follow, and it is why this file used to recommend
+it. Copy the debug log out instead and check whether an init ran at all — if one did and the capture
+missed it again, the capture method is still the problem, not the trigger.
 
 ## Back on Linux
 
