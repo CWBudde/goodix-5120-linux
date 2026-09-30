@@ -28,8 +28,8 @@ driver is built around that:
 - **Everything that can fail offline fails before the first byte.** A missing or malformed PSK file, or an OpenSSL
   without suite `0x00ae`, fails open before the USB interface is claimed. An unfinished handshake leaves the EC
   stuck, so a handshake that cannot succeed must never start.
-- **Fail closed.** A missing ACK or data reply, an ACK status other than `0x01`, a handshake without progress for
-  5 s: each of these stops the sequence. Nothing is retried.
+- **Fail closed.** A missing ACK or data reply, data that arrives before its ACK, an ACK status other than `0x01`,
+  a handshake without progress for 5 s: each of these stops the sequence. Nothing is retried.
 - **Half duplex.** Only one state machine talks to the device at a time, and nothing is written while a reply is
   awaited.
 - **No USB reset.** `goodixmoc` resets its device on open; this driver does not, because what a reset does to the EC

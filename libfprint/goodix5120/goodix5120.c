@@ -369,6 +369,18 @@ xchg_recv_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GErro
     case RX_DATA:
       if (self->x_send && (self->x_reply & G5120_REPLY_DATA))
         {
+          /* Every live run sent the ACK first. Data without it would mean
+           * an EC in some other state, and the ACK status unchecked. */
+          if ((self->x_reply & G5120_REPLY_ACK) && !self->x_got_ack)
+            {
+              fpi_ssm_mark_failed (ssm,
+                                   fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                             "data reply to %s (0x%02x) before its "
+                                                             "acknowledgement; the vendor's EC sends "
+                                                             "the ACK first, so stopping",
+                                                             opcode_name (self->x_cmd), self->x_cmd));
+              return;
+            }
           fpi_ssm_mark_completed (ssm);
           return;
         }
