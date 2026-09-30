@@ -1009,6 +1009,37 @@ redacted log does not independently reveal its prefix; the correction follows Ru
 The request remains `03 00 02 bb 00 00 00 00`. The prefix's first byte and reply-type semantics
 remain uninterpreted; validate the observed envelope without publishing the hash.
 
+### Run 24 — 2026-09-30 20:19, corrected C init followed by a TLS alert (observed)
+
+The owner used driver `a8a29a3` with the same pinned libfprint. The preceding Go health check
+at 20:18 returned `GF_ITE_EC_20063` and passed every internal-keyboard check.
+
+- C's firmware health check and full plaintext init passed. In particular, `0xe4`'s ACK +
+  41-byte reply passed the corrected envelope check; both resets, chip ID, OTP, DAC and config
+  exchanges completed. Secret replies remained redacted.
+- `0xd0` went out at 20:19:43.336. A 52-byte ClientHello record arrived at .351.
+  The host sent an 86-byte ServerHello and a 9-byte ServerHelloDone at .351–.352.
+  At .353 the EC returned a seven-byte plaintext fatal alert, **`decode_error (50)`**.
+- Open stopped before ClientKeyExchange, `0xd4`, the post-handshake MCU check or an image request.
+  **Both keyboards still typed after exit**, as confirmed by the owner. The failed handshake
+  requires the recovery procedure before another hardware attempt; EC health afterward is unverified.
+  The expected existing-key mode warning and libusb exit-reference warnings also appeared.
+
+**Offline investigation, not a confirmed cause:** using a synthetic key and Run 11's documented
+extension-free ClientHello shape, the production C TLS helper and Go's native TLS endpoint emitted
+identical first flights after normalizing their random/session-ID bytes. No negotiation change or
+arbitrary delay was introduced. A transport difference was found: Go completes separate 64-byte
+OUT submissions, while this C build submits each entire padded frame (128 bytes for ServerHello).
+The successful 256-byte config write argues against a generic multi-packet transport failure;
+a TLS-specific assembly/timing difference remains a hypothesis.
+
+The next candidate completes one 64-byte OUT submission at a time, preserving each logical frame's
+bytes, one-record-per-pack ordering and overall write budget. Its offline peer now assembles completed
+packets, and regressions cover packet sizes, all config-packet failures and budget exhaustion.
+Pinned libfprint excludes zero completions from its `short_is_error` check, so the driver explicitly
+rejects any packet completion other than 64 bytes. **The candidate has not run on hardware**;
+whether submission granularity resolves this alert and whether a C capture works remain open.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

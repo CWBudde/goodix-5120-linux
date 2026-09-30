@@ -162,7 +162,7 @@ keyboard checks. The runbook has the exact command lines.
    *Started (2026-09-30):* [`libfprint/goodix5120/`](libfprint/goodix5120/README.md) is a first
    `goodix5120` image driver. It compiles in a libfprint tree, and its framing, send gate, FDT
    thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
-   vectors. **Run 23's first hardware open stopped at `0xe4`; the corrected driver awaits a capture.**
+   vectors. **Run 24 passed the full C init but its first TLS flight drew `decode_error`; capture is pending.**
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
@@ -374,6 +374,26 @@ the existing formatting listings. A corrected owner capture remains pending. The
 mount does not enforce private modes, so capture images/logs use the owner's Linux home filesystem.
 Corrected driver `a8a29a3` also compiles against pinned real libfprint without compiler warnings;
 the ready bundle is `dist/goodix-owner-c-e4-fix/`, with exact revisions and binary checksums.
+
+**Owner attempt 2026-09-30 (Run 24):** fresh Go health checks passed; driver `a8a29a3` passed the
+full C init, confirming the `0xe4` correction. After ClientHello (52 bytes), ServerHello (86) and
+ServerHelloDone (9), the EC sent fatal `decode_error (50)`. No ClientKeyExchange, `0xd4` or capture
+followed. Both keyboards still worked; recovery is required before another owner hardware attempt.
+An offline synthetic first-flight comparison found C and Go TLS contents identical apart from
+random/session-ID bytes. C's whole-frame OUT submissions differed from Go's completed 64-byte writes.
+**Cause remains unproven:** the C config write already passed with a 256-byte submission.
+
+Candidate `e8930b4` now completes one 64-byte OUT at a time, with unchanged frame bytes, no retries
+or artificial delays, and one bounded 2000 ms budget for the complete frame. Explicit completion-length
+checks reject zero writes that pinned libfprint's `short_is_error` omits. The peer assembles completed
+packets without hiding raw submissions; 18 added cases cover granularity, all four config packets
+under short/zero/I/O/cancel failure, and aggregate budget exhaustion. The packet-size regression failed
+before the change; the zero-completion regression failed without the production guard. **Verified:**
+232 C subtests pass normally and under ASan/UBSan (leak detection disabled under ptrace), `just check`
+passes with existing formatting listings, and pinned real libfprint compiles without compiler warnings.
+The ready bundle is `dist/goodix-owner-c-packet-writes/`; independent review found no remaining
+blocking issues after the zero-write guard. This candidate awaits an owner capture; no hardware
+recovery, successful capture, enrollment, matching or Phase 6c criterion is established by these tests.
 
 ### 6c — Portability, authentication quality, and repeatable checks
 

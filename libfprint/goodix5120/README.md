@@ -3,9 +3,10 @@
 This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerprint reader in the Huawei MateBook
 `HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its wire sequence byte for byte.
 
-**Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. The first owner-run open
-(Run 23) stopped at a mis-transcribed `0xe4` reply header, with both keyboards working. That check is corrected;
-a successful hardware capture is still pending.** Its protocol evidence comes from the Go reference,
+**Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. Run 23's `0xe4` check
+is corrected; Run 24 passed the full init but the EC rejected the first TLS server flight with `decode_error`.
+Both keyboards survived. The next candidate matches Go's 64-byte OUT submissions; its hardware result and
+a successful capture remain pending.** Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
 [`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The Go probe has run this
 driver's whole wire sequence live, including the capture loop three times in one TLS session (Run 22), and
@@ -35,6 +36,8 @@ driver is built around that:
   a handshake without progress for 5 s: each of these stops the sequence. Nothing is retried.
 - **Half duplex.** Only one state machine talks to the device at a time, and nothing is written while a reply is
   awaited.
+- **Completed 64-byte writes.** Each padded frame is sent one packet at a time, with the next packet submitted
+  after completion. Short/zero completions stop the frame; all packets share its original write budget.
 - **No USB reset.** `goodixmoc` resets its device on open; this driver does not, because what a reset does to the EC
   is unknown.
 - **Driver-level redaction:** the driver withholds the PSK, `0xe4`/`0xa6` reply bodies, TLS bodies, and image data.
@@ -268,8 +271,8 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 The [first-capture runbook](../../docs/c-driver-first-capture.md) provides the pinned build,
 exact owner commands, expected log milestones, private output handling, and result checks.
 The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf`
-with only `goodix5120` enabled after correcting Run 23's `0xe4` envelope check. The corrected build
-in `dist/goodix-owner-c-e4-fix/` has compile/offline evidence; it has not run on hardware.
+with only `goodix5120` enabled after aligning OUT submissions with the Go reference. The candidate
+in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence; it has not run on hardware.
 
 As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
 in, 40 s power-button hold if the previous session ended badly):

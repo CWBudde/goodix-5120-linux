@@ -4,17 +4,18 @@ Phase 6b's offline gate is complete. This run checks one open → touch → imag
 against the real libfprint integration. Agents must not run it. Use this prototype only on the
 original tested machine/profile; firmware identity alone does not establish calibration compatibility.
 Enrollment, matching, repeated lifecycle tests, and PAM remain Phase 6c work.
-The first owner attempt (Run 23) stopped at the `0xe4` reply before TLS or capture, with both
-keyboards working. The corrected build below checks the reply prefix already recorded in Run 8;
-a successful C capture remains pending.
+Run 23 stopped at a mis-transcribed `0xe4` reply header. Run 24 passed the corrected full init,
+then received fatal TLS `decode_error (50)` after the first server flight; both keyboards worked
+after exit. The candidate below matches Go's completed 64-byte OUT submissions. Whether that
+resolves the alert is unproven; a successful C capture remains pending.
 
 ## Prepare the build offline
 
-The prepared local capture bundle for driver commit `a8a29a3` is
-`dist/goodix-owner-c-e4-fix/` in this repository (ignored by Git, retained across reboot).
+The prepared local capture bundle for driver commit `e8930b4` is
+`dist/goodix-owner-c-packet-writes/` in this repository (ignored by Git, retained across reboot).
 It contains only `goodix5120`, uses the bundled libfprint through its executable RUNPATH,
 and was not installed system-wide. Build logs, `provenance.txt`, and binary `SHA256SUMS` are
-included. The full source/build is in `/tmp/goodix-owner-c-e4-fix/`; that temporary copy
+included. The full source/build is in `/tmp/goodix-owner-c-packet-writes/`; that temporary copy
 may be cleared on reboot. The bundle is local, not distributed with the repository.
 
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
@@ -26,7 +27,7 @@ git clone https://gitlab.freedesktop.org/libfprint/libfprint.git /tmp/goodix-own
 cd /tmp/goodix-owner-libfprint
 git checkout --detach 6f9479c3d55f847c1b3769f28ceb99227f9858cf
 driver_source=$(mktemp -d /tmp/goodix-owner-driver-XXXXXX)
-git -C "$repo" archive a8a29a3f30c137548404ccc38cfae996e1be47f1 libfprint/goodix5120 \
+git -C "$repo" archive e8930b49612222c55f7ffc228207f900b78aa313 libfprint/goodix5120 \
   | tar -x -C "$driver_source"
 mkdir -p libfprint/drivers/goodix5120
 cp "$driver_source"/libfprint/goodix5120/goodix5120*.[ch] libfprint/drivers/goodix5120/
@@ -37,7 +38,7 @@ meson compile -C build
 build="$PWD/build"
 ```
 
-For the prepared bundle, set `build="$repo/dist/goodix-owner-c-e4-fix"` instead.
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-packet-writes"` instead.
 Do not install the library or change fprintd/PAM configuration for this run. The following tool
 reads compiled driver ID tables without opening USB:
 
@@ -74,7 +75,7 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build="$repo/dist/goodix-owner-c-e4-fix"
+build="$repo/dist/goodix-owner-c-packet-writes"
 umask 077
 run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
