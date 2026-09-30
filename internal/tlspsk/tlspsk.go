@@ -1,31 +1,11 @@
-// Package tlspsk brings up a TLS-PSK endpoint by driving an `openssl s_server`
-// subprocess.
-//
-// Why a subprocess: the Goodix 51x0 protocol secures its image transfer with
-// TLS-PSK, and Go's crypto/tls implements no PSK cipher suites, so a pure-Go
-// handshake is not available. The upstream Python reference implementation
-// (github.com/goodix-fp-linux-dev/goodix-fp-dump, driver_51x0.py, run_driver)
-// works around this by spawning
-//
-//	openssl s_server -nocert -psk <hex> -port 4433 -quiet
-//
-// and connecting to it as a plain TCP client.
-//
-// The direction of that plumbing is easy to get backwards, so to be explicit
-// (CONFIRMED by reading tool.connect_device and run_driver upstream):
-//
-//   - The TCP socket is the CIPHERTEXT side. It carries raw TLS records to and
-//     from the device: upstream writes device.request_tls_connection() straight
-//     into the socket and forwards whatever comes back to the device.
-//   - The subprocess's stdin/stdout is the PLAINTEXT side, i.e. TLS application
-//     data. Upstream reads the decrypted fingerprint image out of
-//     tls_server.stdout.
-//
-// This package follows that mapping: Session.Read/Write are plaintext (the
-// subprocess pipes) and Session.Device is the ciphertext socket.
-//
-// Tier 2 scaffolding: nothing in the shipped Tier 1 probe calls this package.
+// Package tlspsk implements the fixed Goodix TLS 1.2 PSK endpoint in-process.
 package tlspsk
+
+/*
+#cgo pkg-config: openssl
+#include "native.h"
+*/
+import "C"
 
 import (
 	"context"
@@ -35,10 +15,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // PSKLen is the length in bytes of the 51x0 TLS pre-shared key. The reference
@@ -102,305 +82,349 @@ func ParsePSKHex(s string) ([]byte, error) {
 	return b, nil
 }
 
-// Defaults applied by Start when the corresponding Config field is zero.
 const (
-	DefaultPort    = 4433 // CONFIRMED: driver_51x0.py uses -port 4433.
-	DefaultOpenSSL = "openssl"
-	DefaultTimeout = 10 * time.Second
+	DeviceCipher = "PSK-AES128-CBC-SHA256"
+	Identity     = "Client_identity"
+	QueueLimit   = 64 * 1024
 )
 
-// Config configures a Session.
+var (
+	ErrPolicy      = errors.New("tlspsk: effective OpenSSL policy rejects the device TLS suite")
+	ErrPSKMismatch = errors.New("tlspsk: likely PSK mismatch")
+	ErrTLS         = errors.New("tlspsk: TLS endpoint failure")
+	ErrOverflow    = errors.New("tlspsk: bounded queue overflow")
+)
+
+// Config fixes the protocol to TLS 1.2, 0x00ae and Client_identity.
+// Startup performs no network I/O. Context cancellation controls its lifetime.
 type Config struct {
-	// PSK is the pre-shared key. Required; there is no implicit default, see
-	// ReferencePSK for the upstream value.
 	PSK []byte
-	// Port is the loopback TCP port openssl listens on. Zero means
-	// DefaultPort. Use a negative value to request an ephemeral free port,
-	// which is what the tests do to avoid collisions.
-	Port int
-	// OpenSSL is the binary name or path. Empty means DefaultOpenSSL.
-	OpenSSL string
-	// Timeout bounds how long Start waits for the subprocess to accept a
-	// connection. Zero means DefaultTimeout.
-	Timeout time.Duration
-	// Cipher, when non-empty, is passed to `s_server -cipher <Cipher>` to
-	// constrain the TLS 1.2 cipher list the server offers. Empty (the default)
-	// leaves openssl's own default list untouched, which is what upstream does
-	// and what the ReferencePSK path relies on.
-	//
-	// The 51x0 device is the client and offers only 0x00AE
-	// (TLS_PSK_WITH_AES_128_CBC_SHA256, openssl name PSK-AES128-CBC-SHA256), a
-	// TLS 1.2 CBC-SHA256 suite. On the openssl this was validated against
-	// (3.5.5) it negotiates fine at the default security level with an empty
-	// Cipher, so no value is needed here. This knob exists for distributions
-	// whose default s_server list drops legacy CBC PSK suites or raises the
-	// security level past level 2, where forcing e.g.
-	// "PSK-AES128-CBC-SHA256:@SECLEVEL=0" restores the suite.
-	Cipher string
 }
 
-func (c Config) withDefaults() Config {
-	if c.Port == 0 {
-		c.Port = DefaultPort
+// Preflight checks real server selection under the process's effective system
+// policy, with a disposable SSL and synthetic device-shaped ClientHello.
+func Preflight(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if c.OpenSSL == "" {
-		c.OpenSSL = DefaultOpenSSL
-	}
-	if c.Timeout == 0 {
-		c.Timeout = DefaultTimeout
-	}
-	return c
+	return nativeError(int(C.g5120_preflight()))
 }
 
-// ErrOpenSSLMissing is reported when the openssl binary cannot be found.
-var ErrOpenSSLMissing = errors.New("tlspsk: openssl binary not found")
+func nativeError(code int) error {
+	switch code {
+	case 0:
+		return nil
+	case -2:
+		return ErrPolicy
+	case -3:
+		return ErrPSKMismatch
+	case -4:
+		return ErrOverflow
+	case -5:
+		return io.EOF
+	default:
+		return ErrTLS
+	}
+}
 
-// Session owns a running `openssl s_server` subprocess and the loopback
-// connection to it.
-//
-// Write sends plaintext (TLS application data) into the endpoint; the
-// resulting ciphertext records appear on Device, which is what must be
-// forwarded to the fingerprint sensor. Read returns plaintext decrypted from
-// the TLS records previously written to Device.
+// Session serializes all SSL operations and owns C-allocated key material.
+// Device is an in-memory ciphertext connection; Read/Write carry plaintext.
 type Session struct {
-	cmd    *exec.Cmd
-	conn   net.Conn
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	port   int
-
-	cancel    context.CancelFunc
-	closeOnce sync.Once
-	closeErr  error
-	waitDone  chan struct{}
+	mu                          sync.Mutex
+	native                      *C.g5120_endpoint
+	cipher, plain               []byte
+	changed                     chan struct{}
+	done                        chan struct{}
+	err                         error
+	ready                       bool
+	readDeadline, writeDeadline time.Time
+	device                      memoryConn
 }
 
-// Start launches the openssl s_server subprocess and connects to it.
-//
-// The subprocess is bound to loopback only and is torn down when the session is
-// closed or when ctx is cancelled, whichever happens first.
-func Start(ctx context.Context, cfg Config) (*Session, error) {
-	cfg = cfg.withDefaults()
+func Start(ctx context.Context, cfg Config) (*Session, error) { return start(ctx, cfg, false) }
 
-	if len(cfg.PSK) == 0 {
-		return nil, errors.New("tlspsk: Config.PSK is empty; see ReferencePSK for the upstream value")
-	}
+// StartClient is the offline rehearsal peer. It emits its ClientHello on Device.
+func StartClient(ctx context.Context, cfg Config) (*Session, error) { return start(ctx, cfg, true) }
 
-	bin, err := exec.LookPath(cfg.OpenSSL)
-	if err != nil {
-		return nil, fmt.Errorf("%w: looked for %q on PATH; install the OpenSSL command line tools "+
-			"(Debian/Ubuntu: apt install openssl, Fedora: dnf install openssl, Arch: pacman -S openssl): %w",
-			ErrOpenSSLMissing, cfg.OpenSSL, err)
-	}
-
-	port := cfg.Port
-	if port < 0 {
-		if port, err = freeLoopbackPort(); err != nil {
-			return nil, err
-		}
-	}
-
-	// A derived cancellable context so Close can kill the process even when
-	// the caller's context never fires, and vice versa.
-	runCtx, cancel := context.WithCancel(ctx)
-
-	// -accept 127.0.0.1:<port> binds loopback only. Upstream uses
-	// `-port <port>`, which binds all interfaces; restricting to loopback is
-	// OUR change, since the device bridge is always local.
-	args := []string{
-		"s_server",
-		"-nocert",
-		"-psk", hex.EncodeToString(cfg.PSK),
-		"-accept", fmt.Sprintf("127.0.0.1:%d", port),
-		"-quiet",
-	}
-	if cfg.Cipher != "" {
-		args = append(args, "-cipher", cfg.Cipher)
-	}
-	cmd := exec.CommandContext(runCtx, bin, args...)
-	// Kill rather than interrupt, and do not let CommandContext's Wait block
-	// on the pipes.
-	cmd.Cancel = func() error { return cmd.Process.Kill() }
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("tlspsk: stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("tlspsk: stdout pipe: %w", err)
-	}
-	// Upstream merges stderr into stdout; we must not, or openssl's diagnostics
-	// would be interleaved into the ciphertext stream.
-	cmd.Stderr = nil
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("tlspsk: starting %s s_server: %w", bin, err)
-	}
-
-	s := &Session{
-		cmd:      cmd,
-		stdin:    stdin,
-		stdout:   stdout,
-		port:     port,
-		cancel:   cancel,
-		waitDone: make(chan struct{}),
-	}
-
-	conn, err := dialUntil(runCtx, port, cfg.Timeout)
-	if err != nil {
-		_ = s.Close()
+func start(ctx context.Context, cfg Config, client bool) (*Session, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.conn = conn
-
-	// Reap on context cancellation. cmd.Cancel kills the process, but nothing
-	// calls Wait, so without this the child would linger as a zombie until
-	// Close. Close is idempotent, so a later explicit Close is still fine.
+	if len(cfg.PSK) != PSKLen {
+		return nil, fmt.Errorf("tlspsk: PSK has %d bytes, want %d", len(cfg.PSK), PSKLen)
+	}
+	var code C.int
+	var role C.int
+	if client {
+		role = 1
+	}
+	// The native constructor copies these bytes; it retains no Go pointer.
+	native := C.g5120_new((*C.uchar)(unsafe.Pointer(&cfg.PSK[0])), role, &code)
+	if native == nil {
+		return nil, nativeError(int(code))
+	}
+	s := &Session{native: native, changed: make(chan struct{}), done: make(chan struct{}),
+		cipher: make([]byte, 0, QueueLimit), plain: make([]byte, 0, QueueLimit)}
+	s.device.s = s
+	s.mu.Lock()
+	err := s.driveLocked()
+	s.mu.Unlock()
+	if err != nil {
+		s.Close()
+		return nil, err
+	}
 	go func() {
-		<-runCtx.Done()
-		_ = s.Close()
+		select {
+		case <-ctx.Done():
+			s.mu.Lock()
+			s.failLocked(ctx.Err())
+			s.mu.Unlock()
+		case <-s.done:
+		}
 	}()
-
 	return s, nil
 }
 
-// dialUntil retries a loopback connect until the listener is up or the deadline
-// passes. openssl needs a moment to bind after fork/exec.
-func dialUntil(ctx context.Context, port int, timeout time.Duration) (net.Conn, error) {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	deadline := time.Now().Add(timeout)
-	var last error
+func (s *Session) signalLocked() { close(s.changed); s.changed = make(chan struct{}) }
+
+func (s *Session) failLocked(err error) {
+	if s.err != nil {
+		return
+	}
+	s.err = err
+	clear(s.plain)
+	clear(s.cipher)
+	s.plain = nil
+	s.cipher = nil
+	C.g5120_free(s.native)
+	s.native = nil
+	close(s.done)
+	s.signalLocked()
+}
+
+func (s *Session) drainLocked() error {
+	var buf [4096]byte
 	for {
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("tlspsk: connecting to %s: %w", addr, err)
+		n := int(C.g5120_drain(s.native, (*C.uchar)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))))
+		if n < 0 {
+			return nativeError(n)
 		}
-		d := net.Dialer{Timeout: 500 * time.Millisecond}
-		conn, err := d.DialContext(ctx, "tcp", addr)
-		if err == nil {
-			return conn, nil
+		if n == 0 {
+			return nil
 		}
-		last = err
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("tlspsk: timed out after %s connecting to openssl s_server on %s: %w",
-				timeout, addr, last)
+		if len(s.cipher)+n > QueueLimit {
+			return ErrOverflow
 		}
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("tlspsk: connecting to %s: %w", addr, ctx.Err())
-		case <-time.After(20 * time.Millisecond):
+		s.cipher = append(s.cipher, buf[:n]...)
+	}
+}
+
+func (s *Session) driveLocked() error {
+	var buf [4096]byte
+	for {
+		n := int(C.g5120_step(s.native, (*C.uchar)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))))
+		err := s.drainLocked()
+		if err == nil && n < 0 {
+			err = nativeError(n)
+		}
+		if err != nil {
+			s.failLocked(err)
+			return err
+		}
+		s.ready = C.g5120_ready(s.native) != 0
+		if n > 0 {
+			if len(s.plain)+n > QueueLimit {
+				s.failLocked(ErrOverflow)
+				return ErrOverflow
+			}
+			s.plain = append(s.plain, buf[:n]...)
+		}
+		s.signalLocked()
+		if n == 0 {
+			return nil
 		}
 	}
 }
 
-func freeLoopbackPort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("tlspsk: reserving a loopback port: %w", err)
+// waitLocked drops the SSL mutex while waiting and rechecks changed deadlines
+// after every notification. Close, cancellation and deadline changes wake it.
+func (s *Session) waitLocked(deadline time.Time) error {
+	changed := s.changed
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if !deadline.IsZero() {
+		if !time.Now().Before(deadline) {
+			return os.ErrDeadlineExceeded
+		}
+		timer = time.NewTimer(time.Until(deadline))
+		timeout = timer.C
 	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
-// Port reports the loopback port the subprocess listens on.
-func (s *Session) Port() int { return s.port }
-
-// Write sends plaintext application data into the TLS endpoint; the encrypted
-// form is then readable from Device. It writes to the subprocess's stdin.
-func (s *Session) Write(p []byte) (int, error) {
-	if s.closed() {
-		return 0, errors.New("tlspsk: session is closed")
-	}
-	if s.stdin == nil {
-		return 0, errors.New("tlspsk: session not started")
-	}
-	return s.stdin.Write(p)
-}
-
-// Read returns plaintext decrypted from the TLS records previously written to
-// Device. It reads the subprocess's stdout, which is where upstream reads the
-// decrypted fingerprint image from.
-func (s *Session) Read(p []byte) (int, error) {
-	if s.closed() {
-		return 0, errors.New("tlspsk: session is closed")
-	}
-	if s.stdout == nil {
-		return 0, errors.New("tlspsk: session not started")
-	}
-	return s.stdout.Read(p)
-}
-
-// Device is the ciphertext side: the loopback socket carrying raw TLS records.
-// Read TLS records from it to forward to the fingerprint sensor, and write the
-// records the sensor produced into it.
-func (s *Session) Device() net.Conn { return s.conn }
-
-func (s *Session) closed() bool {
+	s.mu.Unlock()
+	var err error
 	select {
-	case <-s.waitDone:
-		return true
-	default:
-		return false
+	case <-changed:
+	case <-timeout:
+		err = os.ErrDeadlineExceeded
+	}
+	if timer != nil {
+		timer.Stop()
+	}
+	s.mu.Lock()
+	return err
+}
+
+func (s *Session) Read(p []byte) (int, error) { return s.read(p, false) }
+func (s *Session) read(p []byte, cipher bool) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for {
+		queue := &s.plain
+		var deadline time.Time
+		if cipher {
+			queue = &s.cipher
+			deadline = s.readDeadline
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return 0, os.ErrDeadlineExceeded
+		}
+		if len(*queue) > 0 {
+			n := copy(p, *queue)
+			remaining := copy(*queue, (*queue)[n:])
+			clear((*queue)[remaining:])
+			*queue = (*queue)[:remaining]
+			return n, nil
+		}
+		if s.err != nil {
+			return 0, s.err
+		}
+		if err := s.waitLocked(deadline); err != nil {
+			return 0, err
+		}
 	}
 }
 
-// Close terminates the subprocess and releases the connection. It is safe to
-// call more than once; subsequent calls return the first result.
-func (s *Session) Close() error {
-	s.closeOnce.Do(func() {
-		var errs []error
-		if s.conn != nil {
-			if err := s.conn.Close(); err != nil {
-				errs = append(errs, err)
+func (s *Session) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for !s.ready && s.err == nil {
+		if err := s.waitLocked(time.Time{}); err != nil {
+			return 0, err
+		}
+	}
+	if s.err != nil {
+		return 0, s.err
+	}
+	written := 0
+	for len(p) > 0 {
+		chunk := p[:min(len(p), 16384)]
+		n := int(C.g5120_write(s.native, (*C.uchar)(unsafe.Pointer(&chunk[0])), C.size_t(len(chunk))))
+		err := s.drainLocked()
+		if err == nil && n <= 0 {
+			err = nativeError(n)
+			if err == nil {
+				err = ErrTLS
 			}
 		}
-		if s.stdin != nil {
-			_ = s.stdin.Close()
+		if err != nil {
+			s.failLocked(err)
+			return written, err
 		}
-
-		// Cancel first: this kills the process via cmd.Cancel. Then drain
-		// stdout so Wait cannot block on the pipe copy.
-		s.cancel()
-		if s.stdout != nil {
-			go func() { _, _ = io.Copy(io.Discard, s.stdout) }()
-		}
-
-		if s.cmd != nil && s.cmd.Process != nil {
-			// Belt and braces: kill directly too, in case cmd.Cancel raced.
-			_ = s.cmd.Process.Kill()
-			err := s.cmd.Wait()
-			// A killed process reports an ExitError; that is the expected
-			// outcome, not a failure.
-			var ee *exec.ExitError
-			if err != nil && !errors.As(err, &ee) {
-				errs = append(errs, err)
-			}
-		}
-		close(s.waitDone)
-		s.closeErr = errors.Join(errs...)
-	})
-	return s.closeErr
+		written += n
+		p = p[n:]
+		s.signalLocked()
+	}
+	return written, nil
 }
 
-// Wait blocks until the subprocess has been reaped by Close, or ctx is done.
-// Intended for tests and for orderly shutdown; it never itself terminates the
-// subprocess.
+func (s *Session) Device() net.Conn { return &s.device }
+func (s *Session) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failLocked(net.ErrClosed)
+	return nil
+}
 func (s *Session) Wait(ctx context.Context) error {
 	select {
-	case <-s.waitDone:
+	case <-s.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// PID reports the subprocess identifier, or 0 if it was never started.
-func (s *Session) PID() int {
-	if s.cmd == nil || s.cmd.Process == nil {
-		return 0
+// Backend describes the library and fixed parameters without secrets.
+func (s *Session) Backend() string {
+	return C.GoString(C.g5120_version()) + "; TLS 1.2; " + DeviceCipher
+}
+
+type memoryConn struct{ s *Session }
+
+func (c *memoryConn) Read(p []byte) (int, error) { return c.s.read(p, true) }
+func (c *memoryConn) Write(p []byte) (int, error) {
+	s := c.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return 0, s.err
 	}
-	return s.cmd.Process.Pid
+	if !s.writeDeadline.IsZero() && !time.Now().Before(s.writeDeadline) {
+		return 0, os.ErrDeadlineExceeded
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	err := nativeError(int(C.g5120_feed(s.native, (*C.uchar)(unsafe.Pointer(&p[0])), C.size_t(len(p)))))
+	if err != nil {
+		s.failLocked(err)
+		return 0, err
+	}
+	if err = s.driveLocked(); err != nil {
+		return len(p), err
+	}
+	return len(p), nil
+}
+func (c *memoryConn) Close() error { return c.s.Close() }
+
+type memoryAddr struct{}
+
+func (memoryAddr) Network() string         { return "memory" }
+func (memoryAddr) String() string          { return "goodix-tls" }
+func (c *memoryConn) LocalAddr() net.Addr  { return memoryAddr{} }
+func (c *memoryConn) RemoteAddr() net.Addr { return memoryAddr{} }
+func (c *memoryConn) SetDeadline(t time.Time) error {
+	s := c.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.readDeadline = t
+	s.writeDeadline = t
+	s.signalLocked()
+	return nil
+}
+func (c *memoryConn) SetReadDeadline(t time.Time) error {
+	s := c.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.readDeadline = t
+	s.signalLocked()
+	return nil
+}
+func (c *memoryConn) SetWriteDeadline(t time.Time) error {
+	s := c.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.writeDeadline = t
+	s.signalLocked()
+	return nil
 }

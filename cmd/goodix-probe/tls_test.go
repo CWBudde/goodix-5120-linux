@@ -227,7 +227,7 @@ func TestTLSConfigValidate(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.cfg.validate(tc.steps, tc.allowed)
+			err := tc.cfg.validate(tc.steps, tc.allowed, false)
 			switch {
 			case tc.wantErr == "" && err != nil:
 				t.Fatalf("validate = %v, want nil", err)

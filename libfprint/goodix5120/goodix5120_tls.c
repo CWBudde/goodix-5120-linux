@@ -15,9 +15,8 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  *
- * The Go reference drives an `openssl s_server -nocert -psk <hex>` subprocess
- * (internal/tlspsk) and bridges it to the device (internal/session). Here the
- * same server runs in-process on memory BIOs, which removes the part that
+ * Like the Go reference's TLS endpoint (internal/tlspsk), the server runs
+ * in-process on memory BIOs. This removes the part that
  * stalled Runs 11 and 17 — waiting on a subprocess while the EC was still
  * sending — because nothing here ever waits: the driver reads the EC, feeds
  * the bytes in, and sends whatever comes out, one record per pack.
@@ -53,18 +52,24 @@ struct _G5120Tls
   GByteArray *out;   /* bytes the server wrote, not yet popped as records */
   guint       from_ec;
   guint       to_ec;
+
+  guint8      input_header[G5120_TLS_RECORD_HEADER_LEN];
+  gsize       input_header_len;
+  gsize       input_body_len;
+  gsize       input_remaining;
+  guint8      input_alert[2];
+  gboolean    input_encrypted;
 };
 
-/* TLS alert descriptions (RFC 5246 7.2) that mean the two ends derived
- * different keys. With a PSK suite and no certificates, that means the PSKs
- * differ. An INTERPRETATION: no alert ever says "wrong PSK". */
+/* TLS alert descriptions (RFC 5246 7.2) suggesting different keys. This is
+ * an interpretation, also consistent with corrupted records. Generic
+ * handshake_failure is ambiguous and must not be classified as a PSK mismatch. */
 static gboolean
 alert_means_key_mismatch (guint8 desc)
 {
   switch (desc)
     {
     case 20:  /* bad_record_mac */
-    case 40:  /* handshake_failure */
     case 51:  /* decrypt_error */
     case 115: /* unknown_psk_identity */
       return TRUE;
@@ -196,6 +201,68 @@ set_ssl_error (GError **error, gint code, const char *what)
   g_set_error (error, G5120_TLS_ERROR, code, "%s: %s", what, buf);
 }
 
+/* Setter success does not establish that the effective policy permits this
+ * suite. Exercise selection on a disposable SSL from the same configured
+ * context, using the EC's extension-free ClientHello shape and synthetic
+ * random bytes. This cannot emit USB traffic or consume the actual handshake. */
+static gboolean
+preflight_policy (G5120Tls *tls, GError **error)
+{
+  guint8 hello[52] = { 0x16, 0x03, 0x03, 0x00, 0x2f, 0x01, 0x00, 0x00, 0x2b,
+                       0x03, 0x03 };
+  SSL *probe = SSL_new (tls->ctx);
+  BIO *in = NULL, *out = NULL;
+  const SSL_CIPHER *cipher;
+  gboolean permitted;
+  int ret, ssl_error;
+
+  if (probe == NULL)
+    {
+      set_ssl_error (error, G5120_TLS_ERROR_SETUP, "creating TLS policy probe");
+      return FALSE;
+    }
+  in = BIO_new (BIO_s_mem ());
+  out = BIO_new (BIO_s_mem ());
+  if (in == NULL || out == NULL)
+    {
+      BIO_free (in);
+      BIO_free (out);
+      SSL_free (probe);
+      set_ssl_error (error, G5120_TLS_ERROR_SETUP, "creating TLS policy probe BIOs");
+      return FALSE;
+    }
+
+  hello[45] = 4;      /* cipher list: 0x00ae and renegotiation SCSV */
+  hello[47] = 0xae;
+  hello[49] = 0xff;
+  hello[50] = 1;      /* one compression method: null */
+  BIO_set_mem_eof_return (in, -1);
+  SSL_set_bio (probe, in, out);
+  SSL_set_app_data (probe, tls);
+  SSL_set_accept_state (probe);
+  if (BIO_write (in, hello, sizeof (hello)) != sizeof (hello))
+    {
+      SSL_free (probe);
+      set_ssl_error (error, G5120_TLS_ERROR_SETUP, "feeding TLS policy probe");
+      return FALSE;
+    }
+
+  ERR_clear_error ();
+  ret = SSL_do_handshake (probe);
+  ssl_error = SSL_get_error (probe, ret);
+  cipher = SSL_get_pending_cipher (probe);
+  permitted = ssl_error == SSL_ERROR_WANT_READ && cipher != NULL &&
+              SSL_CIPHER_get_protocol_id (cipher) == 0x00ae &&
+              SSL_version (probe) == TLS1_2_VERSION;
+  if (!permitted)
+    set_ssl_error (error, G5120_TLS_ERROR_POLICY,
+                   "effective local TLS policy does not permit the device's "
+                   G5120_TLS_CIPHER " (0x00ae)");
+  SSL_free (probe);
+  ERR_clear_error ();
+  return permitted;
+}
+
 G5120Tls *
 g5120_tls_new (const guint8 psk[G5120_PSK_LEN], GError **error)
 {
@@ -211,6 +278,13 @@ g5120_tls_new (const guint8 psk[G5120_PSK_LEN], GError **error)
       return NULL;
     }
 
+  /* Respect the original system-configured protocol and cipher restrictions
+   * before narrowing them for the device. Pinning first could override a
+   * configured TLS 1.3 minimum or re-enable an explicitly excluded suite. */
+  SSL_CTX_set_psk_server_callback (tls->ctx, psk_server_cb);
+  if (!preflight_policy (tls, error))
+    return NULL;
+
   /* The EC offers TLS 1.2 and exactly one suite, 0x00ae (plus the
    * renegotiation SCSV), with no extensions at all. */
   if (!SSL_CTX_set_min_proto_version (tls->ctx, TLS1_2_VERSION) ||
@@ -222,23 +296,16 @@ g5120_tls_new (const guint8 psk[G5120_PSK_LEN], GError **error)
 
   if (!SSL_CTX_set_cipher_list (tls->ctx, G5120_TLS_CIPHER))
     {
-      /* Some distributions raise the default security level past legacy CBC
-       * PSK suites; the Go reference has the same escape hatch
-       * (tlspsk.Config.Cipher). */
-      ERR_clear_error ();
-      if (!SSL_CTX_set_cipher_list (tls->ctx, G5120_TLS_CIPHER ":@SECLEVEL=0"))
-        {
-          set_ssl_error (error, G5120_TLS_ERROR_SETUP,
-                         "this OpenSSL does not offer " G5120_TLS_CIPHER " (0x00ae)");
-          return NULL;
-        }
-      g_warning ("TLS: " G5120_TLS_CIPHER " needed @SECLEVEL=0 on this OpenSSL");
+      set_ssl_error (error, G5120_TLS_ERROR_POLICY,
+                     "local TLS policy does not offer " G5120_TLS_CIPHER " (0x00ae)");
+      return NULL;
     }
 
   /* No identity hint. A hint makes an OpenSSL server send a
    * ServerKeyExchange, and the vendor's flight has none: ServerHello is
    * followed directly by ServerHelloDone. */
-  SSL_CTX_set_psk_server_callback (tls->ctx, psk_server_cb);
+  if (!preflight_policy (tls, error))
+    return NULL;
 
   tls->ssl = SSL_new (tls->ctx);
   if (tls->ssl == NULL)
@@ -332,58 +399,86 @@ g5120_tls_feed (G5120Tls *tls, const guint8 *data, gsize len, GError **error)
 {
   gsize off = 0;
 
-  /* Inspect (type and length only), then forward verbatim: the Finished MACs
-   * cover the transcript, so the bytes must reach the server unchanged. */
+  /* OpenSSL receives exactly the original stream, including partial records.
+   * Inspection below stores only the header and two possible alert bytes. */
   while (off < len)
     {
-      gsize rlen = g5120_tls_record_len (data + off, len - off);
-      guint8 type;
+      int chunk = (int) MIN (len - off, G_MAXINT);
 
-      if (rlen == 0)
+      if (BIO_write (tls->rbio, data + off, chunk) != chunk)
         {
-          g_debug ("TLS: EC -> host: %" G_GSIZE_FORMAT " trailing byte(s) that are not a "
-                   "whole record; forwarding anyway, the server reassembles", len - off);
-          break;
+          set_ssl_error (error, G5120_TLS_ERROR_FAILED, "buffering EC bytes");
+          return FALSE;
+        }
+      off += chunk;
+    }
+
+  off = 0;
+  while (off < len)
+    {
+      if (tls->input_header_len < G5120_TLS_RECORD_HEADER_LEN)
+        {
+          gsize n = MIN (len - off, G5120_TLS_RECORD_HEADER_LEN - tls->input_header_len);
+
+          memcpy (tls->input_header + tls->input_header_len, data + off, n);
+          tls->input_header_len += n;
+          off += n;
+          if (tls->input_header_len < G5120_TLS_RECORD_HEADER_LEN)
+            break;
+          tls->input_body_len = (tls->input_header[3] << 8) | tls->input_header[4];
+          if (tls->input_header[0] < G5120_TLS_CHANGE_CIPHER_SPEC ||
+              tls->input_header[0] > G5120_TLS_APPLICATION_DATA ||
+              tls->input_header[1] != 3 || tls->input_header[2] < 1 ||
+              tls->input_header[2] > 3 || tls->input_body_len == 0 ||
+              tls->input_body_len > G5120_TLS_MAX_BODY_LEN)
+            {
+              g_set_error (error, G5120_TLS_ERROR, G5120_TLS_ERROR_FAILED,
+                           "the EC sent an invalid TLS record header");
+              return FALSE;
+            }
+          tls->input_remaining = tls->input_body_len;
         }
 
-      type = data[off];
-      g_debug ("TLS: EC -> host: %s record, %" G_GSIZE_FORMAT " bytes",
-               g5120_tls_type_name (type), rlen);
+      {
+        gsize n = MIN (len - off, tls->input_remaining);
+        gsize body_off = tls->input_body_len - tls->input_remaining;
 
-      if (type == G5120_TLS_ALERT)
+        if (tls->input_header[0] == G5120_TLS_ALERT && body_off < 2)
+          memcpy (tls->input_alert + body_off, data + off, MIN (n, 2 - body_off));
+        off += n;
+        tls->input_remaining -= n;
+      }
+      if (tls->input_remaining != 0)
+        continue;
+
+      tls->input_header_len = 0;
+      tls->from_ec++;
+      g_debug ("TLS: EC -> host: %s record, %" G_GSIZE_FORMAT " bytes",
+               g5120_tls_type_name (tls->input_header[0]),
+               G5120_TLS_RECORD_HEADER_LEN + tls->input_body_len);
+      if (tls->input_header[0] == G5120_TLS_ALERT && !tls->input_encrypted)
         {
-          if (rlen == G5120_TLS_RECORD_HEADER_LEN + 2)
+          if (tls->input_body_len == 2)
             {
-              guint8 desc = data[off + 6];
+              guint8 desc = tls->input_alert[1];
 
               g_set_error (error, G5120_TLS_ERROR,
                            alert_means_key_mismatch (desc) ?
                            G5120_TLS_ERROR_PSK_MISMATCH : G5120_TLS_ERROR_ALERT,
                            "the EC sent a %s alert: %s (%u)%s",
-                           data[off + 5] == 2 ? "fatal" : "warning",
+                           tls->input_alert[0] == 2 ? "fatal" : "warning",
                            alert_name (desc), desc,
                            alert_means_key_mismatch (desc) ?
-                           " — the EC and this host do not share the same PSK" : "");
+                           " — likely different PSKs or corrupted TLS data" : "");
             }
           else
-            {
-              g_set_error (error, G5120_TLS_ERROR, G5120_TLS_ERROR_ALERT,
-                           "the EC sent an encrypted %" G_GSIZE_FORMAT "-byte alert",
-                           rlen - G5120_TLS_RECORD_HEADER_LEN);
-            }
+            g_set_error (error, G5120_TLS_ERROR, G5120_TLS_ERROR_ALERT,
+                         "the EC sent a malformed plaintext alert");
           return FALSE;
         }
-
-      tls->from_ec++;
-      off += rlen;
+      if (tls->input_header[0] == G5120_TLS_CHANGE_CIPHER_SPEC)
+        tls->input_encrypted = TRUE;
     }
-
-  if (len > 0 && BIO_write (tls->rbio, data, len) != (int) len)
-    {
-      set_ssl_error (error, G5120_TLS_ERROR_FAILED, "buffering EC bytes");
-      return FALSE;
-    }
-
   return TRUE;
 }
 
@@ -401,11 +496,49 @@ set_failure (G5120Tls *tls, GError **error, const char *what)
                    "%s: the host side raised %s (%u)%s; the alert was not sent to the EC",
                    what, alert_name (desc), desc,
                    alert_means_key_mismatch (desc) ?
-                   " — the EC and this host do not share the same PSK" : "");
+                   " — likely different PSKs or corrupted TLS data" : "");
       return;
     }
 
-  set_ssl_error (error, G5120_TLS_ERROR_FAILED, what);
+  /* Post-handshake alerts are encrypted, so their bytes cannot be inspected
+   * above. Preserve the likely key/corruption classification from OpenSSL's
+   * authenticated record/Finished checks, never generic handshake_failure.
+   * Scan the queue: OpenSSL 3 can put a provider error first and a generic
+   * record-layer failure last, with the useful bad-MAC reason between them. */
+  {
+    unsigned long e, diagnostic = 0;
+    gboolean key_mismatch = FALSE;
+    char buf[256] = "no OpenSSL error queued";
+
+    while ((e = ERR_get_error ()) != 0)
+      {
+        if (diagnostic == 0)
+          diagnostic = e;
+        if (ERR_GET_LIB (e) != ERR_LIB_SSL)
+          continue;
+        switch (ERR_GET_REASON (e))
+          {
+          case SSL_R_DECRYPTION_FAILED:
+          case SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC:
+          case SSL_R_DIGEST_CHECK_FAILED:
+          case SSL_R_SSLV3_ALERT_BAD_RECORD_MAC:
+          case SSL_R_TLSV1_ALERT_DECRYPTION_FAILED:
+          case SSL_R_TLSV1_ALERT_DECRYPT_ERROR:
+            key_mismatch = TRUE;
+            diagnostic = e;
+            break;
+
+          default:
+            break;
+          }
+      }
+    if (diagnostic != 0)
+      ERR_error_string_n (diagnostic, buf, sizeof (buf));
+    g_set_error (error, G5120_TLS_ERROR,
+                 key_mismatch ? G5120_TLS_ERROR_PSK_MISMATCH : G5120_TLS_ERROR_FAILED,
+                 "%s: %s%s", what, buf,
+                 key_mismatch ? " — likely different PSKs or corrupted TLS data" : "");
+  }
 }
 
 gboolean
@@ -415,7 +548,9 @@ g5120_tls_handshake (G5120Tls *tls, gboolean *done, GError **error)
 
   *done = FALSE;
 
+  ERR_clear_error ();
   ret = SSL_do_handshake (tls->ssl);
+  err = SSL_get_error (tls->ssl, ret);
   collect_output (tls);
 
   if (ret == 1)
@@ -424,7 +559,6 @@ g5120_tls_handshake (G5120Tls *tls, gboolean *done, GError **error)
       return TRUE;
     }
 
-  err = SSL_get_error (tls->ssl, ret);
   if (err == SSL_ERROR_WANT_READ)
     return TRUE;
 
@@ -469,12 +603,12 @@ g5120_tls_read (G5120Tls *tls, guint8 *buf, gsize len, GError **error)
 {
   int ret, err;
 
+  ERR_clear_error ();
   ret = SSL_read (tls->ssl, buf, (int) MIN (len, G_MAXINT));
+  err = SSL_get_error (tls->ssl, ret);
   collect_output (tls);
   if (ret > 0)
     return ret;
-
-  err = SSL_get_error (tls->ssl, ret);
   if (err == SSL_ERROR_WANT_READ)
     return 0;
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -129,14 +128,9 @@ func TestTouchPath(t *testing.T) {
 // and written. The stand-in answers only the run's first arm with base
 // invalid, and each later down arm must be derived from the previous lift.
 func TestSeveralTouchesInOneSession(t *testing.T) {
-	if _, err := exec.LookPath("openssl"); err != nil {
-		t.Skip("openssl not on PATH")
-	}
 	dir := t.TempDir()
-	psk := filepath.Join(dir, "psk.bin")
-	if err := os.WriteFile(psk, bytes.Repeat([]byte{0x5a}, 32), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// Rehearsal must succeed even when an optional device-key path is missing.
+	psk := filepath.Join(dir, "missing-device-key.bin")
 	allowed := map[proto.Opcode]bool{opRequestTLS: true, opTLSEstablished: true, opGetImage: true, opFDTDown: true, opFDTUp: true}
 	var allow []proto.Opcode
 	for op := range allowed {

@@ -130,7 +130,11 @@ g5120_tls_frame (const guint8 *record, gsize record_len, GError **error)
 {
   GByteArray *pack;
 
-  if (record_len < G5120_TLS_RECORD_HEADER_LEN ||
+  if (record_len < G5120_TLS_RECORD_HEADER_LEN || record_len > G_MAXUINT16 ||
+      record[0] < G5120_TLS_CHANGE_CIPHER_SPEC || record[0] > G5120_TLS_APPLICATION_DATA ||
+      record[1] != 3 || record[2] < 1 || record[2] > 3 ||
+      ((record[3] << 8) | record[4]) == 0 ||
+      ((record[3] << 8) | record[4]) > G5120_TLS_MAX_BODY_LEN ||
       g5120_tls_record_len (record, record_len) != record_len)
     {
       g_set_error (error, G5120_PROTO_ERROR, G5120_PROTO_ERROR_REFUSED,
@@ -140,6 +144,12 @@ g5120_tls_frame (const guint8 *record, gsize record_len, GError **error)
     }
 
   pack = g5120_pack_encode (G5120_FLAG_TLS, record, record_len);
+  if (pack == NULL)
+    {
+      g_set_error (error, G5120_PROTO_ERROR, G5120_PROTO_ERROR_REFUSED,
+                   "cannot encode the TLS-data pack");
+      return NULL;
+    }
   g5120_pad_to_packet (pack);
 
   return pack;

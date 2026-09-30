@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"goodix5120/internal/image"
+	"goodix5120/internal/privatefile"
 	"goodix5120/internal/proto"
 	"goodix5120/internal/session"
 	"goodix5120/internal/tlspsk"
@@ -134,14 +136,14 @@ func (c tlsConfig) opcodes() []proto.Opcode {
 
 // validate checks the flag combination before anything is opened, so a mistake
 // costs a message rather than a live run.
-func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool) error {
+func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool, replay bool) error {
 	if !c.enabled {
 		if c.pskPath != "" || c.capture != "" || c.waitFinger {
 			return errors.New("--psk, --capture and --wait-finger only mean something with --tls")
 		}
 		return nil
 	}
-	if c.pskPath == "" {
+	if !replay && c.pskPath == "" {
 		return errors.New("--tls needs --psk FILE: the 32-byte device key, as written by " +
 			"`goodix-dpapi -out` (see docs/dpapi-runbook.md). Keep it in gitignored captures/")
 	}
@@ -177,25 +179,62 @@ func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool)
 	return nil
 }
 
+// preparedTLS owns an endpoint which was validated before any hardware
+// is opened. Rehearsals use only a public synthetic key, never the device key.
+type preparedTLS struct {
+	host         *tlspsk.Session
+	rehearsalPSK []byte
+}
+
+func prepareTLS(ctx context.Context, cfg tlsConfig, replay bool,
+	start func(context.Context, tlspsk.Config) (*tlspsk.Session, error)) (*preparedTLS, error) {
+	if !cfg.enabled {
+		return nil, nil
+	}
+	var psk []byte
+	var err error
+	if replay {
+		psk = tlspsk.ReferencePSK()
+	} else {
+		psk, err = tlspsk.LoadPSK(cfg.pskPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer clear(psk)
+	host, err := start(ctx, tlspsk.Config{PSK: psk})
+	if err != nil {
+		return nil, err
+	}
+	prepared := &preparedTLS{host: host}
+	if replay {
+		prepared.rehearsalPSK = append([]byte(nil), psk...)
+	}
+	return prepared, nil
+}
+
+func (p *preparedTLS) close() {
+	_ = p.host.Close()
+	clear(p.rehearsalPSK)
+}
+
 // startRehearsal brings up the loopback stand-in for `--tls --replay` and wraps
 // it in a gated transport.
 //
 // The scripted replay cannot rehearse a TLS session: a handshake is not a fixed
-// list of exchanges. This is the substitute — an openssl s_client dressed in
+// list of exchanges. This is the substitute — an in-process OpenSSL client dressed in
 // Goodix framing — and because it goes through transport.NewPeer it refuses
 // exactly the frames a live run refuses.
 //
 // It opens no device and it is not the EC. What it checks is our side: the
-// framing, the sequencing, the PSK file, the decode and the PGM. Pass
+// framing, the sequencing, the decode and the PGM using a synthetic key. Pass
 // wrongPSK to rehearse the rejection path instead, which is worth seeing once
 // before the live run so its output is familiar.
-func startRehearsal(ctx context.Context, logger *log.Logger, cfg tlsConfig,
+func startRehearsal(ctx context.Context, logger *log.Logger, prepared *preparedTLS,
 	opts transport.Options, wrongPSK bool) (transport.Transport, *session.LoopbackEC, error) {
 
-	psk, err := tlspsk.LoadPSK(cfg.pskPath)
-	if err != nil {
-		return nil, nil, err
-	}
+	psk := append([]byte(nil), prepared.rehearsalPSK...)
+	defer clear(psk)
 	if wrongPSK {
 		// Flip every byte: a key that is certainly not the one the host end
 		// holds, derived without inventing a second key to keep around.
@@ -203,7 +242,9 @@ func startRehearsal(ctx context.Context, logger *log.Logger, cfg tlsConfig,
 		for i, b := range psk {
 			wrong[i] = ^b
 		}
+		clear(psk)
 		psk = wrong
+		defer clear(wrong)
 		logger.Printf("  rehearsal: the stand-in holds a DIFFERENT key, to rehearse the rejection path")
 	}
 
@@ -220,27 +261,9 @@ func startRehearsal(ctx context.Context, logger *log.Logger, cfg tlsConfig,
 // the bisect step loop has finished, and everything below is half duplex, so
 // nothing writes to the device while the bridge is reading from it.
 func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg tlsConfig,
-	rehearsal *session.LoopbackEC) error {
-	psk, err := tlspsk.LoadPSK(cfg.pskPath)
-	if err != nil {
-		return err
-	}
-	// Say what was loaded without saying what it is. The PSK is a device secret
-	// and this log file is written to disk.
+	rehearsal *session.LoopbackEC, host *tlspsk.Session) error {
 	logger.Printf("\n--- TLS-PSK bridge (PLAN.md Phase 5b)")
-	logger.Printf("  loaded a %d-byte PSK from %s (contents not logged)", len(psk), cfg.pskPath)
-
-	sessCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Port -1 asks for an ephemeral loopback port: nothing else needs to find
-	// this endpoint, and a fixed 4433 would collide with a previous run that has
-	// not finished dying.
-	host, err := tlspsk.Start(sessCtx, tlspsk.Config{PSK: psk, Port: -1})
-	if err != nil {
-		return fmt.Errorf("bringing up the local TLS endpoint: %w", err)
-	}
-	defer func() { _ = host.Close() }()
+	logger.Printf("  using the preflighted in-process TLS endpoint (key contents withheld)")
 
 	bridge := session.New(tr, host, session.Options{Logger: logger})
 	if missing := missingFromVendorInit(cfg.steps); rehearsal == nil && len(missing) > 0 {
@@ -354,20 +377,49 @@ func captureFrame(ctx context.Context, logger *log.Logger, tr transport.Transpor
 		return fmt.Errorf("decoding the frame: %w", err)
 	}
 
-	// 0o600: this is biometric data. It must also stay out of the repository —
-	// .gitignore covers captures/ and *.pgm.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("creating %s: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
-	giveToSudoUser(logger, f)
-	if err := image.WritePGM(f, img); err != nil {
+	if err := writeCapture(path, img); err != nil {
 		return err
 	}
 	logger.Printf("  wrote %dx%d PGM to %s — biometric data: keep it out of git and out of any issue report",
 		img.Width, img.Height, path)
 	return nil
+}
+
+// writeCapture publishes an encoded image privately and atomically.
+func writeCapture(path string, img image.Gray8) error {
+	var pgm bytes.Buffer
+	if err := image.WritePGM(&pgm, img); err != nil {
+		return err
+	}
+	owner, err := sudoOwnership()
+	if err != nil {
+		return err
+	}
+	if err := privatefile.Write(path, pgm.Bytes(), owner); err != nil {
+		return fmt.Errorf("writing private capture: %w", err)
+	}
+	return nil
+}
+
+// sudoOwnership is applied to the temporary capture before publication.
+// A malformed sudo identity cannot silently publish an unreadable root-owned file.
+func sudoOwnership() (*privatefile.Ownership, error) {
+	return captureOwnership(os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"))
+}
+
+func captureOwnership(euid int, u, g string) (*privatefile.Ownership, error) {
+	if euid != 0 {
+		return nil, nil
+	}
+	if u == "" && g == "" {
+		return nil, nil
+	}
+	uid, e1 := strconv.Atoi(u)
+	gid, e2 := strconv.Atoi(g)
+	if e1 != nil || e2 != nil || uid < 0 || gid < 0 || uint64(uid) >= 1<<32-1 || uint64(gid) >= 1<<32-1 {
+		return nil, errors.New("invalid SUDO_UID/SUDO_GID for capture ownership")
+	}
+	return &privatefile.Ownership{UID: uid, GID: gid}, nil
 }
 
 // giveToSudoUser hands a file the probe created under sudo to the user who ran
@@ -423,8 +475,8 @@ func explainHandshakeFailure(logger *log.Logger, err error, cfg tlsConfig, toHos
 	case errors.Is(err, session.ErrHandshakeTimeout):
 		explainStall(logger, cfg, toHost, toDevice)
 	case errors.Is(err, session.ErrPSKMismatch):
-		logger.Printf("\n  THE EC DID NOT ACCEPT THIS PSK.")
-		logger.Printf("  This is the PLAN.md Phase 5b wall. In order of preference:")
+		logger.Printf("\n  TLS authentication failed: a PSK mismatch or corrupted records are possible.")
+		logger.Printf("  Local TLS policy passed preflight. Check authentication evidence before changing the key:")
 		logger.Printf("    1. Re-audit the unseal — secondary entropy and master key (docs/dpapi-runbook.md).")
 		logger.Printf("       This run is the first real test of the recovered key.")
 		logger.Printf("    2. Read the PSK or the entropy from the running Windows driver; local analysis only.")
@@ -448,7 +500,7 @@ func explainStall(logger *log.Logger, cfg tlsConfig, toHost, toDevice int) {
 	case toDevice == 0:
 		logger.Printf("\n  The EC opened a handshake and the host answered nothing, which is a fault on")
 		logger.Printf("  our side: openssl should reply to a ClientHello in under a millisecond. Check the")
-		logger.Printf("  local endpoint's stderr above, and that the cipher list still offers 0x00ae.")
+		logger.Printf("  local endpoint error above and the effective OpenSSL policy for 0x00ae.")
 	case len(missingFromVendorInit(cfg.steps)) > 0:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
 		logger.Printf("  This run left out %s, which the vendor sends before 0xd0 in every init — and the", opList(missingFromVendorInit(cfg.steps)))

@@ -6,7 +6,6 @@
 #
 # -buildvcs=false is used throughout the repo's docs, so it is used here too.
 
-psk     := "captures/goodix-psk.bin"
 pcap    := "dump.pcapng"
 evtxlog := "captures/Goodix-FingerprintProvider%4Debug.evtx"
 pgm     := "/tmp/goodix-rehearsal.pgm"
@@ -91,28 +90,28 @@ bisect-offline: probe
 
 # ---------------------------------------------------------------------------- TLS-PSK rehearsals
 #
-# The "EC" in these is an `openssl s_client` wearing Goodix framing, so the TLS bytes are real and
-# the device is not. They need openssl on PATH and the recovered PSK at {{psk}}
-# (see docs/dpapi-runbook.md). Nothing here opens hardware.
+# The "EC" is an in-process OpenSSL PSK client wearing Goodix framing. Both
+# endpoints use a public synthetic key; no recovered device key is read.
+# Builds require OpenSSL >= 3 development headers. Nothing here opens hardware.
 
 # Rehearse the handshake (PLAN.md 5b). Expect `handshake complete`.
 rehearse-handshake: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls --psk {{psk}} \
+    ./goodix-probe --bisect --replay --assume-keys --tls \
       --allow-d0 --allow-d4 --steps a8
 
 # Rehearse a PSK the EC rejects, so its output is familiar before it matters. Exits non-zero.
 rehearse-rejection: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls --psk {{psk}} \
+    ./goodix-probe --bisect --replay --assume-keys --tls \
       --allow-d0 --steps a8 --rehearse-rejection
 
 # Rehearse the frame capture (PLAN.md 5c). The stand-in sends a gradient, so the PGM is a ramp.
 rehearse-capture: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls --psk {{psk}} \
+    ./goodix-probe --bisect --replay --assume-keys --tls \
       --allow-d0 --allow-d4 --allow-20 --steps a8 --capture {{pgm}}
 
 # Rehearse several touches in one TLS session (PLAN.md 5d/6). The stand-in plays a finger.
 rehearse-touches: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls --psk {{psk}} \
+    ./goodix-probe --bisect --replay --assume-keys --tls \
       --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
       --capture {{pgm}} --wait-finger --touches 3 --finger-timeout 3s
 

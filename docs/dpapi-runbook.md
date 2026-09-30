@@ -9,13 +9,21 @@ from the registry, which is exactly what the LocalSystem service does at runtime
 ## Safety
 
 - **Read-only and offline.** `cmd/goodix-dpapi` reads the two registry hives, one master-key file and the blob,
-  and computes. It imports only `internal/dpapi` and `internal/winreg`, both stdlib-only; it links no USB code
+  and computes. Its DPAPI, registry, and private-file helpers are stdlib-only; it links no USB code
   and cannot reach the embedded controller. This has nothing to do with the keyboard incident.
 - **Secret-bearing output.** The recovered plaintext is the device PSK. The tool handles it the way this repo
-  handles the OTP and the `0xe4` reply: by default it prints only the plaintext length and its SHA-256, writes
-  the raw bytes only to a `-out` file, and prints the hex only with `-print-psk`. Send any `-out` file to a
+  handles the OTP and the `0xe4` reply: by default it prints only the plaintext length and HMAC verification
+  status. It withholds boot keys, master-key GUIDs, blob descriptions, plaintext hashes, and input paths,
+  including in error messages. It writes raw bytes only to a `-out` file and prints plaintext hex only with
+  `-print-psk`. Send any `-out` file to a
   gitignored path (`captures/…` or a `*.bin` name). **Never commit the PSK, the master keys, the DPAPI_SYSTEM
   keys, the boot key, or the secondary entropy.**
+- **Private file replacement.** A `-out` file is written through a fresh `0600` temporary file in its
+  destination directory, synced and closed, then atomically renamed into place. An existing public file is
+  replaced with a private file; symlink and hardlink entries are replaced without modifying their targets.
+  Failures before rename preserve the original output and remove the temporary file; cleanup failures are
+  returned as errors. The destination directory must already exist. The output belongs to the account
+  running the tool.
 
 ## The chain
 
@@ -63,8 +71,8 @@ go test ./internal/dpapi -run TestLiveMasterKeys \
 The chain works end to end on this machine. The boot key, LSA key and DPAPI_SYSTEM keys are recovered; every one
 of the 26 machine-store `S-1-5-18` master keys (SHA-512/AES-256, 8000 rounds) verifies against its own HMAC.
 
-`Goodix_Cache.bin` is a well-formed DPAPI blob: master-key GUID `557da6c3-0d3d-4fdf-8834-befbc7331dd6` (present
-in `S-1-5-18`, created the same day, 2021-03-16), AES-256/SHA-512, 32-byte salt, 32-byte HMac field, 48-byte
+`Goodix_Cache.bin` is a well-formed DPAPI blob: its matching master key is present
+in `S-1-5-18` (created the same day, 2021-03-16), AES-256/SHA-512, 32-byte salt, 32-byte HMac field, 48-byte
 ciphertext, 64-byte Sign, then 8 trailing bytes that are not the blob. Its master key is recovered and verified.
 
 **But the blob does not decrypt with the master key alone: it was sealed with application-specific secondary

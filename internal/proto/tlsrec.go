@@ -153,8 +153,8 @@ func ParseTLSRecordHeader(b []byte) (typ, major, minor byte, bodyLen int, err er
 	default:
 		return 0, 0, 0, 0, fmt.Errorf("%w: content type 0x%02x is not one of 0x14, 0x15, 0x16, 0x17", ErrTLSRecord, typ)
 	}
-	if major != tlsVersionMajor {
-		return 0, 0, 0, 0, fmt.Errorf("%w: version major byte is 0x%02x, want 0x%02x", ErrTLSRecord, major, tlsVersionMajor)
+	if major != tlsVersionMajor || minor < 1 || minor > 3 {
+		return 0, 0, 0, 0, fmt.Errorf("%w: version is 0x%02x%02x, want TLS record version 0x0301 through 0x0303", ErrTLSRecord, major, minor)
 	}
 
 	bodyLen = int(binary.BigEndian.Uint16(b[3:5]))

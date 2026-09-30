@@ -212,3 +212,18 @@ func TestPlaintextHexTruncates(t *testing.T) {
 		t.Errorf("PlaintextHex returned %d characters for a %d-byte body", len(got), len(body))
 	}
 }
+
+// Accept only TLS 1.0 through 1.2 record versions, including older ClientHello framing.
+func TestParseTLSRecordHeaderVersionRange(t *testing.T) {
+	for _, minor := range []byte{0, 1, 2, 3, 4, 255} {
+		header := []byte{TLSHandshake, 3, minor, 0, 1}
+		_, _, _, _, err := ParseTLSRecordHeader(header)
+		if minor >= 1 && minor <= 3 {
+			if err != nil {
+				t.Errorf("minor %d: %v", minor, err)
+			}
+		} else if !errors.Is(err, ErrTLSRecord) {
+			t.Errorf("minor %d accepted: %v", minor, err)
+		}
+	}
+}

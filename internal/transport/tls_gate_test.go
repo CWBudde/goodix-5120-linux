@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -193,5 +194,44 @@ func TestReplayScriptsTLSExchanges(t *testing.T) {
 	defer tr3.Close()
 	if err := tr3.SendTLS(helloRecord(13)); err == nil {
 		t.Error("a TLS send of the wrong length satisfied the script")
+	}
+}
+
+func TestSendTLSOuterLengthBoundary(t *testing.T) {
+	for _, size := range []int{65535, 65536} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			// Four individually valid records whose total reaches the outer LE16 boundary.
+			records := make([]byte, 0, size)
+			for _, body := range []int{16379, 16379, 16379, size - 3*16384 - 5} {
+				records = append(records, helloRecord(body)...)
+			}
+			if _, err := proto.SplitTLSRecords(records); err != nil {
+				t.Fatal(err)
+			}
+			s, w := newStubTransport(Options{AllowTLSData: true})
+			err := s.SendTLS(records)
+			if size == 65536 {
+				if !errors.Is(err, ErrRefused) {
+					t.Fatalf("oversized aggregate = %v, want ErrRefused", err)
+				}
+				if len(w.frames) != 0 {
+					t.Fatal("refused oversized aggregate reached writer")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(w.frames) != 1 {
+				t.Fatalf("writes = %d", len(w.frames))
+			}
+			_, got, err := proto.DecodePack(w.frames[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, records) {
+				t.Fatal("maximum pack payload was truncated")
+			}
+		})
 	}
 }

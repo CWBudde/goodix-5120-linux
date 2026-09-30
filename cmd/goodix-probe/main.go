@@ -28,6 +28,7 @@ import (
 
 	"goodix5120/internal/proto"
 	"goodix5120/internal/session"
+	"goodix5120/internal/tlspsk"
 	"goodix5120/internal/transport"
 )
 
@@ -53,7 +54,7 @@ func main() {
 		assumeKeys = flag.Bool("assume-keys", false, "--bisect --replay: skip the keyboard checks (no root needed)")
 		readState  = flag.Bool("read-state", false, "--bisect, live: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to learn which state it is in, then stop")
 
-		useTLS        = flag.Bool("tls", false, "--bisect: after the steps, send 0xd0 and bridge the TLS-PSK handshake to a local openssl endpoint. Needs --psk and --allow-d0")
+		useTLS        = flag.Bool("tls", false, "--bisect: after the steps, send 0xd0 and bridge the TLS-PSK handshake to a local openssl endpoint. Needs --allow-d0; live runs also need --psk")
 		pskPath       = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out` (a path, so the key stays out of shell history)")
 		capture       = flag.String("capture", "", "--tls: ask for a frame (0x20) and write it here as a PGM. Needs --allow-20. BIOMETRIC data: keep it in gitignored captures/")
 		waitFinger    = flag.Bool("wait-finger", false, "--capture: take the frame when the EC reports a touch, then wait for the lift. Needs --allow-32 and --allow-34")
@@ -123,6 +124,24 @@ func main() {
 func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
 	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration) int {
 
+	return mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState, allow, allowed,
+		tls, stepList, logPath, timeout, keyWait, bisectDependencies{
+			newHost: func(live bool) (bisectHost, error) { return newLinuxHost(live) },
+			openUSB: transport.OpenUSB, startTLS: tlspsk.Start,
+		})
+}
+
+// The dependency boundary lets offline tests prove that local TLS failures
+// stop before the keyboard watcher or USB opener is reached.
+type bisectDependencies struct {
+	newHost  func(bool) (bisectHost, error)
+	openUSB  func(transport.Options) (transport.Transport, error)
+	startTLS func(context.Context, tlspsk.Config) (*tlspsk.Session, error)
+}
+
+func mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
+	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration, deps bisectDependencies) int {
+
 	stderr := log.New(os.Stderr, "", 0)
 	if assumeKeys && !replay {
 		stderr.Print(errAssumeKeysLive)
@@ -135,11 +154,19 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 	}
 	// Check the flag combination before anything is opened: a --tls run that
 	// cannot work should cost a message, not a live run.
-	if err := tls.validate(ops, allowed); err != nil {
+	if err := tls.validate(ops, allowed, replay); err != nil {
 		stderr.Printf("%v", err)
 		return 1
 	}
 	tls.steps = ops
+	prepared, err := prepareTLS(context.Background(), tls, replay, deps.startTLS)
+	if err != nil {
+		stderr.Printf("TLS preflight: %v", err)
+		return 1
+	}
+	if prepared != nil {
+		defer prepared.close()
+	}
 
 	if logPath == "" {
 		logPath = "goodix-bisect-" + time.Now().Format("20060102-150405") + ".log"
@@ -155,7 +182,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 
 	var host bisectHost = assumeKeysHost{}
 	if !assumeKeys {
-		lh, err := newLinuxHost(!replay)
+		lh, err := deps.newHost(!replay)
 		if err != nil {
 			logger.Printf("cannot watch the internal keyboard: %v", err)
 			return 1
@@ -201,7 +228,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 	open := func() (transport.Transport, error) {
 		switch {
 		case replay && tls.enabled:
-			tr, ec, err := startRehearsal(context.Background(), logger, tls, opts, replayWrongPSK)
+			tr, ec, err := startRehearsal(context.Background(), logger, prepared, opts, replayWrongPSK)
 			if err != nil {
 				return nil, err
 			}
@@ -210,7 +237,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 		case replay:
 			return transport.NewReplay(scriptFor(ops), opts), nil
 		}
-		return transport.OpenUSB(opts)
+		return deps.openUSB(opts)
 	}
 
 	mode := "LIVE HARDWARE"
@@ -227,7 +254,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 	if tls.enabled {
 		after = func(tr transport.Transport) error {
 			// rehearsal is nil for a live run and is set by open() otherwise.
-			return runTLS(context.Background(), logger, tr, tls, rehearsal)
+			return runTLS(context.Background(), logger, tr, tls, rehearsal, prepared.host)
 		}
 	}
 

@@ -197,6 +197,9 @@ func checkTLSData(records []byte, allowed bool) error {
 	if len(records) == 0 {
 		return fmt.Errorf("%w: refusing to send an empty TLS-data pack", ErrRefused)
 	}
+	if len(records) > 65535 {
+		return fmt.Errorf("%w: TLS-data payload is %d bytes, over the outer pack limit of 65535", ErrRefused, len(records))
+	}
 	if _, err := proto.SplitTLSRecords(records); err != nil {
 		return fmt.Errorf("%w: TLS data is not a whole number of records: %w", ErrRefused, err)
 	}

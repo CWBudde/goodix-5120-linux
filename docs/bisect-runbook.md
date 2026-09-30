@@ -227,13 +227,13 @@ away. The probe refuses that combination rather than letting it happen.
 #    It must be the raw 32 bytes, and it must stay in gitignored captures/.
 ./goodix-dpapi -sys … -sec … -mkdir … -blob …/Goodix_Cache.bin -goodix -out captures/goodix-psk.bin
 
-# 2. Rehearse offline. No device is opened; the "EC" is an openssl s_client
-#    wearing Goodix framing, so the TLS bytes are real but the device is not.
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+# 2. Rehearse offline. No device is opened; the "EC" is an in-process OpenSSL
+#    client wearing Goodix framing. Both ends use synthetic keys; no device key is read.
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --allow-d4 --steps a8
 
 # 3. Rehearse the failure too, so its output is familiar before it matters.
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --steps a8 --rehearse-rejection
 
 # 4. Live, with an external keyboard attached. Steps first, then the bridge.
@@ -286,10 +286,14 @@ is the single most expensive lesson of 2026-09-20: see Run 12 in `docs/protocol.
 
 Two things the rehearsal cannot tell you, because it is openssl and not an embedded controller: whether
 the EC accepts the key, and how long it holds a record the host has not read yet.
-What it does check is our side — the framing, the sequencing, the PSK file, and the refusals.
+What it checks is our side: framing, sequencing, image decoding, and refusals using synthetic keys.
+For live runs the key file and effective TLS policy are validated before USB is opened.
+A local policy refusal stops the run without USB writes; the tools never lower the security level automatically.
 
 Note the PSK is passed as a **path**, never as hex on the command line: an argument lands in the shell
-history and in `ps` output. The log says how many bytes were loaded and nothing else.
+history and in `ps` output. The in-process TLS endpoint keeps the key out of process arguments and environment.
+The log records only that the endpoint was preflighted. Capture files are atomically replaced with mode `0600`;
+under sudo they are assigned to the invoking user before publication. Existing symlink targets are not followed.
 
 ## `--capture` — one real frame (PLAN.md Phase 5c)
 
@@ -314,7 +318,7 @@ Rehearse it first; the stand-in sends a synthetic gradient, so the PGM from a re
 fingerprint:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
 ```
 
@@ -355,7 +359,7 @@ Rehearse it first. The stand-in answers the first arm with a base-invalid event 
 finger-down, both taken from `dump.pcapng`, so the re-arm path runs too:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
   --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s
 ```

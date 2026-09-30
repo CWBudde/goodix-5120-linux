@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -18,20 +17,13 @@ import (
 )
 
 // These tests rehearse the Phase 5b bridge with no hardware attached. The
-// "device" is LoopbackEC — an openssl s_client dressed in Goodix framing — so
+// "device" is LoopbackEC — a native OpenSSL client in Goodix framing — so
 // the TLS bytes are real, produced by a real implementation, and nothing about
 // the handshake is invented. What they cannot tell us is anything about the EC
 // itself; see the LoopbackEC doc comment.
 //
 // Every key here is a throwaway test key. The recovered device PSK lives only in
 // gitignored captures/ and never appears in this repository.
-
-func requireOpenSSL(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath(tlspsk.DefaultOpenSSL); err != nil {
-		t.Skipf("openssl not on PATH: %v", err)
-	}
-}
 
 // testPSK returns a throwaway 32-byte key whose every byte is fill.
 func testPSK(fill byte) []byte {
@@ -61,12 +53,11 @@ func newRig(t *testing.T, devicePSK, hostPSK []byte) *rig {
 // timeouts are the rig's business; anything else the caller sets survives.
 func newRigWith(t *testing.T, devicePSK, hostPSK []byte, opts Options) *rig {
 	t.Helper()
-	requireOpenSSL(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	sess, err := tlspsk.Start(ctx, tlspsk.Config{PSK: hostPSK, Port: -1})
+	sess, err := tlspsk.Start(ctx, tlspsk.Config{PSK: hostPSK})
 	if err != nil {
 		t.Fatalf("starting the host endpoint: %v", err)
 	}
@@ -309,7 +300,7 @@ func TestAlertClassification(t *testing.T) {
 	}{
 		{"bad_record_mac", []byte{2, alertBadRecordMAC}, ErrPSKMismatch},
 		{"decrypt_error", []byte{2, alertDecryptError}, ErrPSKMismatch},
-		{"handshake_failure", []byte{2, alertHandshakeFailure}, ErrPSKMismatch},
+		{"handshake_failure", []byte{2, alertHandshakeFailure}, ErrAlert},
 		{"unknown_psk_identity", []byte{2, alertUnknownPSKID}, ErrPSKMismatch},
 		{"protocol_version", []byte{2, alertProtocolVersion}, ErrAlert},
 		{"close_notify", []byte{1, alertCloseNotify}, ErrAlert},
