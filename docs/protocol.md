@@ -848,6 +848,21 @@ session without a TLS close. `isTlsConnected` may now be set, and a plaintext co
 answered. The next run should be `sudo ./goodix-probe --bisect --read-state` on its own, with its replies
 compared against Runs 15 and 16, before any step is sent.
 
+### Run 19 — 2026-09-30 04:10, `sudo ./goodix-probe --bisect --read-state` (observed)
+
+Eight minutes after Run 18, apparently in the same boot: the i8042 IRQ count went on from Run 18's 252 to
+320 rather than starting over, so no cold power cycle or EC reset came between the two runs. **The health
+check passed**: `0xa8` answered ACK + `GF_ITE_EC_20063`, the step's `0xa8` answered the same, and the
+keyboard stayed alive. `--read-state` therefore sent no `0xae`, as designed.
+
+- **A completed handshake does not leave the EC stuck**, even one the host dropped without a TLS close.
+  A *stalled* one does (Runs 11 → 12, 17). So the EC reset after every `--tls` run is needed only after
+  a stall, not after a completed handshake.
+- Whether byte 1 of `0xae` (TLS state) is still set is not known from this run. The next init's `0xae`
+  step will show it.
+- The health check no longer logs "data arrived with no ACK" after reading the ACK itself: the Run 18
+  log fix, confirmed live.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
