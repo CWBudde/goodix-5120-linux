@@ -50,12 +50,13 @@ func main() {
 		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
 		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
+		readState  = flag.Bool("read-state", false, "bisect: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to find out why, then stop. Live only: 0xae is the one command the stuck EC answered in Run 12, and its status and counter tell a failed cold power cycle from a new fault")
 
 		useTLS   = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
 		pskPath  = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
 		capture  = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
 		wrongPSK = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
-		perPack  = flag.Bool("tls-record-per-pack", false, "--tls: send each record of a server flight in its own b0 pack instead of one pack per flight. Run 11's framing, which stalled; kept so the two can be compared on hardware")
+		coalesce = flag.Bool("tls-coalesce-flight", false, "--tls: send all records of a server flight in ONE b0 pack, the way openssl writes them. The default is one pack per record, which is what the vendor driver sends; this is kept for comparison only")
 	)
 
 	// One --allow-<opcode> flag per above-ceiling opcode, registered from the
@@ -76,11 +77,16 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if *useTLS || *pskPath != "" || *capture != "" || *perPack {
+		if *useTLS || *pskPath != "" || *capture != "" || *coalesce {
 			logger.Print("--tls, --psk and --capture only work with --bisect: the bridge runs as the tail of a " +
 				"bisect run so it inherits the keyboard checks (see docs/bisect-runbook.md)")
 			os.Exit(1)
 		}
+	}
+	if *readState && (!*bisect || *replay) {
+		logger.Print("--read-state only works with a live --bisect: it asks a real EC why it ignored the health " +
+			"check, and a rehearsal has no EC and runs no health check (TestReadStateOnAStuckEC covers it offline)")
+		os.Exit(1)
 	}
 	if *wrongPSK && !(*useTLS && *replay) {
 		logger.Print("--rehearse-rejection only works with --tls --replay: it is a rehearsal of the failure, " +
@@ -109,9 +115,9 @@ func main() {
 			sendD4:   allowed[opTLSEstablished],
 			getImage: allowed[opGetImage],
 
-			recordPerPack: *perPack,
+			coalesceFlight: *coalesce,
 		}
-		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
+		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, *readState, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
 	}
 
 	opts := transport.Options{
@@ -144,7 +150,7 @@ func main() {
 // mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
 // survived every step, 2 if it stopped (or was not working to begin with), 1
 // on any other failure.
-func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
+func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
 	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration) int {
 
 	stderr := log.New(os.Stderr, "", 0)
@@ -163,6 +169,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, a
 		stderr.Printf("%v", err)
 		return 1
 	}
+	tls.steps = ops
 
 	if logPath == "" {
 		logPath = "goodix-bisect-" + time.Now().Format("20060102-150405") + ".log"
@@ -253,7 +260,18 @@ func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, a
 		}
 	}
 
-	err = runBisect(logger, host, open, ops, timeout, keyWait, after)
+	// The health check is a live-hardware precondition: it asks the EC whether it
+	// is in the state a run assumes. A rehearsal has no EC, and the scripted
+	// replay answers a fixed list of exchanges, so an extra frame there would
+	// desynchronise the script rather than check anything.
+	health := healthCheck
+	switch {
+	case replay:
+		health = healthOff
+	case readState:
+		health = healthReadState
+	}
+	err = runBisect(logger, host, open, ops, timeout, keyWait, health, after)
 	if rehearsal != nil {
 		if cerr := rehearsal.Close(); cerr != nil {
 			logger.Printf("tearing down the rehearsal stand-in: %v", cerr)
@@ -265,7 +283,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, a
 	case errors.Is(err, errKeyboardLost), errors.Is(err, errBaseline):
 		logger.Printf("\nstopped: %v", err)
 		if errors.Is(err, errKeyboardLost) {
-			logger.Printf("recover with a cold power cycle: shut down, unplug the charger, hold power ~30 s")
+			logger.Printf("recover with an EC reset: shut down with the charger PLUGGED IN, hold the power button 40 s, then boot; confirm with --bisect --read-state")
 		}
 		return 2
 	default:

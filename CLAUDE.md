@@ -102,10 +102,20 @@ The safety guarantee is structural, and changes must preserve it:
   OUT endpoint while something else reads from it. Their one caller is `goodix-probe --tls`, which runs as the tail of
   a bisect run and is therefore behind the same keyboard-safe procedure as any live step
   (`docs/bisect-runbook.md`, PLAN.md Phase 5b/5c).
-- **A server flight goes to the device as ONE `0xb0` pack**, the way openssl writes it. Run 11 sent
-  ServerHello and ServerHelloDone as two packs and the EC went silent without an alert; this is the response,
-  and it is a **hypothesis, not a confirmed fact** — `--tls-record-per-pack` exists so the two can be
-  compared on hardware, and `TestServerFlightGoesOutAsOnePack` stops the default drifting back silently.
+- **An unfinished TLS handshake leaves the EC answering nothing but `0xae`, and the power-button cold
+  power cycle did not clear it in Run 14** (Run 12: sending the init into that state cost the keyboard).
+  What did clear it (Run 16): shutdown with the charger **plugged in** and a **40 s** power-button hold —
+  `docs/protocol.md`, "Recovering the EC". A bisect run therefore sends
+  `0xa8` after attach as a health check and refuses to send a single step if nothing answers
+  (`checkECResponsive`); `0xae` cannot be the probe, because it is the one command a stuck EC still answers.
+  The check is live-only — a rehearsal has no EC, and the scripted replay would desynchronise.
+  `--read-state` adds one `0xae` after a failed check, to say which state the EC is in, and sends nothing else.
+- **Each server record goes to the device in its own `0xb0` pack**, as the vendor driver sends them (its
+  log of a completed handshake: ServerHello and ServerHelloDone are two sends). Run 11 used that framing
+  too and stalled, but its init left out `0xe4`, which the vendor sends before `0xd0` every time; that is
+  the leading suspect (`docs/protocol.md`, "The vendor's handshake"). `--tls-coalesce-flight` keeps the
+  one-pack framing for comparison, `TestServerRecordsGoOutOnePackEach` pins the default, and a live `--tls`
+  run whose steps leave out part of the vendor's pre-`0xd0` init logs a warning (`missingFromVendorInit`).
   Records must be forwarded **verbatim**: the Finished MACs cover the handshake transcript, so a bridge that
   edits a record on the way past breaks the handshake it is trying to fix.
 - **Handshake, change-cipher-spec and alert records are logged in full hex; application data never is.**

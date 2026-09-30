@@ -42,6 +42,198 @@ type bisectHost interface {
 // errKeyboardLost means the internal keyboard did not respond after a step.
 var errKeyboardLost = errors.New("internal keyboard stopped responding")
 
+// checkECResponsive sends the one command that is harmless, read-only and always
+// answered by a healthy EC, and refuses to go on if nothing comes back. See
+// errECUnresponsive for why the run stops here rather than carrying on.
+//
+// `0xa8` is the right probe: ClassSafe, no arguments that matter, and the first
+// frame of every run from Run 5 to Run 11 — it has answered on this hardware
+// eleven times. `0xae` deliberately is not, because it is the one command the EC
+// still answers when it is stuck, so it cannot tell the two states apart.
+func checkECResponsive(logger *log.Logger, tr transport.Transport, timeout time.Duration) error {
+	st, ok := stepFor(opFirmwareVer)
+	if !ok {
+		return fmt.Errorf("no catalogue entry for firmware_version (0x%02x)", byte(opFirmwareVer))
+	}
+
+	logger.Printf("\n--- health check: %s (0x%02x) must answer before anything else is sent",
+		opFirmwareVer.Name(), byte(opFirmwareVer))
+	if err := tr.Send(opFirmwareVer, st.payload); err != nil {
+		return fmt.Errorf("health check: send %s: %w", opFirmwareVer.Name(), err)
+	}
+
+	for range maxReadsPerStep {
+		raw, err := tr.Recv(timeout)
+		if errors.Is(err, transport.ErrTimeout) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("health check: %w", err)
+		}
+		if len(raw) == 0 {
+			logger.Printf("  empty transfer")
+			continue
+		}
+		logger.Printf("  raw  %s", hexdump(raw))
+		// Only an answer to 0xa8 itself counts. The EC emits 0x32 finger-detect
+		// events on its own (Run 1), so "something arrived" would let a stuck
+		// EC pass on a touch of the sensor.
+		switch describe(logger, opFirmwareVer, raw) {
+		case replyAck:
+			// The version string follows the ACK as a second transfer. Read it
+			// here, so the drain below does not report it as unsolicited.
+			if err := collect(logger, tr, opFirmwareVer, timeout); err != nil {
+				return fmt.Errorf("health check: %w", err)
+			}
+		case replyData:
+		default:
+			continue
+		}
+		logger.Printf("  the EC is answering plaintext commands — the run may proceed")
+		drain(logger, tr, timeout)
+		return nil
+	}
+
+	logger.Printf("  no answer to %s.", opFirmwareVer.Name())
+	return errECUnresponsive
+}
+
+// errECUnresponsive means the EC did not answer the harmless liveness probe, so
+// it is not in the state a run assumes and nothing else should be sent to it.
+//
+// Run 12 (2026-09-20) is why this exists. That run started with the EC still
+// inside the TLS handshake Run 11 had left unfinished, and in that state the EC
+// answered no plaintext command at all except `0xae`: `0xa8`, which had returned
+// the firmware string fifteen minutes earlier, drew nothing. The run sent the
+// whole init anyway, into an EC that was acknowledging none of it, and the
+// internal keyboard died at step 8. Talking to a part that is not listening is
+// the shape of mistake that wedges this EC, so a run now stops before the first
+// step instead of after the eighth.
+var errECUnresponsive = errors.New("the EC did not answer firmware_version (0xa8), so it is not in the " +
+	"state a run assumes, and nothing was sent. A working internal keyboard does not mean the EC is " +
+	"clean — the host's i8042 recovers on its own, the EC does not. An unfinished --tls handshake " +
+	"leaves it like this, and neither a reset (0xa2) nor, in Run 14, a cold power cycle cleared it. " +
+	"What did (Run 16): shut down with the charger PLUGGED IN, hold the power button 40 s, then boot. Run again with --read-state to see which state it is in; " +
+	"docs/protocol.md, \"Recovering the EC\", has the rest")
+
+// healthMode says what runBisect asks the EC before the first step.
+type healthMode int
+
+const (
+	// healthOff skips the check: a rehearsal has no EC to ask.
+	healthOff healthMode = iota
+	// healthCheck sends 0xa8 and stops the run if nothing answers.
+	healthCheck
+	// healthReadState is healthCheck, and when 0xa8 goes unanswered it sends
+	// one 0xae to find out why (--read-state). The run still stops.
+	healthReadState
+)
+
+// statusHandshakeOpen is the 0xae status bit Run 12 saw set, with the TLS bit
+// clear, in the EC Run 11 had left inside an unfinished handshake. One
+// observation: the name is a hypothesis, which is why proto does not own it.
+const statusHandshakeOpen = 1 << 3
+
+// run12Counter is the trailing counter of Run 12's 0xae reply. It had only ever
+// risen since the Windows driver's one cold init, which restarted it at 0x02.
+const run12Counter = 0x14
+
+// readStuckState sends a single get_mcu_state (0xae) to an EC that has just
+// ignored 0xa8, reports what the reply says about why, and checks the keyboard.
+// It sends nothing else, whatever comes back.
+//
+// 0xae is the one frame worth sending into that EC: in Run 12 it was the only
+// command the stuck EC answered, and the keyboard survived it. What it answers
+// tells a failed cold power cycle (status 0x08, counter still counting up from
+// 0x14) from an EC that did reset and is unhappy for a new reason — the two call
+// for different next steps, and nothing else can tell them apart without
+// sending more.
+func readStuckState(logger *log.Logger, host bisectHost, tr transport.Transport, timeout, keyWait time.Duration) error {
+	st, ok := stepFor(opMCUState)
+	if !ok {
+		return fmt.Errorf("no catalogue entry for get_mcu_state (0x%02x)", byte(opMCUState))
+	}
+	logger.Printf("\n--- --read-state: one %s (0x%02x), the only command the stuck EC answered in Run 12",
+		opMCUState.Name(), byte(opMCUState))
+	host.Mark("read-state: sending get_mcu_state")
+	if err := tr.Send(opMCUState, st.payload); err != nil {
+		return fmt.Errorf("read-state: send %s: %w", opMCUState.Name(), err)
+	}
+
+	var state *proto.MCUState
+	for range maxReadsPerStep {
+		raw, err := tr.Recv(timeout)
+		if errors.Is(err, transport.ErrTimeout) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read-state: %w", err)
+		}
+		if len(raw) == 0 {
+			logger.Printf("  empty transfer")
+			continue
+		}
+		logger.Printf("  raw  %s", hexdump(raw))
+		if describe(logger, opMCUState, raw) != replyData {
+			continue
+		}
+		if s, err := mcuStateFrom(raw); err != nil {
+			logger.Printf("  %v", err)
+		} else {
+			state = &s
+		}
+		break
+	}
+	drain(logger, tr, timeout)
+
+	for _, line := range stuckVerdict(state) {
+		logger.Printf("  %s", line)
+	}
+	return checkKeyboard(logger, host, "read-state", keyWait)
+}
+
+// mcuStateFrom decodes a raw 0xae transfer down to the MCU state.
+func mcuStateFrom(raw []byte) (proto.MCUState, error) {
+	_, packPayload, err := proto.DecodePack(raw)
+	if err != nil {
+		return proto.MCUState{}, err
+	}
+	_, msgPayload, err := proto.DecodeMessage(packPayload)
+	if err != nil {
+		return proto.MCUState{}, err
+	}
+	return proto.DecodeMCUState(msgPayload)
+}
+
+// stuckVerdict turns the 0xae reply of an EC that ignored 0xa8 into what it
+// means and what to do next. A nil state means 0xae went unanswered too.
+func stuckVerdict(s *proto.MCUState) []string {
+	if s == nil {
+		return []string{
+			"VERDICT: the EC answers nothing, not even 0xae. That is worse than Run 12, where 0xae still",
+			"answered. Send nothing more; the reset has to come from outside (docs/protocol.md, \"Recovering the EC\").",
+		}
+	}
+	counter := s.Raw[len(s.Raw)-1]
+	lines := []string{s.String(), fmt.Sprintf("trailing counter 0x%02x (Run 12: 0x%02x; the one real EC reset on record restarted it at 0x02)",
+		counter, run12Counter)}
+	switch {
+	case s.Status&statusHandshakeOpen != 0 && !s.TLSConnected:
+		lines = append(lines,
+			"VERDICT: still Run 12's state — the handshake Run 11 left open. Whatever reset was tried did not",
+			"reach the EC's RAM. A deeper reset is needed (docs/protocol.md, \"Recovering the EC\").")
+	case counter < run12Counter:
+		lines = append(lines,
+			"VERDICT: the counter went DOWN, so the EC was reset, and it still ignores 0xa8. This is a new",
+			"state, not the stuck handshake. Record the reply in docs/protocol.md before trying anything else.")
+	default:
+		lines = append(lines,
+			"VERDICT: a status not seen in a stuck EC before. Record the reply in docs/protocol.md before",
+			"trying anything else.")
+	}
+	return lines
+}
+
 // errBaseline means the internal keyboard did not respond before anything was
 // done, so a bisect run would prove nothing.
 var errBaseline = errors.New("internal keyboard not responding before the run")
@@ -52,6 +244,8 @@ var errBaseline = errors.New("internal keyboard not responding before the run")
 // refuses a destructive opcode whatever the allowlist says.
 const (
 	opEnableChip     proto.Opcode = 0x96
+	opFirmwareVer    proto.Opcode = 0xa8
+	opMCUState       proto.Opcode = 0xae
 	opGetImage       proto.Opcode = 0x20
 	opIdle           proto.Opcode = 0x70
 	opPSKRead        proto.Opcode = 0xe4
@@ -161,7 +355,8 @@ func defaultBisectSteps() string {
 // device in the state the steps left it in, and it needs the same keyboard
 // safety net as a step.
 func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Transport, error),
-	ops []proto.Opcode, timeout, keyWait time.Duration, after func(transport.Transport) error) error {
+	ops []proto.Opcode, timeout, keyWait time.Duration, health healthMode,
+	after func(transport.Transport) error) error {
 
 	logger.Printf("bisect: attach, then %d command(s); keyboard check after each step", len(ops))
 	logger.Printf("bisect: press a harmless key (Shift) on the INTERNAL keyboard when asked")
@@ -184,6 +379,17 @@ func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Trans
 	drain(logger, tr, timeout)
 	if err := checkKeyboard(logger, host, "step 0 attach", keyWait); err != nil {
 		return err
+	}
+
+	if health != healthOff {
+		if err := checkECResponsive(logger, tr, timeout); err != nil {
+			if errors.Is(err, errECUnresponsive) && health == healthReadState {
+				if kerr := readStuckState(logger, host, tr, timeout, keyWait); kerr != nil {
+					return kerr
+				}
+			}
+			return err
+		}
 	}
 
 	for i, op := range ops {

@@ -75,11 +75,12 @@ type Options struct {
 	HostBody         time.Duration
 	HandshakeTimeout time.Duration
 
-	// RecordPerPack sends each record of a host flight in its own TLS-data pack
-	// instead of one pack per flight. This was the behaviour in Run 11, where the
-	// handshake stalled after the server flight; see PumpHost. It is kept as an
-	// option because only hardware can say which framing the EC wants.
-	RecordPerPack bool
+	// CoalesceFlight sends all records of a host flight in ONE TLS-data pack
+	// instead of one pack per record. The vendor driver sends one pack per record
+	// (its log, 2026-09-19 23:25:41: ServerHello 86 bytes, then ServerHelloDone
+	// 9 bytes, as two sends), so that is the default; this was the default
+	// between Run 11 and that finding, and stays as an option for comparison.
+	CoalesceFlight bool
 }
 
 func (o Options) withDefaults() Options {
@@ -242,20 +243,13 @@ func (b *Bridge) Deliver(raw []byte) (bool, error) {
 // PumpHost forwards everything the local endpoint has ready to the device and
 // returns once it has nothing more to say.
 //
-// The records of one flight are gathered and sent as a SINGLE TLS-data pack,
-// because that is how they leave openssl: ServerHello and ServerHelloDone are
-// one 95-byte write on the socket, and splitting them into two packs is this
-// bridge's doing, not the server's.
-//
-// Run 11 (2026-09-20) is why that matters. The EC opened the handshake, the
-// bridge sent those two records as two packs, and the EC answered with a
-// zero-length transfer and then said nothing for the whole 20-second timeout —
-// no alert, which is what a stack sends when it cannot parse what it got. Silence
-// after a ServerHello that arrived alone looks instead like an endpoint still
-// waiting for the rest of a flight it reads one transfer at a time. Options.
-// RecordPerPack restores the split so the two can be compared on hardware;
-// neither framing is confirmed yet, and the vendor capture cannot settle it
-// because it holds no host-to-device TLS pack at all.
+// Each record goes to the device in its own TLS-data pack, which is what the
+// vendor driver does. Its log of a successful handshake (2026-09-19 23:25:41)
+// shows ServerHello and ServerHelloDone leaving as two sends of 86 and 9 bytes,
+// and later change-cipher-spec and Finished as two sends of 6 and 85. Run 11
+// (2026-09-20) used the same framing and still stalled, so the framing is not
+// what stalled it; Options.CoalesceFlight sends a flight as one pack instead,
+// the way openssl writes it to the socket, for comparison only.
 func (b *Bridge) PumpHost() error {
 	var (
 		flight   [][]byte
@@ -310,10 +304,10 @@ func (b *Bridge) PumpHost() error {
 	return nil
 }
 
-// sendFlight writes one flight to the device: one pack, or one pack per record
-// if Options.RecordPerPack says so.
+// sendFlight writes one flight to the device: one pack per record, or one pack
+// for the whole flight if Options.CoalesceFlight says so.
 func (b *Bridge) sendFlight(flight [][]byte, total int) error {
-	if b.opts.RecordPerPack {
+	if !b.opts.CoalesceFlight {
 		for _, rec := range flight {
 			if err := b.dev.SendTLS(rec); err != nil {
 				return fmt.Errorf("session: sending a %s record to the device: %w",

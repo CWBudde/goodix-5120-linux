@@ -293,12 +293,11 @@ func TestAlertClassification(t *testing.T) {
 	}
 }
 
-// TestServerFlightGoesOutAsOnePack pins the change made after Run 11: the records
-// of one flight leave as a single TLS-data pack, the way openssl writes them, not
-// one pack each. Run 11's handshake stalled with the flight split in two, and a
-// rehearsal that quietly went back to splitting it would hide a regression in the
-// one thing that run changed.
-func TestServerFlightGoesOutAsOnePack(t *testing.T) {
+// TestServerRecordsGoOutOnePackEach pins the vendor's framing as the default:
+// its log of a successful handshake shows ServerHello and ServerHelloDone
+// leaving as two sends, one record each. A rehearsal that quietly went back to
+// coalescing them would change the variable the next live run holds fixed.
+func TestServerRecordsGoOutOnePackEach(t *testing.T) {
 	psk := testPSK(0x5a)
 	r := newRig(t, psk, psk)
 	r.requestTLS(t)
@@ -308,27 +307,26 @@ func TestServerFlightGoesOutAsOnePack(t *testing.T) {
 	if err := r.bridge.Handshake(ctx); err != nil {
 		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
 	}
-	if n := strings.Count(r.log.String(), "as one pack"); n == 0 {
-		t.Errorf("no multi-record flight was coalesced; ServerHello and ServerHelloDone "+
-			"arrive together, so at least one flight should have been\nlog:\n%s", r.log)
+	if strings.Contains(r.log.String(), "as one pack") {
+		t.Errorf("a flight was coalesced by default; the vendor sends one pack per record\nlog:\n%s", r.log)
 	}
 }
 
-// TestRecordPerPackRestoresRun11Framing checks the escape hatch still works, so
-// the two framings can be compared on hardware in consecutive runs. openssl
-// accepts either, which is exactly why the comparison has to happen live.
-func TestRecordPerPackRestoresRun11Framing(t *testing.T) {
+// TestCoalesceFlightSendsOnePack checks the comparison option still works.
+// openssl accepts either framing, which is why only hardware can compare them.
+func TestCoalesceFlightSendsOnePack(t *testing.T) {
 	psk := testPSK(0x5a)
-	r := newRigWith(t, psk, psk, Options{RecordPerPack: true})
+	r := newRigWith(t, psk, psk, Options{CoalesceFlight: true})
 	r.requestTLS(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := r.bridge.Handshake(ctx); err != nil {
-		t.Fatalf("Handshake with RecordPerPack = %v\nlog:\n%s", err, r.log)
+		t.Fatalf("Handshake with CoalesceFlight = %v\nlog:\n%s", err, r.log)
 	}
-	if strings.Contains(r.log.String(), "as one pack") {
-		t.Errorf("RecordPerPack still coalesced a flight\nlog:\n%s", r.log)
+	if n := strings.Count(r.log.String(), "as one pack"); n == 0 {
+		t.Errorf("no multi-record flight was coalesced; ServerHello and ServerHelloDone "+
+			"arrive together, so at least one flight should have been\nlog:\n%s", r.log)
 	}
 }
 

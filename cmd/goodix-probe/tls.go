@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"goodix5120/internal/image"
@@ -46,9 +48,48 @@ type tlsConfig struct {
 	sendD4   bool
 	getImage bool
 
-	// recordPerPack sends each record of a server flight in its own b0 pack, the
-	// framing Run 11 used. See session.Options.RecordPerPack.
-	recordPerPack bool
+	// coalesceFlight sends a server flight as one b0 pack instead of one pack
+	// per record. See session.Options.CoalesceFlight.
+	coalesceFlight bool
+
+	// steps is what the bisect run sends before the bridge, so a stall can be
+	// read against the vendor's init (vendorBeforeTLS).
+	steps []proto.Opcode
+}
+
+// vendorBeforeTLS is the vendor's init up to, not including, 0xd0: the state
+// the EC is in when the vendor's handshakes succeed.
+func vendorBeforeTLS() []proto.Opcode {
+	var ops []proto.Opcode
+	for _, st := range vendorInit {
+		if st.cmd == opRequestTLS {
+			break
+		}
+		ops = append(ops, st.cmd)
+	}
+	return ops
+}
+
+// missingFromVendorInit lists the commands of the vendor's pre-0xd0 init that
+// steps does not send. Run 11 left out 0xe4 and stalled; the vendor sends it in
+// every init, and its handshakes complete.
+func missingFromVendorInit(steps []proto.Opcode) []proto.Opcode {
+	var missing []proto.Opcode
+	for _, op := range vendorBeforeTLS() {
+		if !slices.Contains(steps, op) {
+			missing = append(missing, op)
+		}
+	}
+	return missing
+}
+
+// opList formats opcodes the way --steps takes them.
+func opList(ops []proto.Opcode) string {
+	parts := make([]string, len(ops))
+	for i, op := range ops {
+		parts[i] = fmt.Sprintf("%02x", byte(op))
+	}
+	return strings.Join(parts, ",")
 }
 
 // opcodes returns the commands the bridge itself may send, so mainBisect can put
@@ -72,8 +113,8 @@ func (c tlsConfig) opcodes() []proto.Opcode {
 // costs a message rather than a live run.
 func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool) error {
 	if !c.enabled {
-		if c.pskPath != "" || c.capture != "" || c.recordPerPack {
-			return errors.New("--psk, --capture and --tls-record-per-pack only mean something with --tls")
+		if c.pskPath != "" || c.capture != "" || c.coalesceFlight {
+			return errors.New("--psk, --capture and --tls-coalesce-flight only mean something with --tls")
 		}
 		return nil
 	}
@@ -161,9 +202,13 @@ func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg
 	}
 	defer func() { _ = host.Close() }()
 
-	bridge := session.New(tr, host, session.Options{Logger: logger, RecordPerPack: cfg.recordPerPack})
-	if cfg.recordPerPack {
-		logger.Printf("  --tls-record-per-pack: each server record goes in its own b0 pack (Run 11's framing)")
+	bridge := session.New(tr, host, session.Options{Logger: logger, CoalesceFlight: cfg.coalesceFlight})
+	if cfg.coalesceFlight {
+		logger.Printf("  --tls-coalesce-flight: a server flight goes out as ONE b0 pack (the vendor sends one per record)")
+	}
+	if missing := missingFromVendorInit(cfg.steps); rehearsal == nil && len(missing) > 0 {
+		logger.Printf("  WARNING: the steps left out %s, which the vendor sends before 0xd0 in every init", opList(missing))
+		logger.Printf("  (vendor: --steps %s). A stall now says nothing about the key or the framing.", opList(vendorBeforeTLS()))
 	}
 
 	// 0xd0 gets no ACK; the EC answers by opening a handshake, so the bridge
@@ -339,15 +384,20 @@ func explainStall(logger *log.Logger, cfg tlsConfig, toHost, toDevice int) {
 		logger.Printf("\n  The EC opened a handshake and the host answered nothing, which is a fault on")
 		logger.Printf("  our side: openssl should reply to a ClientHello in under a millisecond. Check the")
 		logger.Printf("  local endpoint's stderr above, and that the cipher list still offers 0x00ae.")
-	case cfg.recordPerPack:
+	case len(missingFromVendorInit(cfg.steps)) > 0:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
-		logger.Printf("  This run used --tls-record-per-pack, which is Run 11's framing. Try it WITHOUT that")
-		logger.Printf("  flag: the flight then goes out as one b0 pack, which is how openssl writes it.")
+		logger.Printf("  This run left out %s, which the vendor sends before 0xd0 in every init — and the", opList(missingFromVendorInit(cfg.steps)))
+		logger.Printf("  vendor's handshakes complete. That is the first suspect: run the vendor's init in full")
+		logger.Printf("  (--steps %s) before changing anything about the TLS side.", opList(vendorBeforeTLS()))
+	case cfg.coalesceFlight:
+		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
+		logger.Printf("  This run used --tls-coalesce-flight. Try it WITHOUT that flag: the vendor sends one")
+		logger.Printf("  b0 pack per record, and that is the default.")
 	default:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert —")
-		logger.Printf("  so it did not fail to parse what it got, it is waiting for something. The flight")
-		logger.Printf("  already went out as ONE pack, so the remaining suspects are its contents, not its")
-		logger.Printf("  framing. In order of cheapness:")
+		logger.Printf("  so it did not fail to parse what it got, it is waiting for something. The init and")
+		logger.Printf("  the framing were the vendor's, so the remaining suspects are the flight's contents")
+		logger.Printf("  and its timing. In order of cheapness:")
 		logger.Printf("    1. The ServerHello carries a 32-byte session id and a renegotiation_info")
 		logger.Printf("       extension; the EC's own ClientHello carries no extensions field at all.")
 		logger.Printf("    2. There is no ServerKeyExchange, because the host sets no PSK identity hint.")

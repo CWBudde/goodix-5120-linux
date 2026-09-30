@@ -102,14 +102,23 @@ keyboard checks. The runbook has the exact command lines.
       minimal stack: empty session id, two cipher suites, **no extensions field at all**. The host's
       ServerHello + ServerHelloDone went out as two `0xb0` packs; the EC answered with a zero-length transfer
       and then nothing, and **sent no alert** — which is what a stack does when it is waiting, not when it
-      fails to parse. *Changed since:* a flight now goes out as one pack, the framing openssl itself uses,
-      with `--tls-record-per-pack` to put Run 11's framing back for comparison; handshake records are logged
-      in full (they carry no image and no key) so a stall can be reproduced offline, as Run 11's was. *Next:*
-      re-run. If it stalls the same way, the suspects are the flight's contents — the 32-byte session id and
-      the `renegotiation_info` extension the EC never asked for, and the missing ServerKeyExchange — and
-      neither can be fixed by rewriting a record in passing, because the Finished MACs cover the transcript.
-      Changing either means an openssl option or our own TLS-PSK server. **The PSK wall is still ahead**: if
+      fails to parse. *Changed since:* handshake records are logged
+      in full (they carry no image and no key) so a stall can be reproduced offline, as Run 11's was.
+      **Revised 2026-09-30 from the driver log** (`docs/protocol.md`, "The vendor's handshake"):
+      the vendor sends one pack per record, as Run 11 did, and its server flight has the same contents as
+      openssl's, ServerKeyExchange absent too. So the one-pack change is reverted, and the contents are
+      no longer suspects. What Run 11 did differently is the init: it left out `0xe4`, which the vendor
+      sends before `0xd0` every time. The next run sends the vendor's init in full
+      (`--steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90 --allow-e4 …`), with the vendor's framing. **The PSK wall is still ahead**: if
       the EC eventually rejects the key, the probe prints the fallbacks below and they come first.
+      **Run 12 adds a procedural rule: cold power cycle after every stalled handshake.** The EC comes out of
+      `0xd0` unable to answer plaintext commands — `0xae` only — and a reset does not clear it; Run 12 sent
+      the init into that state and lost the keyboard. A bisect run now health-checks the EC with `0xa8` after
+      attach and refuses to send anything if it does not answer. **Run 14 (2026-09-20 19:17): the stuck
+      state survived a cold power cycle too**, and the one real EC reset on record likely came from a
+      watchdog, not the power button. **Run 16 (2026-09-30) recovered it: shutdown with the charger
+      plugged in and a 40 s power-button hold.** That is now the EC reset in the runbook, and every
+      stalled `--tls` run needs one, confirmed by `--read-state`, before the next.
 - [ ] **5c — Capture and decode one real frame.** *Built:* `--capture FILE` sends `0x20`, decrypts,
       trims and writes a PGM (`0600`, gitignored). `image.TrimFrame` decides bare (7680) against wrapped
       (7693) from the length that arrives and refuses to guess an offset. The 7744-byte record was

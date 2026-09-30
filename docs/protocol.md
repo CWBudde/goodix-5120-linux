@@ -224,7 +224,7 @@ kept, struck, because knowing a question *is* settled is worth as much as the an
 | ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
 | PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
 | What the 224-byte `0x90` config actually *does* | **Open**, but it is *accepted*: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
-| How the EC wants a server flight framed | **Open, and it is what Run 11 stalled on.** One `0xb0` pack per flight, or one per record? The vendor capture cannot answer it — it holds 43 device→host TLS packs and no host→device TLS pack at all. The bridge now sends one pack per flight; `--tls-record-per-pack` restores the other |
+| ~~How the EC wants a server flight framed~~ | **Resolved — one pack per record**, from the driver log of a completed handshake (see "The vendor's handshake, read from the driver log"). That is Run 11's framing, so the framing did not cause Run 11's stall; the missing `0xe4` in its init is the leading suspect. The bridge sends one pack per record; `--tls-coalesce-flight` keeps the other |
 
 ## Image sample packing (transcribed, `tool.py::decode_image`)
 
@@ -631,6 +631,10 @@ now the leading explanation, so the bridge sends a flight as one pack (`session.
 capture cannot settle it, because `dump.pcapng` is steady-state and contains 43 device→host TLS packs and
 **no host→device TLS pack at all**.
 
+*Superseded 2026-09-30:* the driver log shows the vendor sending one pack per record, like this run, and a
+server flight with the same contents. This run's init left out `0xe4`, which the vendor never does. See
+"The vendor's handshake, read from the driver log".
+
 If one pack per flight does not fix it, the remaining suspects are the flight's *contents*: the 32-byte
 session id and the `renegotiation_info` extension that the EC's own hello never asked for, and the absence
 of a ServerKeyExchange (openssl omits it with no PSK identity hint; RFC 4279 §2 permits either). Both are
@@ -640,6 +644,225 @@ transcript, so editing a byte in the middle breaks the handshake it would be try
 **The PSK is still untested.** The EC never sent a ClientKeyExchange, so no key material was ever used on
 either side. Phase 5b's question is still open, and this run says nothing either way about whether the
 recovered key is right.
+
+### Run 12 — 2026-09-20 16:17, the same command as Run 11, **16 minutes later and without a power cycle** (observed)
+
+**Result: the keyboard was lost at step 8, and the EC had been answering almost nothing since step 2.** This
+run never reached the TLS bridge. Recovered with a cold power cycle.
+
+```
+step             TX                                 RX                       keyboard
+1  0x96 enable   96 03 00 01 02 …                   nothing (expected)       alive
+2  0xa8          a8 03 00 00 00 …                   NOTHING — no ACK         alive
+3  0xae          ae 06 00 55 a2 52 00 00 …          02 08 31 … 14 14         alive
+4  0xa2 reset    a2 03 00 01 14 …                   NOTHING — no ACK         alive
+5  0x82          82 06 00 00 00 00 04 00 …          NOTHING — no ACK         alive
+6  0xa6 OTP      a6 03 00 00 00 …                   NOTHING — no ACK         alive
+7  0xa2 reset    a2 03 00 01 14 …                   NOTHING — no ACK         alive
+8  0x70 idle     70 03 00 14 00 …                   NOTHING — no ACK         DEAD
+```
+
+Counters: i8042 `irq1` 15816 → 15839, then **frozen at 15839** across the whole 30 s wait while EC refreshes
+kept climbing 81 → 87. So this is a real wedge, not a missed key press.
+
+**The EC was already in a bad state when the run started**, and the state it was in is Run 11's. The two runs
+are the same boot — `irq1` carries on from 15571 to 15816 — and nothing power-cycled in between. What
+changed since Run 11:
+
+- **`0xa8` answered nothing.** Fifteen minutes earlier the same frame returned `GF_ITE_EC_20063`. Same for
+  `0xa2`, `0x82`, `0xa6` and `0x70`, all of which had answered in Run 11.
+- **`0xae` still answered** — and it is the *only* command that did. Its reply changed: `02 08 31 … 14 14`
+  against Run 11's `02 02 31 … 12 12` before `0xd0`. Byte 1 and the last two bytes move with the EC's state,
+  and byte 1 going `02` → `08` is the difference between "no TLS" and "a TLS handshake is open".
+
+**The finding, and it is a procedural one: an unfinished TLS handshake leaves the EC unable to answer
+plaintext commands, and it does not recover on its own.** Run 11 left the EC waiting inside a handshake. In
+that state it takes a plaintext frame, acknowledges nothing, and the only window left is `0xae`. Sending the
+whole init into it wedged the i8042 bridge and the keyboard with it.
+
+So **a cold power cycle is mandatory after any `--tls` run that does not complete**, and this is now enforced
+rather than remembered: after attach, a bisect run sends `0xa8` as a health check and refuses to send a
+single step if nothing comes back (`checkECResponsive` in `cmd/goodix-probe/bisect.go`). `0xae` is
+deliberately *not* the probe — it is the one command a stuck EC still answers, so it cannot tell the two
+states apart. This run would have stopped at the health check with the keyboard alive.
+
+**Still unknown:** whether a plaintext command can bring the EC out of the TLS state at all. `0xa2` (reset)
+did not, which is the obvious candidate and the interesting negative result here. Whether `0xd0` can be
+re-sent to restart a handshake, or whether the EC will only ever want one per power cycle, is untested.
+
+### Run 13 — 2026-09-20 16:37, the same command again (observed)
+
+**Stopped by the new health check after attach, having sent nothing but the `0xa8` probe itself.** The
+baseline keyboard check passed, `0xa8` drew no reply, and the run refused to send the first step. Exit 1, no
+wedge.
+
+Two things worth keeping:
+
+- **The internal keyboard recovered without a reboot, and the EC did not.** `irq1` continues *upward* from
+  Run 12 — 15839 at the wedge, 16660 at this baseline — so this is the same boot, with no cold power cycle
+  in between, and the keyboard has been generating interrupts again. The host's i8042 came back on its own;
+  the EC stayed deaf. **So a live keyboard says nothing about the EC's state**, which is exactly why the
+  health check is a separate probe rather than an inference from the keyboard check.
+- **The stuck state survives everything short of removing power.** By this point it had survived a reset
+  (`0xa2`, twice in Run 12), a close and re-attach of the USB interface, and 36 minutes.
+
+### Run 14 — 2026-09-20 19:17, the same command, on a fresh boot (observed)
+
+**Stopped by the health check again: `0xa8` drew nothing, no step was sent, keyboard alive.** `irq1=1193`
+at baseline, so this is a new boot. The journal shows the previous boot ending 18:12:52 and this one
+starting 19:02:38, a 50-minute gap that fits a cold power cycle. So whatever was done in that gap did not
+bring the EC back. The run sent only `0xa8`, so there is no `0xae` reply to say what state the EC was in.
+
+### Run 15 — 2026-09-30 02:39, `sudo ./goodix-probe --bisect --read-state` (observed)
+
+The first `--read-state` run, ten days and at least three boots after Run 14. **The EC is still in Run 12's
+state. Keyboard alive at every check.** Nothing was sent after the `0xae`.
+
+```
+step            TX                         RX                                                keyboard
+0 attach        —                          nothing (5 s drain)                               alive
+health  0xa8    a8 03 00 00 00 …           nothing                                           —
+read    0xae    ae 06 00 55 a2 52 00 00 …  02 08 31 03 00 00 01 00 90 63 00…00 19 19 (no ACK)  alive
+```
+
+Counters: i8042 `irq1` 72217 → 72226, EC refreshes 0 → 13, sensor enumerated throughout.
+
+- **Status is still `0x08`** with the TLS bit clear. That is the reply Run 12 got, so the handshake
+  Run 11 left open has survived every reboot since 2026-09-20, including the cold power cycle before Run 14.
+- **The counter rose from `0x14` to `0x19`.** It kept counting instead of restarting at `0x02`, so the
+  EC's RAM has not been cleared since Run 12. What increments it is still unknown: Runs 6–10 left it at
+  `10`, so it is not one step per `0xae`.
+- **Byte 3 is `03`**, where Runs 6–12 saw `00`. The Windows driver log's replies also have `03` there
+  (`0x020231030000…`). Its meaning is unknown.
+- `0xae` into the stuck EC is safe twice now (Run 12, Run 15). `--read-state` did what it was built for.
+
+### Run 16 — 2026-09-30 03:10, `sudo ./goodix-probe --bisect --read-state`, after an EC reset (observed)
+
+**The EC is back. `0xa8` answered the health check, the default step ran, and the keyboard was alive at every
+check.** Before this run, the user shut down with the **charger plugged in** and held the power button for
+**40 s** (variant 1 below). The journal shows the shutdown at 02:54:54 and the boot at 03:01:50. `irq1=219` at
+baseline.
+
+```
+step            TX                    RX                                          keyboard
+0 attach        —                     nothing (5 s drain)                         alive
+health  0xa8    a8 03 00 00 00 …      ACK a8/01, then "GF_ITE_EC_20063"           —
+1 0xa8          a8 03 00 00 00 …      ACK a8/01, then "GF_ITE_EC_20063"           alive
+```
+
+- **The same stuck state as Run 15, 30 minutes earlier and one boot before**, is gone. Between the two runs,
+  the only thing done to the machine was the shutdown and the 40 s hold with the charger connected. So that
+  procedure resets the EC, and the older one (charger unplugged, ~30 s) did not in Run 14. **One
+  observation each**, so this is what worked, not a proven rule. The ASUS-style explanation fits: the reset
+  needs the adapter present, the hold time or both.
+- `--read-state` sent no `0xae` because the health check passed, so this run has no counter reading. The
+  next run that sends `0xae` should show whether the counter restarted at `0x02` the way the one Windows-log
+  cold init did.
+- The health check logged the version string as "unsolicited", because it stopped reading at the ACK. It
+  now reads the data transfer too. The test for that found a real flaw: the check passed on **any**
+  transfer, so an unsolicited `0x32` finger-detect event would have let a stuck EC through. It now passes
+  only on the ACK or data for `0xa8` (`TestHealthCheckIgnoresUnsolicitedEvents`).
+
+### Recovering the EC (researched offline, 2026-09-30)
+
+The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
+Run 16: shut down, leave the charger plugged in, hold the power button 40 s** (item 2, variant 1). The rest
+of this section is the research that led there, and the fallbacks if it ever stops working.
+
+**The power-button procedure has reset the EC once, not every time.** The `0xae` trailing counter only
+ever rose: `04`, `0a`, `0e` in the Windows captures of 2026-09-19, then `10` (Runs 6–10), `12` (Run 11)
+and `14` (Run 12). `isTlsConnected` also stayed set through every cold power cycle before Run 11. The
+Windows driver log shows exactly **one** real EC reset: status `0x11`, TLS down, counter back at `02 02`, at
+log time 2026-09-19 20:46:41 (record #249554). That log's clock runs two hours behind Linux's CEST, so this
+is 22:46 CEST. It is three minutes after the shutdown that followed Run 4's wedge (22:43:09), and inside the
+gap the user described as a cold power cycle.
+
+That one reset had a wedged EC behind it: Run 4's `0xe4` froze the firmware's main loop. Since Run 12 the
+firmware runs normally — the keyboard, the battery refresh counter and USB enumeration all work — and it
+is only waiting inside a handshake. **Hypothesis:** in 2026-09-19 the EC's own watchdog, not the power
+button, did the reset. A running EC would not trip it, and a power-button press is just a shutdown to it.
+
+**The vendor has no reset for this part.** `gfusb.dll` has `HardResetMcu`, which goes through an ACPI
+`_DSM`, and logs `not support hard reset for EC projects %d`. `docs/acpi.md` found no power control for
+the sensor's port. USB re-enumeration happens on every boot, and Run 14 followed one. The
+driver's own recovery is to retry the init (`RetryCountForComminInit`, `Init: TLS Handshake Failed in %d
+try`), but the Windows log never shows a failed handshake, so it holds no recovery to copy.
+
+**ITE resets are firmware-driven.** In the Chromium EC `it83xx` port, a reset is a watchdog key write or
+the WRST# pin. There is no fixed hardware timer that resets the chip when the power button is held. How
+long a hold resets the EC, if any hold does, is up to Huawei's firmware. Other vendors disagree even on
+the charger: ASUS keeps it **plugged in** and holds for 40 s on some models, while the common advice is
+to unplug it and hold for 30 s. No Huawei source describes an EC reset.
+
+What is left, least invasive first:
+
+1. **Read the state first** — `--bisect --read-state` (`docs/bisect-runbook.md`). It sends one `0xae`
+   after the failed health check. Status `0x08` and a counter above `0x14` mean the stuck handshake is
+   still there. A counter below `0x14` means the EC *was* reset and something new is wrong.
+2. **Power-button variants**: charger plugged in with a 40 s hold, and charger unplugged with a 60 s
+   hold. Run `--read-state` after each. The counter is what shows whether one worked.
+3. **Disconnect the internal battery**: bottom cover off, battery connector unplugged, charger unplugged,
+   power held 30 s, a few minutes' wait. This is the one reset that certainly takes the EC's supply away.
+4. **End the handshake from the host** with a TLS fatal alert in one `0xb0` pack. An alert is how TLS ends a
+   handshake, and the EC's stack is built to receive one. The vendor strings (`got an alert message`,
+   `is a fatal alert message`) are the driver's mbedTLS, so this is inference, not an observation of the EC.
+   It would be a new live code path, not built yet. Resuming Run 11's handshake instead is not possible:
+   the log keeps the ServerHello's length, not its bytes.
+5. **A Huawei BIOS/EC update**, if one newer than BIOS 1.08 / EC 1.8 exists. An EC flash reboots the EC,
+   but the update runs from Windows (see below).
+
+**Do not boot Windows while the EC is stuck.** When it starts, the Goodix driver sends the full init and
+retries it, and the full init sent into this state is exactly what killed the keyboard in Run 12.
+
+### The vendor's handshake, read from the driver log (observed, 2026-09-30)
+
+Run 11's framing question was marked unanswerable because `dump.pcapng` holds no host→device TLS pack.
+**The driver log answers it.** Its init at 2026-09-19 23:25:41 (log clock; records #263055 onward, read
+with `goodix-evtx -from "2026-09-19 23:25:38" -to "2026-09-19 23:25:45" -text`) logs every send and
+receive of a handshake that completed in 172 ms:
+
+```
+time (log)     direction       record                               pack
+23:25:41.496   host → EC       0xd0 (no ACK waited for)             a0 …
+23:25:41.510   EC → host       ClientHello, 47-byte body            type 0xb, 52 bytes
+23:25:41.511   host → EC       ServerHello, 86-byte record          "SENT DATA LEN: 86, 90"
+23:25:41.572   host → EC       ServerHelloDone, 9-byte record       "SENT DATA LEN: 9, 13"
+23:25:41.574   EC → host       ClientKeyExchange, identity "Client_identity" (26 bytes)
+23:25:41.596   EC → host       ChangeCipherSpec (6 bytes)
+23:25:41.601   EC → host       Finished, 80-byte encrypted body (85 bytes)
+23:25:41.601   host → EC       ChangeCipherSpec, 6-byte record      "SENT DATA LEN: 6, 10"
+23:25:41.667   host → EC       Finished, 85-byte record             "SENT DATA LEN: 85, 89"
+23:25:41.668                   "TLS handshake over successfully."
+```
+
+What it settles:
+
+- **The vendor sends one pack per record**, in both directions: ServerHello and ServerHelloDone are two
+  sends, each wrapped in its own 4-byte pack header (86 → 90, 9 → 13). That is **Run 11's framing**. The
+  one-pack-per-flight change made after Run 11 moved *away* from the vendor, so it is reverted: the bridge
+  sends one pack per record by default, and `--tls-coalesce-flight` keeps the other framing for comparison.
+- **The server flight's contents match openssl's.** mbedTLS's ServerHello is 81 bytes of body, exactly
+  the length of openssl's (32-byte session id plus `renegotiation_info`, answering the EC's SCSV). There
+  is no ServerKeyExchange in the vendor's flight either: ServerHello is followed directly by the 4-byte
+  ServerHelloDone. So neither suspect Run 11 listed for the contents holds up.
+- **The EC's side is minimal**, as its ClientHello suggested: ClientKeyExchange carries only the PSK
+  identity `Client_identity`, and the EC sends its three records as three packs.
+- **Padding matches too.** The vendor's OUT transfers are padded to 64 bytes (see "Read back from the
+  captures"), and so are ours.
+
+**So what differed in Run 11 is the init, not the TLS.** The vendor's init before `0xd0` is
+`96, a8, ae, e4, a2, 82, a6, a2, 70, 98, 90` in every one of the nine logged inits. Run 11 sent all of
+that **except `0xe4`** (`preset_psk_read`, the read of the PSK hash), which was left out after the
+empty-payload wedges and proved safe with the vendor payload in Run 8. **Hypothesis, not observed:** the
+EC loads or checks its PSK slot while answering `0xe4`, and without it the TLS stack stalls when it has to
+build its ClientKeyExchange, which is the first message that needs the key slot. It fits the stall's
+position exactly: the EC went quiet at the one point where the vendor's EC sends ClientKeyExchange.
+Timing is the other remaining difference, and a small one: the vendor answered the ClientHello in 1 ms,
+Run 11 in 8 ms, well inside the vendor's own 1100 ms handshake budget (`time_wait_for_tls 1100`).
+
+The next `--tls` run therefore sends the vendor's init in full, `e4` included (`docs/bisect-runbook.md`),
+with the vendor's framing. A live `--tls` run whose steps leave out part of that init now logs a warning,
+and a stall names the missing commands first (`missingFromVendorInit` in `cmd/goodix-probe/tls.go`).
 
 ### Device identity — observed
 
