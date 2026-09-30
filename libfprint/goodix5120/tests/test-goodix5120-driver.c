@@ -33,6 +33,8 @@ typedef struct {
   gint cancel_state;
   FpiImageDeviceState cancel_phase;
   guint cancel_hits;
+  GByteArray *out_frame;
+  GPtrArray *sent_frames;
 } Fixture;
 
 static void pump (Fixture *f);
@@ -193,7 +195,7 @@ queue_image (Fixture *f)
 }
 
 static void
-peer_write (const guint8 *buf, gsize len, gpointer data)
+peer_frame (const guint8 *buf, gsize len, gpointer data)
 {
   Fixture *f = data;
   const guint8 *payload, *mp;
@@ -276,6 +278,28 @@ peer_write (const guint8 *buf, gsize len, gpointer data)
     }
 }
 
+/* Assemble successful USB submissions using the literal outer wire length.
+ * Keep usb.writes as the raw submission history for failure/packet assertions. */
+static void
+peer_write (const guint8 *buf, gsize len, gpointer data)
+{
+  Fixture *f = data;
+  if (len == 0)
+    return; /* no delivered bytes; let the real driver judge completion */
+  g_assert_cmpuint (len % 64, ==, 0);
+  g_byte_array_append (f->out_frame, buf, len);
+  g_assert_cmpuint (f->out_frame->len, >=, 4);
+  gsize packed = 4 + f->out_frame->data[1] + ((gsize) f->out_frame->data[2] << 8);
+  gsize padded = ((packed + 63) / 64) * 64;
+  g_assert_cmpuint (f->out_frame->len, <=, padded);
+  if (f->out_frame->len < padded)
+    return;
+  g_autoptr(GBytes) frame = g_bytes_new (f->out_frame->data, padded);
+  g_byte_array_set_size (f->out_frame, 0);
+  g_ptr_array_add (f->sent_frames, g_bytes_ref (frame));
+  peer_frame (g_bytes_get_data (frame, NULL), padded, f);
+}
+
 static void
 pump (Fixture *f)
 {
@@ -300,6 +324,8 @@ setup (Fixture *f, gconstpointer data)
   g_assert_no_error (error);
   g_setenv (G5120_PSK_ENV, f->key_path, TRUE);
   f->dev = g_object_new (fpi_device_goodix5120_get_type (), NULL);
+  f->out_frame = g_byte_array_new ();
+  f->sent_frames = g_ptr_array_new_with_free_func ((GDestroyNotify) g_bytes_unref);
   fake_attach (&f->usb, FP_DEVICE (f->dev));
   f->usb.write_hook = peer_write;
   f->usb.hook_data = f;
@@ -315,6 +341,8 @@ teardown (Fixture *f, gconstpointer data)
     FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
   g_object_unref (f->dev);
   fake_clear (&f->usb);
+  g_byte_array_unref (f->out_frame);
+  g_ptr_array_unref (f->sent_frames);
   SSL_free (f->client);
   SSL_CTX_free (f->ctx);
   g_assert_cmpint (g_unlink (f->key_path), ==, 0);
@@ -365,10 +393,10 @@ open_driver (Fixture *f)
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
-  for (guint i = 0; i < f->usb.writes->len; i++)
+  for (guint i = 0; i < f->sent_frames->len; i++)
     {
       gsize len, plen, mlen;
-      const guint8 *buf = g_bytes_get_data (g_ptr_array_index (f->usb.writes, i), &len);
+      const guint8 *buf = g_bytes_get_data (g_ptr_array_index (f->sent_frames, i), &len);
       const guint8 *payload, *mp;
       guint8 flags, cmd;
       g_assert_true (g5120_pack_decode (buf, len, &flags, &payload, &plen, NULL));
@@ -384,17 +412,30 @@ open_driver (Fixture *f)
 static guint8
 pending_command (Fixture *f)
 {
-  const guint8 *payload, *mp;
-  gsize plen, mlen;
-  guint8 flags, cmd;
   FpiUsbTransfer *t = f->usb.pending;
-  if (!t || (t->endpoint & 0x80))
+  if (!t || (t->endpoint & 0x80) || f->out_frame->len)
     return 0;
-  g_assert_true (g5120_pack_decode (t->buffer, t->length, &flags, &payload, &plen, NULL));
-  if (flags != 0xa0)
+  /* The first packet identifies a command before its complete payload arrives. */
+  g_assert_cmpuint (t->length, >=, 7);
+  if (t->buffer[0] != 0xa0)
     return 0;
-  g_assert_true (g5120_message_decode (payload, plen, &cmd, &mp, &mlen, NULL));
-  return cmd;
+  return t->buffer[4];
+}
+
+/* Changing OUT to one whole padded frame must fail this transport contract.
+ * The strict init peer still checks every logical command byte independently. */
+static void
+test_packet_writes (Fixture *f, gconstpointer data)
+{
+  f->check_init = TRUE;
+  open_driver (f);
+  for (guint i = 0; i < f->usb.writes->len; i++)
+    {
+      GBytes *packet = g_ptr_array_index (f->usb.writes, i);
+      g_assert_cmpuint (g_bytes_get_size (packet), ==, 64);
+    }
+  g_assert_cmpuint (f->usb.writes->len, >, f->sent_frames->len);
+  g_assert_cmpuint (f->out_frame->len, ==, 0);
 }
 
 static void
@@ -1207,6 +1248,8 @@ replace_init_reply (Fixture *f, const InitReply *reply, const guint8 *bytes, gsi
     {
       before_command (f, reply->cmd);
       g_assert_true (fake_usb_step (&f->usb));
+      while (f->out_frame->len)
+        g_assert_true (fake_usb_step (&f->usb));
     }
   fake_drop_replies (&f->usb);
   if (reply->cmd != 0xae)
@@ -1224,6 +1267,50 @@ assert_init_rejected (Fixture *f, guint8 cmd)
                    cmd == 0xa8 ? FP_DEVICE_ERROR_NOT_SUPPORTED : FP_DEVICE_ERROR_PROTO);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
   g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_false (f->usb.claimed);
+  g_assert_null (f->usb.pending);
+}
+
+/* A failure at any packet of the four-packet config must stop the entire
+ * write and complete open only once, without any following submission. */
+static void
+test_packet_failure (Fixture *f, gconstpointer data)
+{
+  guint index = GPOINTER_TO_UINT (data);
+  guint packet = index / 4, mode = index % 4;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  before_command (f, 0x90);
+  for (guint i = 0; i < packet; i++)
+    g_assert_true (fake_usb_step (&f->usb));
+  g_assert_nonnull (f->usb.pending);
+  g_assert_cmpuint (f->usb.pending->length, ==, 64);
+  g_assert_cmphex (f->usb.pending->endpoint, ==, 0x01);
+  guint writes = f->usb.writes->len;
+  GError *error = mode == 2 ? g_error_new_literal (G_IO_ERROR, G_IO_ERROR_FAILED, "write failed") :
+                  mode == 3 ? g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "write cancelled") : NULL;
+  fake_usb_complete (&f->usb, NULL, mode == 0 ? 7 : 0, error);
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_false (f->usb.claimed);
+  g_assert_null (f->usb.pending);
+}
+
+static void
+test_packet_budget (Fixture *f, gconstpointer data)
+{
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  before_command (f, 0x90);
+  guint writes = f->usb.writes->len;
+  fake_advance_time (1000 * 1000);
+  g_assert_true (fake_usb_step (&f->usb));
+  g_assert_nonnull (f->usb.pending);
+  g_assert_cmpuint (f->usb.timeout, <=, 1000);
+  fake_advance_time (1000 * 1000);
+  g_assert_true (fake_usb_step (&f->usb));
+  g_assert_error (f->usb.notify.error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes + 1);
   g_assert_false (f->usb.claimed);
   g_assert_null (f->usb.pending);
 }
@@ -1374,6 +1461,19 @@ main (int argc, char **argv)
       memcpy (r->bytes, bytes->data, r->len);
     }
   g_test_add ("/goodix5120/driver/shared-init", Fixture, NULL, setup, test_shared_init, teardown);
+  g_test_add ("/goodix5120/driver/packet-writes", Fixture, NULL, setup,
+              test_packet_writes, teardown);
+  g_test_add ("/goodix5120/driver/packet-budget", Fixture, NULL, setup,
+              test_packet_budget, teardown);
+  const char *packet_errors[] = { "short", "zero", "io", "cancel" };
+  for (guint packet = 0; packet < 4; packet++)
+    for (guint mode = 0; mode < G_N_ELEMENTS (packet_errors); mode++)
+      {
+        g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/packet-failure/%u/%s",
+                                                 packet, packet_errors[mode]);
+        g_test_add (name, Fixture, GUINT_TO_POINTER (packet * 4 + mode), setup,
+                    test_packet_failure, teardown);
+      }
   g_test_add ("/goodix5120/driver/psk-reply/run8", Fixture, NULL, setup,
               test_psk_reply_run8, teardown);
   g_test_add ("/goodix5120/driver/psk-reply/request-echo", Fixture, NULL, setup,

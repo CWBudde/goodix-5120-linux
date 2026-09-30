@@ -36,6 +36,7 @@ fp_image_class_init (FpImageClass *klass)
 }
 
 gint64 fake_monotonic_time (void) { return virtual_time; }
+void fake_advance_time (gint64 usec) { virtual_time += usec; }
 
 FpImage *
 fp_image_new (gint width, gint height)

@@ -178,18 +178,76 @@ submit_read (FpiSsm *ssm, FpDevice *dev, guint timeout, GCancellable *cancel,
   fpi_usb_transfer_submit (transfer, timeout, cancel, cb, NULL);
 }
 
-/* Writes one padded frame. @frame is consumed. */
+typedef struct {
+  FpiSsm *ssm;
+  GByteArray *frame;
+  gsize offset;
+  gint64 deadline;
+  FpiUsbTransferCallback callback;
+} PacketWrite;
+
+static void packet_write_next (PacketWrite *write, FpDevice *dev);
+
+static void
+packet_write_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  PacketWrite *write = user_data;
+  FpiUsbTransferCallback callback = write->callback;
+
+  /* Pinned libfprint's short_is_error check excludes zero-byte completions.
+   * Do not advance the stream unless the complete packet was written. */
+  if (!error && transfer->actual_length != G5120_USB_PACKET_SIZE)
+    error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED,
+                                 "OUT packet did not write exactly 64 bytes");
+  if (!error)
+    {
+      write->offset += G5120_USB_PACKET_SIZE;
+      if (write->offset < write->frame->len)
+        {
+          if (g_get_monotonic_time () < write->deadline)
+            {
+              packet_write_next (write, dev);
+              return;
+            }
+          error = g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                       "OUT frame exceeded its write budget");
+        }
+    }
+
+  /* Complete the caller's exchange only once, after the whole frame or the
+   * first failed packet. Release ownership before its reentrant callback. */
+  g_byte_array_unref (write->frame);
+  g_free (write);
+  callback (transfer, dev, NULL, error);
+}
+
+static void
+packet_write_next (PacketWrite *write, FpDevice *dev)
+{
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
+  guint8 *data = g_memdup2 (write->frame->data + write->offset, G5120_USB_PACKET_SIZE);
+  gint64 remaining = write->deadline - g_get_monotonic_time ();
+  guint timeout = (guint) CLAMP ((remaining + 999) / 1000, 1, G5120_TIMEOUT_OUT);
+
+  transfer->ssm = write->ssm;
+  transfer->short_is_error = TRUE;
+  fpi_usb_transfer_fill_bulk_full (transfer, G5120_EP_OUT, data, G5120_USB_PACKET_SIZE, g_free);
+  fpi_usb_transfer_submit (transfer, timeout, NULL, packet_write_cb, write);
+}
+
+/* Consume a padded frame and submit one completed 64-byte OUT at a time,
+ * matching the Go reference. Keep the original budget for the whole frame. */
 static void
 submit_write (FpiSsm *ssm, FpDevice *dev, GByteArray *frame, FpiUsbTransferCallback cb)
 {
-  FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
-  gsize len = frame->len;
-  guint8 *data = g_byte_array_free (frame, FALSE);
+  PacketWrite *write = g_new0 (PacketWrite, 1);
 
-  transfer->ssm = ssm;
-  transfer->short_is_error = TRUE;
-  fpi_usb_transfer_fill_bulk_full (transfer, G5120_EP_OUT, data, len, g_free);
-  fpi_usb_transfer_submit (transfer, G5120_TIMEOUT_OUT, NULL, cb, NULL);
+  g_assert (frame->len > 0 && frame->len % G5120_USB_PACKET_SIZE == 0);
+  write->ssm = ssm;
+  write->frame = frame;
+  write->deadline = g_get_monotonic_time () + (gint64) G5120_TIMEOUT_OUT * 1000;
+  write->callback = cb;
+  packet_write_next (write, dev);
 }
 
 /* Classifies one IN transfer relative to the command @expect. It records what

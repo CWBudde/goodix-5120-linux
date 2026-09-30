@@ -45,3 +45,4 @@ void fake_drop_replies (FakeUsb *);
 /* Complete at most one submitted transfer, asynchronously relative to submit. */
 gboolean fake_usb_step (FakeUsb *);
 void fake_usb_complete (FakeUsb *, const guint8 *, gsize, GError *);
+void fake_advance_time (gint64);

@@ -30,6 +30,13 @@ The adapter asserts one outstanding transfer and tracks live machines. Fixture t
 An OpenSSL memory-BIO client starts on `0xd0` and exchanges actual TLS records through framed USB replies.
 Unexpected outbound opcodes fail the test. Open command order, decoded sample values and lifecycle notifications
 have independent literal expectations. Timeouts advance a virtual monotonic clock instead of sleeping.
+The peer assembles completed OUT submissions by the outer wire length before decoding a frame;
+the raw submission history remains available separately. A strict init test requires each OUT
+submission to be exactly 64 bytes, matching the Go reference. Sixteen failure cases cover short,
+zero-byte, I/O-error and cancelled completion at each packet of the four-packet config write.
+An aggregate-deadline case requires a shrinking timeout and forbids the next packet after expiry.
+Pinned libfprint's `short_is_error` excludes zero completions, so the driver checks their length itself;
+the fake preserves that upstream behavior rather than concealing the production guard.
 
 Enrollment processing completion is separately controllable. Intermediate stages require processing and lift;
 the final processing completion deactivates immediately. Tests cover both orders and completion after cancellation.
@@ -85,6 +92,8 @@ utilities; it is absent from shipped command dependencies.
 This adapter does not run libfprint's action framework, GUsb, libusb, Pixman or NBIS. Fake resizing preserves ownership
 and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. It cannot validate
 enrollment quality, matching, timing, suspend or EC recovery.
+Packet assembly models the wire contract, not the EC firmware's receive buffers or scheduling;
+passing packet tests does not establish why the real EC sent Run 24's TLS `decode_error`.
 
 Phase 6b offline coverage includes shared independent fixtures. Failed sessions require close/reopen;
 the fake EC does not establish that reopening recovers real hardware. GUsb may detach a kernel driver before an
