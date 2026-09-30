@@ -112,17 +112,26 @@ var vendorInit = []step{
 }
 
 // vendorLoop is the part of the vendor's steady-state capture loop whose payload
-// is a fixed constant. Observed in `dump.pcapng` and corroborated by the driver
+// is on record. Observed in `dump.pcapng` and corroborated by the driver
 // log (docs/protocol.md, "Capture loop").
 //
-// It holds one frame, and the omissions are the point. The finger-detect arms
-// (`0x32`, `0x34`, `0x36`) carry six per-zone thresholds the driver derives at
-// runtime from the previous readings, so there is no vendor payload to copy —
-// which is why PLAN.md Phase 5d comes after a frame has been captured by hand.
-// `0x50` (nav mode) appears in the driver log but in neither USB capture, so its
-// payload is hearsay and it stays out.
+// The finger-detect arms `0x32` and `0x34` carry six per-zone thresholds the
+// driver derives at run time from the previous readings, so no one payload is
+// THE payload: the entries below are single arms from dump.pcapng, kept so the
+// catalogue has a vendor frame for each and so --wait-finger has a starting
+// point. parseSteps refuses them as steps (fdtArm); only --wait-finger sends
+// them, with thresholds from proto.DownThresholds and proto.UpThresholds.
+// `0x36` (manual) is left out: the loop does not need it. `0x50` (nav mode)
+// appears in the driver log but in neither USB capture, so its payload is
+// hearsay and it stays out.
 var vendorLoop = []step{
 	{0x20, []byte{0x01, 0x00}, "get one image", "the frame arrives as an encrypted TLS record, not as a message"},
+	{opFDTDown, []byte{0x0c, 0x01, 0x80, 0xb8, 0x80, 0xc5, 0x80, 0xab, 0x80, 0xb9, 0x80, 0xaa, 0x80, 0xb9, 0xec, 0x5f},
+		"arm finger-down detection",
+		"frame 27 of dump.pcapng; thresholds and timestamp are derived at run time, and --wait-finger starts from these"},
+	{opFDTUp, []byte{0x0e, 0x01, 0x80, 0x83, 0x80, 0xa1, 0x80, 0x75, 0x80, 0x9d, 0x80, 0x19, 0x80, 0xa9},
+		"arm finger-up detection",
+		"frame 33 of dump.pcapng; thresholds are derived at run time from the finger-down event"},
 }
 
 // steps is what the probe sends to live hardware. It is deliberately one

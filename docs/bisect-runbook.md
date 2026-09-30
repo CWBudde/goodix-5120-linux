@@ -324,6 +324,45 @@ fingerprint:
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
 ```
 
+## `--wait-finger` — capture on touch (PLAN.md Phase 5d)
+
+`--wait-finger` replaces "take a frame now" with the vendor's loop, once round: arm finger-down (`0x32`),
+wait for the touch, take the frame (`0x20`), arm finger-up (`0x34`), wait for the lift. The thresholds
+in both arms are computed from the EC's own readings, the way the vendor computes them
+(`docs/protocol.md`, "Finger detection: where the thresholds come from"). Neither arm can be a `--steps`
+entry, because neither has a fixed payload.
+
+```sh
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --capture captures/frame-2.pgm \
+  --wait-finger --finger-timeout 30s \
+  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --allow-20 \
+  --allow-32 --allow-34 --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
+```
+
+Keep the finger **off** the sensor until the log says `>>> TOUCH THE SENSOR`, and lift it when it says
+`>>> LIFT THE FINGER`. What to write down:
+
+- whether the first arm drew a **base-invalid** event (header `80 00 00 00`) and how many re-arms it took;
+- the down event's **flags** (`0x3f` = all six zones) and the six readings, down and up — they are
+  capacitance per zone, not an image, and fine to record;
+- whether the frame looks like Run 20's.
+
+If no finger-up event arrives in time the run still succeeds — the frame is already written — and the EC
+is left armed for the lift, which is also where the vendor leaves it. The drain picks the event up if it
+comes late.
+
+**`captures/` is on NTFS here**, which ignores the `0600` the probe asks for. For a biometric file, a path
+on a Linux filesystem (e.g. `~/goodix-captures/`) keeps the permission.
+
+Rehearse it first. The stand-in answers the first arm with a base-invalid event and the second with a
+finger-down, both taken from `dump.pcapng`, so the re-arm path runs too:
+
+```sh
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
+  --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s
+```
+
 ## Afterwards
 
 - Append the run to `docs/protocol.md` as the next "Run N" — Run 4 is the latest. Include the log and the

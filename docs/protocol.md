@@ -1196,7 +1196,8 @@ TX 34 FDT up    [0e 01 + 6 × (80 xx)]                     → ACK … RX 34 eve
 `ff` is a flags byte (seen: `2f`, `37`, `3d`, `3e`, `3f`), probably a touched-zone mask.
 
 The driver's own legend: FDT mode "1Down2Up3Manual" = `0x32`/`0x34`/`0x36`. The six `80 xx` pairs are
-per-zone thresholds derived from the last FDT readings (hypothesis). An `0x32` event starting with
+per-zone thresholds derived from the last FDT readings — the exact rules are in "Finger detection: where
+the thresholds come from" below. An `0x32` event starting with
 `80` (not `02`) comes back ~30 ms after an arm whose thresholds were far from the base, and the driver
 re-arms at once with fresh thresholds. Hypothesis: "base invalid". `0x50` (payload `01 00`) is "nav" mode,
 sent after each finger-up — **according to the driver log only; `0x50` does not appear anywhere in
@@ -1210,6 +1211,43 @@ bit 1 (`0x02`), which the driver logs as 1 for `0x13` and `0x02` and 0 for `0x11
 cannot be attributed: bit 0 (`0x01`) and bit 4 (`0x10`) are set together in `0x11` and `0x13` and clear
 together in `0x02`, so the evidence cannot separate them, and they may be one two-bit field.
 `internal/proto.DecodeMCUState` offers bit 0 under that caveat and keeps all 20 bytes raw.
+
+### Finger detection: where the thresholds come from (observed, 2026-09-30)
+
+Until now the six `80 xx` bytes of an arm were "derived from the last FDT readings (hypothesis)". The
+derivation is now pinned, from two independent sources that agree:
+
+- **The wire.** Every arm in `dump.pcapng` except the first (whose inputs predate the capture) was
+  recomputed from the event before it: **68 of 68 match** (25 `0x32`, 43 `0x34`).
+- **The driver log.** Its `fdt_upbase[i]` lines print the up thresholds (as `0xTT80`, i.e. the two wire
+  bytes read little-endian) next to their inputs: `received fdt base::<the down event's six readings>`,
+  `diff_use 27` and `touchflag`. It also gives the margin's origin at init: `default fdt delta 21`, then
+  `OTP tcode 272, fdt delta 27`.
+
+The rules, with `z[i]` the event's `uint16` readings and `flags` its third header byte:
+
+| arm | derived from | threshold for zone *i* |
+|---|---|---|
+| `0x32` down | readings with **no finger**: an up event or a base-invalid event | `z[i] >> 1` |
+| `0x34` up | the **finger-down** event | `(z[i] >> 1) + 27` if bit *i* of `flags` is set, else `0x19` |
+
+So `flags` really is the touched-zone mask: bit *i* clear means the finger missed zone *i*, and that
+zone's up threshold drops to `0x19`. 27 is this device's delta from its OTP; how the OTP yields it is
+not known, so the code uses the observed constant (`proto.FDTDeltaObserved`).
+
+**Correction: a base-invalid event is not zeroed.** Its header is `80 00 00 00`, but its six readings are
+the EC's current untouched values (e.g. `0x171 0x18c 0x156 0x172 0x154 0x172`), and the driver re-arms
+from exactly those. That is how a stale base heals itself: the arm after a finger that was not quite
+lifted (`up` readings `0x151 0x186 0xfb …`) has thresholds far from the true base, the EC answers
+base-invalid about 30 ms later, and the next arm is right.
+
+The untouched readings are stable across weeks: the 2026-08-15 log and the 2026-09-19 capture differ by
+a few counts per zone. The vendor's steady down arm, `b8 c5 ab b9 aa b9`, is therefore where
+`--wait-finger` starts; if it no longer fits, base-invalid corrects it. The `uint16` at the end of a
+`0x32` arm is a millisecond counter: frame 2 to frame 27 advance it by 3400 over 3.401 s.
+
+Implemented as `proto.DownThresholds` / `proto.UpThresholds` (tested against capture pairs), and used by
+`goodix-probe --wait-finger` (PLAN.md Phase 5d), which runs `32` → `20` → `34` once. Not yet run live.
 
 ### Read back from the captures (observed, 2026-09-19)
 

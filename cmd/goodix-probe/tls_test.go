@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"goodix5120/internal/image"
 	"goodix5120/internal/proto"
@@ -100,6 +101,14 @@ func TestParseStepsNeedsTheFlagForEveryNewOpcode(t *testing.T) {
 			}
 
 			ops, err := parseSteps(hex, u.op)
+			if fdtArm(u.op) {
+				// The finger-detect arms have no fixed payload, so the flag
+				// admits them to --wait-finger and never to --steps.
+				if err == nil || !strings.Contains(err.Error(), "--wait-finger") {
+					t.Fatalf("--steps %s with the flag set = %v, want a refusal naming --wait-finger", hex, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("--steps %s with the flag set = %v", hex, err)
 			}
@@ -164,6 +173,30 @@ func TestTLSConfigValidate(t *testing.T) {
 			cfg:     tlsConfig{enabled: true, pskPath: "k.bin"},
 			steps:   []proto.Opcode{0xa8, 0xae},
 			allowed: allowD0,
+		},
+		{
+			name:    "--wait-finger without --capture",
+			cfg:     tlsConfig{enabled: true, pskPath: "k.bin", waitFinger: true, armDown: true, armUp: true, fingerTimeout: time.Second},
+			allowed: allowD0,
+			wantErr: "needs --capture",
+		},
+		{
+			name: "--wait-finger without --allow-34",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, armDown: true, fingerTimeout: time.Second},
+			allowed: allowD0And20,
+			wantErr: "--allow-34",
+		},
+		{
+			name:    "--wait-finger without --tls",
+			cfg:     tlsConfig{waitFinger: true},
+			wantErr: "only mean something with --tls",
+		},
+		{
+			name: "capture on touch",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, armDown: true, armUp: true, fingerTimeout: time.Second},
+			allowed: allowD0And20,
 		},
 		{
 			name:    "handshake and capture",

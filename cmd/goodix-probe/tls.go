@@ -51,6 +51,14 @@ type tlsConfig struct {
 	sendD4   bool
 	getImage bool
 
+	// waitFinger takes the frame when the EC reports a finger instead of at
+	// once (PLAN.md Phase 5d); fingerTimeout bounds each wait. armDown and
+	// armUp record whether the two arms it sends were unlocked.
+	waitFinger    bool
+	fingerTimeout time.Duration
+	armDown       bool
+	armUp         bool
+
 	// coalesceFlight sends a server flight as one b0 pack instead of one pack
 	// per record. See session.Options.CoalesceFlight.
 	coalesceFlight bool
@@ -109,6 +117,12 @@ func (c tlsConfig) opcodes() []proto.Opcode {
 	if c.getImage {
 		ops = append(ops, opGetImage)
 	}
+	if c.waitFinger && c.armDown {
+		ops = append(ops, opFDTDown)
+	}
+	if c.waitFinger && c.armUp {
+		ops = append(ops, opFDTUp)
+	}
 	return ops
 }
 
@@ -116,8 +130,8 @@ func (c tlsConfig) opcodes() []proto.Opcode {
 // costs a message rather than a live run.
 func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool) error {
 	if !c.enabled {
-		if c.pskPath != "" || c.capture != "" || c.coalesceFlight {
-			return errors.New("--psk, --capture and --tls-coalesce-flight only mean something with --tls")
+		if c.pskPath != "" || c.capture != "" || c.coalesceFlight || c.waitFinger {
+			return errors.New("--psk, --capture, --wait-finger and --tls-coalesce-flight only mean something with --tls")
 		}
 		return nil
 	}
@@ -136,6 +150,17 @@ func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool)
 	}
 	if c.capture != "" && !c.getImage {
 		return fmt.Errorf("--capture asks the EC for a frame with mcu_get_image (0x%02x), which needs --allow-20", byte(opGetImage))
+	}
+	if c.waitFinger {
+		switch {
+		case c.capture == "":
+			return errors.New("--wait-finger waits for a finger in order to take a frame; it needs --capture")
+		case !c.armDown || !c.armUp:
+			return fmt.Errorf("--wait-finger arms fdt_down (0x%02x) and fdt_up (0x%02x), which need --allow-32 and --allow-34",
+				byte(opFDTDown), byte(opFDTUp))
+		case c.fingerTimeout <= 0:
+			return errors.New("--finger-timeout must be positive")
+		}
 	}
 	return nil
 }
@@ -246,6 +271,9 @@ func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg
 	if cfg.capture == "" {
 		logger.Printf("  no --capture given, so no image is requested")
 		return nil
+	}
+	if cfg.waitFinger {
+		return captureOnTouch(ctx, logger, tr, bridge, cfg, rehearsal)
 	}
 	return captureFrame(ctx, logger, tr, bridge, cfg.capture, rehearsal)
 }

@@ -247,6 +247,8 @@ const (
 	opFirmwareVer    proto.Opcode = 0xa8
 	opMCUState       proto.Opcode = 0xae
 	opGetImage       proto.Opcode = 0x20
+	opFDTDown        proto.Opcode = 0x32
+	opFDTUp          proto.Opcode = 0x34
 	opIdle           proto.Opcode = 0x70
 	opPSKRead        proto.Opcode = 0xe4
 	opRequestTLS     proto.Opcode = 0xd0
@@ -283,6 +285,8 @@ var unlockable = []unlock{
 	{opRequestTLS, "allow-d0", "bisect: also accept request_tls_connection (0xd0). Payload 00 00; answered with NO ACK — the EC then opens a TLS handshake as the client. With --tls the bridge sends this itself, so leave it out of --steps"},
 	{opTLSEstablished, "allow-d4", "bisect: also accept tls_successfully_established (0xd4). Payload 00 00; the vendor sends it right after the handshake completes. With --tls the bridge sends it on success"},
 	{opGetImage, "allow-20", "bisect: also accept mcu_get_image (0x20). Payload 01 00; asks the EC for one frame, which arrives as an encrypted TLS record. Needed by --capture (PLAN.md Phase 5c)"},
+	{opFDTDown, "allow-32", "bisect: let --wait-finger send fdt_down (0x32). Arms the EC to report a finger with one unsolicited event; the six thresholds are derived from the EC's own readings the way the vendor derives them (docs/protocol.md). Never a --steps entry. PLAN.md Phase 5d"},
+	{opFDTUp, "allow-34", "bisect: let --wait-finger send fdt_up (0x34). Arms the EC to report the finger lifting; thresholds derived from the finger-down event, as the vendor does. Never a --steps entry. PLAN.md Phase 5d"},
 }
 
 // unlockFor returns the catalogue entry for op.
@@ -314,6 +318,10 @@ func parseSteps(list string, allow ...proto.Opcode) ([]proto.Opcode, error) {
 			return nil, fmt.Errorf("bad opcode %q: %w", field, err)
 		}
 		op := proto.Opcode(v)
+		if fdtArm(op) {
+			return nil, fmt.Errorf("opcode 0x%02x (%s) is not a step: its thresholds come from the EC's "+
+				"previous readings, so only --wait-finger sends it (with --%s)", byte(op), op.Name(), mustUnlock(op).flag)
+		}
 		if _, ok := stepFor(op); !ok {
 			return nil, fmt.Errorf("opcode 0x%02x is not a safe command with a known vendor payload", byte(op))
 		}
@@ -323,6 +331,12 @@ func parseSteps(list string, allow ...proto.Opcode) ([]proto.Opcode, error) {
 		out = append(out, op)
 	}
 	return out, nil
+}
+
+// mustUnlock is unlockFor for an opcode known to be in the table.
+func mustUnlock(op proto.Opcode) unlock {
+	u, _ := unlockFor(op)
+	return u
 }
 
 // needsAllow explains that op is above the safe ceiling and names the flag that

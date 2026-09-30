@@ -131,11 +131,12 @@ keyboard checks. The runbook has the exact command lines.
       reproduced exactly from a synthetic 7680-byte frame, so the padding arithmetic is now verified
       against openssl rather than only calculated. *To do:* the live run, and **write the plaintext length
       down** — it is the measurement that settles the layout.
-- [ ] **5d — Finger-detection (FDT) loop.** Not started, and deliberately last. `proto.EncodeFDTArm` and
-      `DecodeFDTEvent` exist, but an arm carries six per-zone thresholds the vendor derives at runtime from
-      the previous readings, so there is no vendor payload to copy — the thresholds have to come from real
-      FDT events, which means 5c first. Then implement the `32` / `20` / `34` loop so a capture is
-      triggered by touch.
+- [ ] **5d — Finger-detection (FDT) loop.** Implemented offline (2026-09-30), **awaiting a live run**.
+      The threshold rules turned out to be recoverable from `dump.pcapng` and the driver log (68 of 68
+      arms reproduced; `docs/protocol.md`, "Finger detection: where the thresholds come from"), so real
+      FDT events were not needed first. `goodix-probe --wait-finger` (behind `--allow-32 --allow-34`)
+      runs `32` → `20` → `34` once, re-arming on base-invalid; rehearsed offline. The live command is in
+      `docs/bisect-runbook.md`.
 
 **If the recovered PSK is rejected in 5b**, in order of preference:
 1. Re-audit the unseal (secondary entropy, master key) — 5b is the first real test of the recovered key.

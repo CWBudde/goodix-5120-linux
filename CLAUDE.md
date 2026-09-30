@@ -43,6 +43,9 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
+  --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s   # Phase 5d: capture on touch
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --steps a8 --rehearse-rejection   # what a PSK the EC rejects looks like
 
 go build -buildvcs=false ./cmd/goodix-pcap

@@ -52,11 +52,13 @@ func main() {
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
 		readState  = flag.Bool("read-state", false, "bisect: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to find out why, then stop. Live only: 0xae is the one command the stuck EC answered in Run 12, and its status and counter tell a failed cold power cycle from a new fault")
 
-		useTLS   = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
-		pskPath  = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
-		capture  = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
-		wrongPSK = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
-		coalesce = flag.Bool("tls-coalesce-flight", false, "--tls: send all records of a server flight in ONE b0 pack, the way openssl writes them. The default is one pack per record, which is what the vendor driver sends; this is kept for comparison only")
+		useTLS        = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
+		pskPath       = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
+		capture       = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
+		waitFinger    = flag.Bool("wait-finger", false, "--tls --capture: arm finger detection and take the frame when the EC reports a touch, then wait for the lift (PLAN.md Phase 5d). Needs --allow-32 and --allow-34")
+		fingerTimeout = flag.Duration("finger-timeout", 30*time.Second, "--wait-finger: how long to wait for the touch, and again for the lift")
+		wrongPSK      = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
+		coalesce      = flag.Bool("tls-coalesce-flight", false, "--tls: send all records of a server flight in ONE b0 pack, the way openssl writes them. The default is one pack per record, which is what the vendor driver sends; this is kept for comparison only")
 	)
 
 	// One --allow-<opcode> flag per above-ceiling opcode, registered from the
@@ -77,7 +79,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if *useTLS || *pskPath != "" || *capture != "" || *coalesce {
+		if *useTLS || *pskPath != "" || *capture != "" || *coalesce || *waitFinger {
 			logger.Print("--tls, --psk and --capture only work with --bisect: the bridge runs as the tail of a " +
 				"bisect run so it inherits the keyboard checks (see docs/bisect-runbook.md)")
 			os.Exit(1)
@@ -114,6 +116,11 @@ func main() {
 			capture:  *capture,
 			sendD4:   allowed[opTLSEstablished],
 			getImage: allowed[opGetImage],
+
+			waitFinger:    *waitFinger,
+			fingerTimeout: *fingerTimeout,
+			armDown:       allowed[opFDTDown],
+			armUp:         allowed[opFDTUp],
 
 			coalesceFlight: *coalesce,
 		}
@@ -496,8 +503,9 @@ func dryRunFrames(logger *log.Logger) {
 		printFrame(logger, fmt.Sprintf("#%d ", i+1), st)
 	}
 
-	logger.Printf("\n\n=== the vendor's capture loop, the part with a fixed payload ===")
-	logger.Printf("observed in dump.pcapng. Only --tls --capture sends this, and only behind --allow-20.")
+	logger.Printf("\n\n=== the vendor's capture loop ===")
+	logger.Printf("observed in dump.pcapng. Only --tls --capture sends 0x20 (behind --allow-20), and only --wait-finger")
+	logger.Printf("sends the arms (behind --allow-32/--allow-34), with thresholds derived at run time rather than these.")
 	for _, st := range vendorLoop {
 		printFrame(logger, "", st)
 	}

@@ -261,6 +261,16 @@ func (e *LoopbackEC) SendPlaintext(b []byte) error {
 	return nil
 }
 
+// SendEvent makes the stand-in emit an unsolicited plaintext message, queued
+// behind any ACK not yet read, which is how a rehearsal simulates a
+// finger-detect event after an arm. Like SendPlaintext, the caller supplies the
+// bytes: the stand-in does not invent the EC's replies.
+func (e *LoopbackEC) SendEvent(cmd proto.Opcode, payload []byte) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.queue = append(e.queue, proto.Encode(cmd, payload))
+}
+
 // Commands returns every opcode the stand-in was sent, in order. A rehearsal can
 // assert on the sequence without the probe having to report it.
 func (e *LoopbackEC) Commands() []proto.Opcode {
