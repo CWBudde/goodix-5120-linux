@@ -258,12 +258,25 @@ remaining 6a acceptance check. Phase 6b / 6c gates still apply.
       detection disabled under ptrace; `just check` and Go race tests pass. Independent review caught
       two adapter ordering/cancellation gaps, now covered by regressions. Mutation checks confirm
       tests reject negative-ACK acceptance, missing session cleanup and post-cancellation rearming.
-      The remaining 6b items below and the owner-only sudo check in 6a stay open.
-- [ ] **Validate init reply contents before continuing.** `xchg_recv_cb` currently accepts any
+      At that point the remaining 6b items below and the owner-only sudo check in 6a stayed open.
+- [x] **Validate init reply contents before continuing.** `xchg_recv_cb` previously accepted any
       correctly framed data payload with the expected command after its ACK. Validate known response
       lengths and status fields, including chip ID. `OPEN_LOG_MCU_STATE` must refuse a truncated state
       or an unset `isTlsConnected` bit instead of succeeding with a warning. Tests must verify that
       no subsequent command is written after a rejected response.
+      **Done 2026-09-30:** both firmware replies require the exact supported name with an optional
+      trailing NUL; all init data replies require their documented lengths. Reset / DAC / config
+      status bytes, chip ID `0x2504`, and the PSK-hash type/length header are checked before advancing
+      the exchange. The final 20-byte MCU state must report TLS connected. Hash, OTP, MCU counters,
+      and the unexplained PSK trailing byte remain opaque; no new device commands were introduced.
+      **Verified:** 68 added lifecycle cases cover empty / short / oversized replies, every known
+      status/header byte, hidden firmware suffixes, and valid opaque-field variation. Rejection
+      asserts no later USB write, one failed open, and no pending transfer. Before the fix, 57 cases
+      failed as expected. All 107 driver and 43 helper subtests now pass, also under ASan/UBSan with
+      leak detection disabled under ptrace; `just check` and Go race tests pass (existing formatting
+      differences remain). Independent review found no actionable issues. Four mutation checks
+      catch missing validation, unchecked chip ID, an unset TLS bit, and a non-NUL terminator.
+      The five remaining 6b tasks and the owner-only sudo check in 6a still gate the first hardware run.
 - [ ] **Invalidate failed sessions.** After an image / TLS / transport failure, `session_done` retains
       the TLS object and `dev_activate` treats the session as usable for another operation. Require a
       deliberate recovery / reopen boundary rather than reusing a failed session; test late image

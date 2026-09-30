@@ -36,13 +36,19 @@ the final processing completion deactivates immediately. Tests cover both orders
 Sweeps inject unplug at every open transfer and unplug, I/O failure or deactivation at all ten operation transfers
 with a two-piece image. State-entry hooks also cancel both FDT states in each direction and all three capture states.
 
+Init regressions inject empty, truncated and oversized data at every init exchange, including both firmware/reset
+replies and the final MCU state. They change each documented status/header byte, chip ID and TLS-connected bit,
+then assert failed open with no further OUT submission. Firmware permits exactly the supported name with an optional
+NUL; hidden suffixes are rejected. Positive cases vary synthetic hashes, OTP, MCU counters and the unexplained PSK
+trailing byte to keep undocumented fields opaque. The driver suite contains 107 subtests; the helper suites add 43.
+
 ## Limits and next regression targets
 
 This adapter does not run libfprint's action framework, GUsb, libusb, Pixman or NBIS. Fake resizing preserves ownership
 and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. It cannot validate
 enrollment quality, matching, timing, suspend or EC recovery.
 
-The remaining Phase 6b tasks still require response-content validation, failed-session invalidation, completion on
+The remaining Phase 6b tasks still require failed-session invalidation, completion on
 the final permitted image read, per-operation retry reset, symmetric interface release and shared independent
 protocol fixtures. Recovery tests here use an explicit close/reopen with a healthy synthetic EC; they do not assert
 that immediate activation after a failed session is safe. Keep the first hardware-run gate in `PLAN.md`.

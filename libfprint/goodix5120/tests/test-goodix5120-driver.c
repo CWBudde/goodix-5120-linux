@@ -216,6 +216,7 @@ peer_write (const guint8 *buf, gsize len, gpointer data)
       queue_message (f, cmd, reply, 20);
       return;
     case 0xe4:
+      reply[0] = 3; reply[2] = 2; reply[3] = 0xbb; reply[4] = 0x20;
       queue_ack (f, cmd, 1);
       queue_message (f, cmd, reply, 41);
       return;
@@ -812,6 +813,146 @@ test_late_processing_after_cancel (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
 }
 
+/* Literal documented reply shapes, independent of production validation.
+ * The hash and OTP bytes are synthetic; MCU fields other than TLS are opaque. */
+typedef struct {
+  const char *name;
+  guint8 cmd;
+  guint occurrence;
+  gsize len;
+  guint8 bytes[65];
+} InitReply;
+
+static const InitReply init_replies[] = {
+  { "health-firmware", 0xa8, 1, 15, "GF_ITE_EC_20063" },
+  { "init-firmware",   0xa8, 2, 15, "GF_ITE_EC_20063" },
+  { "initial-state",   0xae, 1, 20, { 0 } },
+  { "psk-hash",        0xe4, 1, 41, { 3, 0, 2, 0xbb, 0x20, 0, 0, 0 } },
+  { "first-reset",     0xa2, 1,  3, { 1, 0, 8 } },
+  { "chip-id",         0x82, 1,  4, { 0xa2, 4, 0x25, 0 } },
+  { "otp",             0xa6, 1, 64, { 0 } },
+  { "second-reset",    0xa2, 2,  3, { 1, 0, 8 } },
+  { "dac",             0x98, 1,  2, { 1, 1 } },
+  { "config",          0x90, 1,  2, { 1, 1 } },
+  { "final-state",     0xae, 2, 20, { 0, 2 } },
+};
+
+static void
+replace_init_reply (Fixture *f, const InitReply *reply, const guint8 *bytes, gsize len)
+{
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  for (guint i = 0; i < reply->occurrence; i++)
+    {
+      before_command (f, reply->cmd);
+      g_assert_true (fake_usb_step (&f->usb));
+    }
+  fake_drop_replies (&f->usb);
+  if (reply->cmd != 0xae)
+    queue_ack (f, reply->cmd, 1);
+  queue_message (f, reply->cmd, bytes, len);
+}
+
+static void
+assert_init_rejected (Fixture *f, guint8 cmd)
+{
+  guint writes = f->usb.writes->len;
+  pump (f);
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_cmpint (f->usb.notify.error->code, ==,
+                   cmd == 0xa8 ? FP_DEVICE_ERROR_NOT_SUPPORTED : FP_DEVICE_ERROR_PROTO);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_false (f->usb.claimed);
+  g_assert_null (f->usb.pending);
+}
+
+/* Mutation target: accepting empty, truncated or oversized data and continuing
+ * init despite a valid ACK. Each occurrence is tested, including post-TLS state. */
+static void
+test_init_reply_length (Fixture *f, gconstpointer data)
+{
+  guint index = GPOINTER_TO_UINT (data);
+  const InitReply *reply = &init_replies[index / 3];
+  guint mode = index % 3;
+  gsize len = mode == 0 ? 0 : mode == 1 ? reply->len - 1 : reply->len + 1;
+  if (mode == 2 && reply->cmd == 0xa8)
+    len++; /* one trailing NUL is supported; two is an oversized reply */
+  replace_init_reply (f, reply, reply->bytes, len);
+  assert_init_rejected (f, reply->cmd);
+}
+
+/* Every known non-secret status/header byte must be checked; length alone
+ * must not admit a different chip, failed command or malformed PSK envelope. */
+typedef struct {
+  guint reply;
+  guint offset;
+} InitField;
+
+static const InitField init_fields[] = {
+  { 0, 0 }, { 1, 0 },
+  { 3, 0 }, { 3, 1 }, { 3, 2 }, { 3, 3 },
+  { 3, 4 }, { 3, 5 }, { 3, 6 }, { 3, 7 },
+  { 4, 0 }, { 4, 1 }, { 4, 2 }, { 7, 0 }, { 7, 1 }, { 7, 2 },
+  { 5, 0 }, { 5, 1 }, { 5, 2 }, { 5, 3 },
+  { 8, 0 }, { 8, 1 }, { 9, 0 }, { 9, 1 },
+  { 10, 1 },
+};
+
+static void
+test_init_reply_field (Fixture *f, gconstpointer data)
+{
+  const InitField *field = &init_fields[GPOINTER_TO_UINT (data)];
+  const InitReply *reply = &init_replies[field->reply];
+  guint8 bytes[65];
+  memcpy (bytes, reply->bytes, sizeof (bytes));
+  bytes[field->offset] ^= reply->cmd == 0xae ? 2 : 1;
+  replace_init_reply (f, reply, bytes, reply->len);
+  assert_init_rejected (f, reply->cmd);
+}
+
+static void
+test_firmware_hidden_suffix (Fixture *f, gconstpointer data)
+{
+  guint index = GPOINTER_TO_UINT (data);
+  const InitReply *reply = &init_replies[index % 2];
+  guint8 bytes[] = "GF_ITE_EC_20063\0unexpected";
+  gsize len = sizeof (bytes) - 1;
+  if (index >= 2)
+    {
+      bytes[15] = 0x5a;
+      len = 16; /* an optional terminator must be NUL, not arbitrary data */
+    }
+  replace_init_reply (f, reply, bytes, len);
+  assert_init_rejected (f, reply->cmd);
+}
+
+/* Mutation target: freezing undocumented fields or rejecting the observed
+ * NUL-terminated firmware shape. These inputs must still complete open. */
+static void
+test_init_reply_opaque (Fixture *f, gconstpointer data)
+{
+  const InitReply *reply = &init_replies[GPOINTER_TO_UINT (data)];
+  guint8 bytes[65];
+  gsize len = reply->len;
+  memcpy (bytes, reply->bytes, sizeof (bytes));
+  if (reply->cmd == 0xa8)
+    len++;
+  else if (reply->cmd == 0xe4)
+    memset (bytes + 8, 0x5a, len - 8); /* synthetic hash + unexplained last byte */
+  else if (reply->cmd == 0xa6)
+    memset (bytes, 0x5a, len);
+  else
+    {
+      memset (bytes, 0x5a, len);
+      bytes[1] = reply->occurrence == 1 ? 0xfd : 0xff;
+    }
+  replace_init_reply (f, reply, bytes, len);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+}
+
 static void
 test_final_processing_during_lift (Fixture *f, gconstpointer data)
 {
@@ -881,6 +1022,33 @@ main (int argc, char **argv)
     {
       g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/init/%s", init_names[i]);
       g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_init_reply_failure, teardown);
+    }
+  const char *length_names[] = { "empty", "short", "long" };
+  for (guint i = 0; i < G_N_ELEMENTS (init_replies); i++)
+    for (guint mode = 0; mode < 3; mode++)
+      {
+        g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/init-length/%s/%s",
+                                                 init_replies[i].name, length_names[mode]);
+        g_test_add (name, Fixture, GUINT_TO_POINTER (i * 3 + mode), setup, test_init_reply_length, teardown);
+      }
+  for (guint i = 0; i < G_N_ELEMENTS (init_fields); i++)
+    {
+      const InitField *field = &init_fields[i];
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/init-field/%s/%u",
+                                               init_replies[field->reply].name, field->offset);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_init_reply_field, teardown);
+    }
+  for (guint i = 0; i < 4; i++)
+    {
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/firmware-hidden-suffix/%u", i);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_firmware_hidden_suffix, teardown);
+    }
+  const guint opaque_replies[] = { 0, 1, 2, 3, 6, 10 };
+  for (guint i = 0; i < G_N_ELEMENTS (opaque_replies); i++)
+    {
+      guint index = opaque_replies[i];
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/init-opaque/%s", init_replies[index].name);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (index), setup, test_init_reply_opaque, teardown);
     }
   const char *image_names[] = { "wrong-layout", "timeout", "read-budget" };
   for (guint i = 0; i < G_N_ELEMENTS (image_names); i++)

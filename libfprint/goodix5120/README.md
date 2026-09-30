@@ -196,7 +196,9 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 - **actual driver:** open, activation, five synthetic enrollment stages in one TLS session, processing before/after
   lift, final-stage deactivation during lift, cancellation in every FDT/capture state and USB yield, unplug at every
   open transfer, read/write failures, short writes, timeouts, wrong ACKs, stale/unexpected messages, base-invalid
-  rearming/exhaustion, and close/reopen. The adapter preserves synchronous state-machine callbacks and asynchronous
+  rearming/exhaustion, close/reopen, and strict init reply lengths/status/chip ID/final TLS state. Rejected replies
+  must stop further writes; positive cases keep secret and undocumented fields opaque. The adapter preserves
+  synchronous state-machine callbacks and asynchronous
   USB completion; no device discovery or USB library is linked. See [the harness guide](tests/README.md) for its
   boundaries. These tests do not establish timing on hardware, matching quality, or real libfprint/GUsb integration.
 

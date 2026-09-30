@@ -319,6 +319,89 @@ missing_reply_error (FpiDeviceGoodix5120 *self)
                                    opcode_name (self->x_cmd), self->x_cmd, self->x_purpose);
 }
 
+/* Init replies documented in docs/protocol.md, "Init sequence". Only check
+ * known fields: the hash, OTP, MCU counters and final PSK byte are opaque.
+ * Errors deliberately describe the envelope, never sensitive contents. */
+static GError *
+validate_data_reply (FpiDeviceGoodix5120 *self)
+{
+  static const guint8 psk_header[] = { 3, 0, 2, 0xbb, 0x20, 0, 0, 0 };
+  static const guint8 reset_reply[] = { 1, 0, 8 };
+  static const guint8 chip_reply[] = { 0xa2, 4, 0x25, 0 };
+  static const guint8 success_reply[] = { 1, 1 };
+  const guint8 *expected = NULL;
+  gsize expected_len = 0, reply_len;
+  const guint8 *data = self->x_data->data;
+  gsize len = self->x_data->len;
+
+  switch (self->x_cmd)
+    {
+    case 0xa8:
+      {
+        gsize fw_len = strlen (G5120_FIRMWARE_TESTED);
+
+        /* The recorded reply ends in NUL; the reference also accepts an
+         * unterminated name. A NUL must not conceal extra payload bytes. */
+        if (!((len == fw_len || (len == fw_len + 1 && data[fw_len] == 0)) &&
+              memcmp (data, G5120_FIRMWARE_TESTED, fw_len) == 0))
+          return fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+                                           "firmware reply is not exactly %s with an optional "
+                                           "trailing NUL; refusing to continue init",
+                                           G5120_FIRMWARE_TESTED);
+        return NULL;
+      }
+
+    case 0xae:
+      reply_len = 20;
+      break;
+
+    case 0xe4:
+      reply_len = 41;
+      expected = psk_header;
+      expected_len = sizeof (psk_header);
+      break;
+
+    case 0xa2:
+      reply_len = expected_len = sizeof (reset_reply);
+      expected = reset_reply;
+      break;
+
+    case 0x82:
+      /* This init reads only the four-byte chip ID register reply; the
+       * supported sensor is 0x2504, encoded as a2 04 25 00. */
+      reply_len = expected_len = sizeof (chip_reply);
+      expected = chip_reply;
+      break;
+
+    case 0xa6:
+      reply_len = 64;
+      break;
+
+    case 0x98:
+    case 0x90:
+      reply_len = expected_len = sizeof (success_reply);
+      expected = success_reply;
+      break;
+
+    default:
+      return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                       "no known data reply shape for command 0x%02x; stopping",
+                                       self->x_cmd);
+    }
+
+  if (len != reply_len)
+    return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                     "%s (0x%02x) returned %" G_GSIZE_FORMAT " bytes, expected "
+                                     "%" G_GSIZE_FORMAT "; stopping before another command",
+                                     opcode_name (self->x_cmd), self->x_cmd, len, reply_len);
+  if (expected && memcmp (data, expected, expected_len) != 0)
+    return fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                     "%s (0x%02x) returned an unexpected status or header "
+                                     "(contents not logged); stopping before another command",
+                                     opcode_name (self->x_cmd), self->x_cmd);
+  return NULL;
+}
+
 static void
 xchg_recv_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
 {
@@ -379,6 +462,12 @@ xchg_recv_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GErro
                                                              "acknowledgement; the vendor's EC sends "
                                                              "the ACK first, so stopping",
                                                              opcode_name (self->x_cmd), self->x_cmd));
+              return;
+            }
+          error = validate_data_reply (self);
+          if (error)
+            {
+              fpi_ssm_mark_failed (ssm, error);
               return;
             }
           fpi_ssm_mark_completed (ssm);
@@ -803,23 +892,10 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case OPEN_CHECK_FIRMWARE:
-      {
-        g_autofree gchar *fw = g_strndup ((const gchar *) self->x_data->data, self->x_data->len);
-
-        fp_info ("firmware: %s", fw);
-        if (g_strcmp0 (fw, G5120_FIRMWARE_TESTED) != 0)
-          {
-            fpi_ssm_mark_failed (ssm,
-                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-                                                           "firmware '%s' is not %s, the only one "
-                                                           "this driver's init has been run against; "
-                                                           "refusing to send it",
-                                                           fw, G5120_FIRMWARE_TESTED));
-            return;
-          }
-        self->init_idx = 0;
-        fpi_ssm_next_state (ssm);
-      }
+      /* The exchange validated the complete payload before advancing. */
+      fp_info ("firmware: %s", G5120_FIRMWARE_TESTED);
+      self->init_idx = 0;
+      fpi_ssm_next_state (ssm);
       break;
 
     case OPEN_INIT_STEP:
@@ -870,11 +946,16 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case OPEN_LOG_MCU_STATE:
-      /* Only isTlsConnected (byte 1, bit 1) is pinned down; the rest is
-       * logged raw. The vendor sees it set at this point. */
-      if (self->x_data->len >= 2 && !(self->x_data->data[1] & 0x02))
-        fp_warn ("MCU state does not report isTlsConnected after the handshake "
-                 "(byte 1 = 0x%02x); the vendor's EC does", self->x_data->data[1]);
+      /* Only isTlsConnected (byte 1, bit 1) is pinned down. A local TLS
+       * handshake alone does not establish that the EC accepted the session. */
+      if (self->x_data->len != 20 || !(self->x_data->data[1] & 0x02))
+        {
+          fpi_ssm_mark_failed (ssm,
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                         "MCU state does not report isTlsConnected "
+                                                         "after the handshake; refusing to activate"));
+          return;
+        }
       fpi_ssm_next_state (ssm);
       break;
 
