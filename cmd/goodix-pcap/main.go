@@ -52,23 +52,13 @@ func main() {
 	}
 }
 
-// secret names the opcodes whose payloads must never be printed, whatever is
-// asked for. The 0xe4 reply carries a hash of the device PSK, the 0xa6 reply is
-// the OTP, and a TLS pack is ciphertext of a fingerprint image. This is a
-// deny list rather than a judgement call at the call site, so adding a new way
-// to print bytes cannot quietly reopen one of these.
-var secret = map[proto.Opcode]string{
-	0xe4: "the reply carries a hash of the device PSK",
-	0xa6: "the reply is the device OTP",
-}
-
 func parseShow(spec string) (proto.Opcode, error) {
 	v, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(spec)), "0x"), 16, 8)
 	if err != nil {
 		return 0, fmt.Errorf("bad -show opcode %q: %w", spec, err)
 	}
 	op := proto.Opcode(v)
-	if why, no := secret[op]; no {
+	if why, no := proto.SecretReply(op); no {
 		return 0, fmt.Errorf("refusing to print 0x%02x: %s", byte(op), why)
 	}
 	return op, nil

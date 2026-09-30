@@ -77,6 +77,13 @@ sends only the ACK. `0xae` gets no ACK at all there, which is correct — it nev
 
 ## Before
 
+0. **If the previous run used `--tls` and the handshake did not complete, reset the EC first** (step 4 of
+   "If the keyboard stops": charger plugged in, 40 s hold). An
+   unfinished handshake leaves the EC unable to answer plaintext commands, and it does not recover by itself
+   — not on a reset (`0xa2`), not on re-attach. Run 12 (2026-09-20) skipped this, sent the init into an EC
+   that was acknowledging nothing, and lost the keyboard at step 8. The probe now sends `0xa8` as a health
+   check after attach and refuses to send any step if nothing answers, so a forgotten power cycle costs a
+   message rather than a wedge — but the EC reset is still the thing that fixes it.
 1. Plug in an **external USB keyboard** and check that it types. After a wedge, you need it to shut down.
 2. Save and close everything else.
 3. Build: `go build -buildvcs=false ./cmd/goodix-probe`
@@ -111,8 +118,35 @@ If it does, note that in the log and run again.
    noise, and `usbreset` is what made the device disappear from the bus.
 3. Optionally, before shutting down, capture:
    `journalctl -k -b --since "-10 min" > kernel-after-wedge.txt` and `ls /sys/bus/usb/devices/`.
-4. **Cold power cycle:** `systemctl poweroff`, unplug the charger, hold the power button ~30 s, then boot.
+4. **EC reset:** `systemctl poweroff`, **leave the charger plugged in**, hold the power button **40 s**, then
+   boot. Check with `sudo ./goodix-probe --bisect --read-state`: the health check has to pass. This is the
+   procedure that brought the EC out of the stuck handshake in Run 16 (2026-09-30). The old one (charger
+   unplugged, ~30 s) did not in Run 14, and ten days of reboots did not either (`docs/protocol.md`,
+   "Recovering the EC").
 5. After booting: `journalctl -k -b -1 | grep -E "goodix-probe|i8042|atkbd|usb 1-4"`.
+
+## If the health check fails: `--read-state`
+
+A cold power cycle does not reliably reset this EC (`docs/protocol.md`, "Recovering the EC"). If a run
+stops at the health check, find out what state the EC is in before trying any fix:
+
+```sh
+sudo ./goodix-probe --bisect --read-state
+```
+
+The run is the usual baseline and attach, then the `0xa8` health check. If `0xa8` goes unanswered, the
+probe sends **one** `0xae` and nothing else. That is the only command the stuck EC answered in Run 12, and
+the keyboard survived it. The probe prints a `VERDICT` line and runs one more keyboard check, then exits 1
+without sending a single step. Its reading:
+
+| `0xae` reply | meaning | next |
+|---|---|---|
+| status `0x08`, counter above `0x14` | Run 12's stuck handshake is still there; the reset did not reach the EC | a deeper reset, "Recovering the EC" items 2–4 |
+| counter below `0x14` | the EC *was* reset, and still ignores `0xa8` | stop and record the reply; this is new |
+| no reply at all | worse than Run 12 | send nothing more; battery disconnect |
+
+Run it again after every reset attempt: the counter is what shows whether an attempt worked. If the
+health check passes, `--read-state` does nothing, and the run carries on with its steps as usual.
 
 ## `0xe4` — question closed, and what `--allow-e4` does now
 
@@ -203,9 +237,10 @@ away. The probe refuses that combination rather than letting it happen.
   --allow-d0 --steps a8 --rehearse-rejection
 
 # 4. Live, with an external keyboard attached. Steps first, then the bridge.
+#    The steps are the vendor's init before 0xd0, in its order, 0xe4 included.
 sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin \
-  --allow-96 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
-  --steps 96,a8,ae,a2,82,a6,a2,70,98,90
+  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
+  --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
 ```
 
 Read the result off the last lines:
@@ -218,22 +253,26 @@ Read the result off the last lines:
   key), the host never answered, or **the EC started one and went quiet after the server flight**, which is
   what Run 11 did.
 
-### What Run 11 found, and what changed because of it
+### What Runs 11 and 17 found
 
-Run 11 (2026-09-20) got the whole init through live and the EC opened a handshake, then stalled: the host's
-ServerHello and ServerHelloDone went out as **two** `0xb0` packs, the EC answered with a zero-length
-transfer, and nothing followed. No alert either way — and an alert is what a TLS stack sends when it cannot
-parse what it got, so silence looks like an endpoint still waiting for the rest of a flight.
+Run 11 (2026-09-20) got the init through live and the EC opened a handshake, then stalled after the
+host's ServerHello and ServerHelloDone. Run 17 (2026-09-30) sent the vendor's full init, `0xe4` included,
+and got one message further: the EC sent its ClientKeyExchange, then stalled. Both times a zero-length
+transfer came 256 ms after the EC's last chance to speak, and no alert either way.
 
-So a flight now goes out as **one pack**, which is how openssl writes it — ServerHello and ServerHelloDone
-leave the socket in a single 95-byte write. Nothing about this is confirmed: the vendor capture holds 43
-device→host TLS packs and **no host→device TLS pack at all**, so hardware is the only way to tell. Run the
-command above as it stands first. If it stalls the same way, the other framing is one flag apart:
+The cause was the bridge (`docs/protocol.md`, Run 17). At exactly the moment the EC sends its next record,
+1 ms after ServerHelloDone and 22 ms after its ClientKeyExchange, the bridge was waiting 250 ms on openssl
+and not reading the device. The vendor driver always keeps a read pending. The bridge now keeps reading
+the EC until its flight is finished, and sends the server's first flight as soon as ServerHelloDone is
+out. The framing is the vendor's: one `0xb0` pack per record, as the driver log shows.
+
+The one-pack-per-flight framing tried after Run 11 is still there for comparison, but only after the run
+above has stalled too:
 
 ```sh
-sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --tls-record-per-pack \
-  --allow-96 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
-  --steps 96,a8,ae,a2,82,a6,a2,70,98,90
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --tls-coalesce-flight \
+  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
+  --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
 ```
 
 Handshake records are now logged in **full hex**, both directions. That is deliberate and it is bounded by
@@ -246,8 +285,13 @@ transport's 64-byte hex dump.
 **Keep the log for a stalled run.** It is the transcript, and it is what makes the failure reproducible
 without the device.
 
+**Then reset the EC (charger plugged in, 40 s hold; "If the keyboard stops", step 4), before doing anything
+else with the device.** A stalled handshake leaves the EC
+answering nothing but `0xae`, and the next run's health check will refuse to start until the EC is back. This
+is the single most expensive lesson of 2026-09-20: see Run 12 in `docs/protocol.md`.
+
 Two things the rehearsal cannot tell you, because it is openssl and not an embedded controller: whether
-the EC accepts the key, and whether it wants a server flight as one `b0` pack or as one pack per record.
+the EC accepts the key, and how long it holds a record the host has not read yet.
 What it does check is our side — the framing, the sequencing, the PSK file, and the refusals.
 
 Note the PSK is passed as a **path**, never as hex on the command line: an argument lands in the shell
@@ -259,8 +303,8 @@ With the handshake up, `--capture` asks for a frame with `0x20`, decrypts it, an
 
 ```sh
 sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --capture captures/frame-1.pgm \
-  --allow-96 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --allow-20 \
-  --steps 96,a8,ae,a2,82,a6,a2,70,98,90
+  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --allow-20 \
+  --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
 ```
 
 **The output is biometric data.** It is written `0600`, `.gitignore` covers `*.pgm` and `captures/`, and it
@@ -278,6 +322,48 @@ fingerprint:
 ```sh
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
+```
+
+## `--wait-finger` — capture on touch (PLAN.md Phase 5d)
+
+`--wait-finger` replaces "take a frame now" with the vendor's loop, once round: arm finger-down (`0x32`),
+wait for the touch, take the frame (`0x20`), arm finger-up (`0x34`), wait for the lift. The thresholds
+in both arms are computed from the EC's own readings, the way the vendor computes them
+(`docs/protocol.md`, "Finger detection: where the thresholds come from"). Neither arm can be a `--steps`
+entry, because neither has a fixed payload.
+
+```sh
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --capture captures/frame-2.pgm \
+  --wait-finger --finger-timeout 30s \
+  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --allow-20 \
+  --allow-32 --allow-34 --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
+```
+
+Keep the finger **off** the sensor until the log says `>>> TOUCH THE SENSOR`, and lift it when it says
+`>>> LIFT THE FINGER`. What to write down:
+
+- whether the first arm drew a **base-invalid** event (header `80 00 00 00`) and how many re-arms it took;
+- the down event's **flags** (`0x3f` = all six zones) and the six readings, down and up — they are
+  capacitance per zone, not an image, and fine to record;
+- whether the frame looks like Run 20's.
+
+Run 21 ran this command live and worked (`docs/protocol.md`). To test what it left open, **rest the
+finger for a few seconds** before you lift it, so that the up arm has a finger to wait for.
+
+If no finger-up event arrives in time the run still succeeds — the frame is already written — and the EC
+is left armed for the lift, which is also where the vendor leaves it. The drain picks the event up if it
+comes late.
+
+**`captures/` is on NTFS here**, which ignores the `0600` the probe asks for. For a biometric file, a path
+on a Linux filesystem (e.g. `~/goodix-captures/`) keeps the permission.
+
+Rehearse it first. The stand-in answers the first arm with a base-invalid event and the second with a
+finger-down, both taken from `dump.pcapng`, so the re-arm path runs too:
+
+```sh
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
+  --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s
 ```
 
 ## Afterwards

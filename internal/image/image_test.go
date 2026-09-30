@@ -152,7 +152,7 @@ func pack12Bit(samples []uint16) []byte {
 // The values cover the full 0..4095 range so every nibble position is
 // exercised; no real sensor frame is involved.
 func TestDecode12BitRawRoundTrip(t *testing.T) {
-	const w, h = 80, 64 // 5120 samples, the believed 5120 geometry
+	const w, h = 64, 80 // 5120 samples, the 5120's geometry
 	samples := make([]uint16, w*h)
 	for i := range samples {
 		samples[i] = uint16((i * 7) & 0x0fff) // spread across 0..4095
@@ -175,12 +175,12 @@ func TestDecode12BitRawRoundTrip(t *testing.T) {
 	}
 }
 
-// The 5120 is believed to be 80x64 = 5120 pixels, 12-bit packed at four
-// samples per six bytes = exactly 7680 bytes of plaintext (see docs/protocol.md
+// The 5120 is 64 x 80 = 5120 pixels (Run 20), 12-bit packed at four samples
+// per six bytes = exactly 7680 bytes of plaintext (see docs/protocol.md
 // "How big is an image, really"). This pins that arithmetic and the pixel count
-// with synthetic zero data; the 12-bit packing itself remains a hypothesis.
-func TestDecode12Bit80x64(t *testing.T) {
-	const w, h = 80, 64
+// with synthetic zero data.
+func TestDecode12Bit64x80(t *testing.T) {
+	const w, h = 64, 80
 	const wantBytes = 7680
 	const wantPixels = 5120
 	if w*h != wantPixels {

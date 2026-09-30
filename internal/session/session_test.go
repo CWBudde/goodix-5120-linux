@@ -164,7 +164,7 @@ func TestBridgeReportsPSKMismatch(t *testing.T) {
 
 // TestBridgeDecryptsApplicationData rehearses Phase 5c: the device sends an
 // image as TLS application data and the bridge hands back the plaintext, which
-// the 12-bit decoder then turns into 80 x 64 samples.
+// the 12-bit decoder then turns into 64 x 80 samples.
 //
 // The "image" is synthetic. What is real is the record framing, the encryption
 // and the length: 5120 samples packed four per six bytes is 7680 bytes, and the
@@ -181,7 +181,7 @@ func TestBridgeDecryptsApplicationData(t *testing.T) {
 	}
 
 	const (
-		width, height = 80, 64
+		width, height = 64, 80
 		want          = width * height / image.SamplesPer12BitGroup * image.BytesPer12BitGroup // 7680
 	)
 	frame := make([]byte, want)
@@ -214,6 +214,43 @@ func TestBridgeDecryptsApplicationData(t *testing.T) {
 	// and the bridge logs record types and lengths only.
 	if logged := r.log.String(); strings.Contains(logged, hex.EncodeToString(frame[:32])) {
 		t.Errorf("the frame was written to the log:\n%s", logged)
+	}
+}
+
+// TestPlaintextDoesNotWaitOnTheDevice is Run 21: the frame was decrypted within
+// milliseconds but handed back 2 s later, after one more device read ran out,
+// and by the time the up arm went out the finger had been lifted. The rig's
+// short device timeout hides that, so the live default is restored here once
+// the handshake is done.
+func TestPlaintextDoesNotWaitOnTheDevice(t *testing.T) {
+	psk := testPSK(0x4b)
+	r := newRig(t, psk, psk)
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake: %v\nlog:\n%s", err, r.log)
+	}
+	r.bridge.opts.DeviceTimeout = DefaultDeviceTimeout
+
+	frame := bytes.Repeat([]byte{0x5a}, 7693)
+	if err := r.ec.SendPlaintext(frame); err != nil {
+		t.Fatalf("the stand-in could not send the frame: %v", err)
+	}
+
+	const idle = DefaultPlaintextIdle
+	start := time.Now()
+	got, err := r.bridge.ReadApplicationData(ctx, idle, 2*len(frame))
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("ReadApplicationData: %v\nlog:\n%s", err, r.log)
+	}
+	if !bytes.Equal(got, frame) {
+		t.Fatalf("got %d plaintext bytes, sent %d", len(got), len(frame))
+	}
+	if took >= DefaultDeviceTimeout {
+		t.Errorf("ReadApplicationData took %s: the plaintext waited behind a %s device read", took, DefaultDeviceTimeout)
 	}
 }
 
@@ -293,12 +330,11 @@ func TestAlertClassification(t *testing.T) {
 	}
 }
 
-// TestServerFlightGoesOutAsOnePack pins the change made after Run 11: the records
-// of one flight leave as a single TLS-data pack, the way openssl writes them, not
-// one pack each. Run 11's handshake stalled with the flight split in two, and a
-// rehearsal that quietly went back to splitting it would hide a regression in the
-// one thing that run changed.
-func TestServerFlightGoesOutAsOnePack(t *testing.T) {
+// TestServerRecordsGoOutOnePackEach pins the vendor's framing as the default:
+// its log of a successful handshake shows ServerHello and ServerHelloDone
+// leaving as two sends, one record each. A rehearsal that quietly went back to
+// coalescing them would change the variable the next live run holds fixed.
+func TestServerRecordsGoOutOnePackEach(t *testing.T) {
 	psk := testPSK(0x5a)
 	r := newRig(t, psk, psk)
 	r.requestTLS(t)
@@ -308,27 +344,26 @@ func TestServerFlightGoesOutAsOnePack(t *testing.T) {
 	if err := r.bridge.Handshake(ctx); err != nil {
 		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
 	}
-	if n := strings.Count(r.log.String(), "as one pack"); n == 0 {
-		t.Errorf("no multi-record flight was coalesced; ServerHello and ServerHelloDone "+
-			"arrive together, so at least one flight should have been\nlog:\n%s", r.log)
+	if strings.Contains(r.log.String(), "as one pack") {
+		t.Errorf("a flight was coalesced by default; the vendor sends one pack per record\nlog:\n%s", r.log)
 	}
 }
 
-// TestRecordPerPackRestoresRun11Framing checks the escape hatch still works, so
-// the two framings can be compared on hardware in consecutive runs. openssl
-// accepts either, which is exactly why the comparison has to happen live.
-func TestRecordPerPackRestoresRun11Framing(t *testing.T) {
+// TestCoalesceFlightSendsOnePack checks the comparison option still works.
+// openssl accepts either framing, which is why only hardware can compare them.
+func TestCoalesceFlightSendsOnePack(t *testing.T) {
 	psk := testPSK(0x5a)
-	r := newRigWith(t, psk, psk, Options{RecordPerPack: true})
+	r := newRigWith(t, psk, psk, Options{CoalesceFlight: true})
 	r.requestTLS(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := r.bridge.Handshake(ctx); err != nil {
-		t.Fatalf("Handshake with RecordPerPack = %v\nlog:\n%s", err, r.log)
+		t.Fatalf("Handshake with CoalesceFlight = %v\nlog:\n%s", err, r.log)
 	}
-	if strings.Contains(r.log.String(), "as one pack") {
-		t.Errorf("RecordPerPack still coalesced a flight\nlog:\n%s", r.log)
+	if n := strings.Count(r.log.String(), "as one pack"); n == 0 {
+		t.Errorf("no multi-record flight was coalesced; ServerHello and ServerHelloDone "+
+			"arrive together, so at least one flight should have been\nlog:\n%s", r.log)
 	}
 }
 
@@ -351,5 +386,93 @@ func TestHandshakeRecordsAreLoggedInFull(t *testing.T) {
 	if !strings.Contains(r.log.String(), ": 010000") {
 		t.Errorf("the ClientHello was not logged in full; a stalled handshake would leave "+
 			"nothing to reproduce offline\nlog:\n%s", r.log)
+	}
+}
+
+// timedDevice wraps the rehearsal device and measures the two gaps the EC is
+// sensitive to: how long the device goes unread after it has sent a
+// ClientKeyExchange (the rest of its flight follows within milliseconds), and
+// how long the host takes to answer its ClientHello.
+type timedDevice struct {
+	Device
+
+	sawClientHello, sawCKE time.Time
+	firstServerFlight      time.Duration // ClientHello → ServerHelloDone sent
+	afterCKE               time.Duration // ClientKeyExchange returned → next read
+}
+
+func (d *timedDevice) Recv(timeout time.Duration) ([]byte, error) {
+	if !d.sawCKE.IsZero() && d.afterCKE == 0 {
+		d.afterCKE = time.Since(d.sawCKE)
+	}
+	raw, err := d.Device.Recv(timeout)
+	if err == nil {
+		if msgType, ok := firstHandshakeType(raw); ok {
+			switch msgType {
+			case hsClientHello:
+				d.sawClientHello = time.Now()
+			case 0x10: // ClientKeyExchange
+				d.sawCKE = time.Now()
+			}
+		}
+	}
+	return raw, err
+}
+
+func (d *timedDevice) SendTLS(records []byte) error {
+	if len(records) > proto.TLSRecordHeaderLen && records[0] == proto.TLSHandshake &&
+		records[proto.TLSRecordHeaderLen] == hsServerHelloDone && !d.sawClientHello.IsZero() {
+		d.firstServerFlight = time.Since(d.sawClientHello)
+	}
+	return d.Device.SendTLS(records)
+}
+
+// firstHandshakeType returns the handshake type of the first record in a TLS
+// data pack, if the pack holds a handshake record.
+func firstHandshakeType(raw []byte) (byte, bool) {
+	flags, payload, err := proto.DecodePack(raw)
+	if err != nil || (flags != proto.FlagTLSData && flags != proto.FlagTLSAlt) {
+		return 0, false
+	}
+	if len(payload) <= proto.TLSRecordHeaderLen || payload[0] != proto.TLSHandshake {
+		return 0, false
+	}
+	return payload[proto.TLSRecordHeaderLen], true
+}
+
+// TestBridgeKeepsReadingTheECMidFlight pins the fix for Runs 11 and 17. Both
+// stalled where the bridge stopped reading the EC for DefaultHostIdle (250 ms):
+// after the server flight in Run 11, after the EC's ClientKeyExchange in Run 17.
+// The vendor reads continuously and the EC sends its next record within 1–22 ms,
+// so the bridge must not look away for anything like HostIdle at either point.
+func TestBridgeKeepsReadingTheECMidFlight(t *testing.T) {
+	psk := testPSK(0x5a)
+	r := newRig(t, psk, psk)
+	dev := &timedDevice{Device: r.tr}
+	r.bridge = New(dev, r.sess, Options{
+		Logger:           log.New(r.log, "", 0),
+		DeviceTimeout:    200 * time.Millisecond,
+		HandshakeTimeout: 20 * time.Second,
+	})
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
+	}
+
+	const limit = 100 * time.Millisecond // well under DefaultHostIdle
+	if dev.sawCKE.IsZero() {
+		t.Fatalf("the stand-in sent no ClientKeyExchange as its own pack; the test measures nothing\nlog:\n%s", r.log)
+	}
+	if dev.afterCKE > limit {
+		t.Errorf("the device went unread for %s after the ClientKeyExchange; the EC's "+
+			"ChangeCipherSpec follows within ~22 ms (limit %s)", dev.afterCKE, limit)
+	}
+	if dev.firstServerFlight == 0 || dev.firstServerFlight > limit {
+		t.Errorf("ServerHelloDone went out %s after the ClientHello; the vendor answers within "+
+			"~1 ms and the flight ends at ServerHelloDone, so HostIdle must not be waited out (limit %s)",
+			dev.firstServerFlight, limit)
 	}
 }

@@ -43,6 +43,9 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+  --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
+  --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s   # Phase 5d: capture on touch
+./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --steps a8 --rehearse-rejection   # what a PSK the EC rejects looks like
 
 go build -buildvcs=false ./cmd/goodix-pcap
@@ -102,16 +105,32 @@ The safety guarantee is structural, and changes must preserve it:
   OUT endpoint while something else reads from it. Their one caller is `goodix-probe --tls`, which runs as the tail of
   a bisect run and is therefore behind the same keyboard-safe procedure as any live step
   (`docs/bisect-runbook.md`, PLAN.md Phase 5b/5c).
-- **A server flight goes to the device as ONE `0xb0` pack**, the way openssl writes it. Run 11 sent
-  ServerHello and ServerHelloDone as two packs and the EC went silent without an alert; this is the response,
-  and it is a **hypothesis, not a confirmed fact** — `--tls-record-per-pack` exists so the two can be
-  compared on hardware, and `TestServerFlightGoesOutAsOnePack` stops the default drifting back silently.
+- **An unfinished TLS handshake leaves the EC answering nothing but `0xae`, and the power-button cold
+  power cycle did not clear it in Run 14** (Run 12: sending the init into that state cost the keyboard).
+  What did clear it (Run 16): shutdown with the charger **plugged in** and a **40 s** power-button hold —
+  `docs/protocol.md`, "Recovering the EC". A bisect run therefore sends
+  `0xa8` after attach as a health check and refuses to send a single step if nothing answers
+  (`checkECResponsive`); `0xae` cannot be the probe, because it is the one command a stuck EC still answers.
+  The check is live-only — a rehearsal has no EC, and the scripted replay would desynchronise.
+  `--read-state` adds one `0xae` after a failed check, to say which state the EC is in, and sends nothing else.
+- **Each server record goes to the device in its own `0xb0` pack**, as the vendor driver sends them (its
+  log of a completed handshake: ServerHello and ServerHelloDone are two sends). `--tls-coalesce-flight`
+  keeps the one-pack framing for comparison, and `TestServerRecordsGoOutOnePackEach` pins the default.
+- **The bridge keeps reading the EC until the EC's flight is finished.** Runs 11 and 17 stalled because the
+  bridge waited 250 ms on openssl while the EC was sending its next record (it sends ClientKeyExchange,
+  ChangeCipherSpec and Finished as three transfers). `TestBridgeKeepsReadingTheECMidFlight` pins both gaps
+  (`docs/protocol.md`, Run 17). A live `--tls` run whose steps leave out part of the vendor's
+  pre-`0xd0` init (which includes `0xe4`) logs a warning (`missingFromVendorInit`).
   Records must be forwarded **verbatim**: the Finished MACs cover the handshake transcript, so a bridge that
   edits a record on the way past breaks the handshake it is trying to fix.
 - **Handshake, change-cipher-spec and alert records are logged in full hex; application data never is.**
   The rule lives in one function (`proto.TLSRecord.PlaintextHex`) and is by record *type*, so it holds at
   every point in the session: those three types carry key agreement, a MAC or a reason code, never an image,
   and the PSK appears in none of them. `TestPlaintextHexNeverPrintsAnImage` pins the half that matters.
+- **The `0xe4` reply (PSK hash) and the `0xa6` reply (OTP) are never printed.** `proto.SecretReply` /
+  `proto.SecretPack` is the one deny list. `goodix-pcap` refuses to show those replies, and the probe's
+  `raw`/`payload` lines and every transport's RX line keep only the header (Run 21 printed both in full).
+  Print a received transfer through `rawdump` or `dumpRX`, never plain `hexdump`/`dump`.
 - **`session.LoopbackEC` is not a device and must never become one.** It is an `openssl s_client` in Goodix framing,
   used to rehearse the bridge offline; like the EC it stays silent until `0xd0`. It goes through
   `transport.NewPeer`, so a rehearsal refuses exactly what a live run refuses. `usb.go` remains the only code in the

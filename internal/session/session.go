@@ -15,6 +15,13 @@
 // proceeds — each side speaks in flights — and it means nothing here can write
 // to the USB OUT endpoint while the caller is also sending a command.
 //
+// A turn ends when a flight does, not when a transfer does. The EC sends its
+// second flight as three transfers (ClientKeyExchange, ChangeCipherSpec,
+// Finished; 22 ms and 5 ms apart in the vendor log), and a bridge that turned
+// to the host after the first stopped reading the EC for the host's idle
+// window. Runs 11 and 17 both stalled exactly there, each time with a
+// zero-length transfer where the EC's next record should have been.
+//
 // Nothing in this package decrypts anything itself, and no record body is ever
 // logged: on this device a body is a fingerprint image.
 //
@@ -75,11 +82,12 @@ type Options struct {
 	HostBody         time.Duration
 	HandshakeTimeout time.Duration
 
-	// RecordPerPack sends each record of a host flight in its own TLS-data pack
-	// instead of one pack per flight. This was the behaviour in Run 11, where the
-	// handshake stalled after the server flight; see PumpHost. It is kept as an
-	// option because only hardware can say which framing the EC wants.
-	RecordPerPack bool
+	// CoalesceFlight sends all records of a host flight in ONE TLS-data pack
+	// instead of one pack per record. The vendor driver sends one pack per record
+	// (its log, 2026-09-19 23:25:41: ServerHello 86 bytes, then ServerHelloDone
+	// 9 bytes, as two sends), so that is the default; this was the default
+	// between Run 11 and that finding, and stays as an option for comparison.
+	CoalesceFlight bool
 }
 
 func (o Options) withDefaults() Options {
@@ -132,6 +140,14 @@ type Bridge struct {
 	// TLS 1.2 it only does after verifying the client's Finished. That is the
 	// moment the PSK is known to have matched.
 	hostCCS bool
+	// devCCS records that the EC has sent its ChangeCipherSpec, so its next
+	// handshake record is its Finished.
+	devCCS bool
+	// ecMidFlight records that the EC has started a flight and not finished it:
+	// after a ClientKeyExchange, its ChangeCipherSpec and Finished are still to
+	// come, and the bridge must keep reading the device instead of turning to the
+	// host.
+	ecMidFlight bool
 	// done records that the handshake completed.
 	done bool
 
@@ -188,6 +204,12 @@ func (b *Bridge) Handshake(ctx context.Context) error {
 			if _, err := b.Deliver(raw); err != nil {
 				return err
 			}
+			if b.ecMidFlight {
+				// The rest of the EC's flight is on its way. Turning to the host
+				// now would leave the device unread for the host's idle window,
+				// which is where Runs 11 and 17 lost the EC.
+				continue
+			}
 		}
 
 		// Host → device.
@@ -226,6 +248,7 @@ func (b *Bridge) Deliver(raw []byte) (bool, error) {
 			if r.Type == proto.TLSAlert {
 				return true, b.alertError("the device", r.Body)
 			}
+			b.trackDeviceFlight(r)
 		}
 		b.toHost += len(recs)
 	} else {
@@ -239,31 +262,54 @@ func (b *Bridge) Deliver(raw []byte) (bool, error) {
 	return true, nil
 }
 
+// trackDeviceFlight updates ecMidFlight from one record the EC sent. A
+// ClientHello is a whole flight; a ClientKeyExchange opens one that its
+// ChangeCipherSpec and Finished close. Handshake bodies after the
+// ChangeCipherSpec are encrypted, so the type byte is only read before it.
+func (b *Bridge) trackDeviceFlight(r proto.TLSRecord) {
+	switch {
+	case r.Type == proto.TLSChangeCipherSpec:
+		b.devCCS = true
+		b.ecMidFlight = true
+	case r.Type == proto.TLSHandshake && b.devCCS:
+		b.ecMidFlight = false // Finished
+	case r.Type == proto.TLSHandshake && len(r.Body) > 0 && r.Body[0] == hsClientHello:
+		b.ecMidFlight = false
+	case r.Type == proto.TLSHandshake:
+		b.ecMidFlight = true // ClientKeyExchange, or anything else ahead of Finished
+	}
+}
+
+// Handshake message types the bridge reads to find the end of a flight. Only
+// plaintext handshake records are inspected; nothing is parsed beyond the type.
+const (
+	hsClientHello     = 0x01
+	hsServerHelloDone = 0x0e
+)
+
 // PumpHost forwards everything the local endpoint has ready to the device and
 // returns once it has nothing more to say.
 //
-// The records of one flight are gathered and sent as a SINGLE TLS-data pack,
-// because that is how they leave openssl: ServerHello and ServerHelloDone are
-// one 95-byte write on the socket, and splitting them into two packs is this
-// bridge's doing, not the server's.
+// Each record goes to the device in its own TLS-data pack, which is what the
+// vendor driver does. Its log of a successful handshake (2026-09-19 23:25:41)
+// shows ServerHello and ServerHelloDone leaving as two sends of 86 and 9 bytes,
+// and later change-cipher-spec and Finished as two sends of 6 and 85. Run 11
+// (2026-09-20) used the same framing and still stalled, so the framing is not
+// what stalled it; Options.CoalesceFlight sends a flight as one pack instead,
+// the way openssl writes it to the socket, for comparison only.
 //
-// Run 11 (2026-09-20) is why that matters. The EC opened the handshake, the
-// bridge sent those two records as two packs, and the EC answered with a
-// zero-length transfer and then said nothing for the whole 20-second timeout —
-// no alert, which is what a stack sends when it cannot parse what it got. Silence
-// after a ServerHello that arrived alone looks instead like an endpoint still
-// waiting for the rest of a flight it reads one transfer at a time. Options.
-// RecordPerPack restores the split so the two can be compared on hardware;
-// neither framing is confirmed yet, and the vendor capture cannot settle it
-// because it holds no host-to-device TLS pack at all.
+// A flight ends at ServerHelloDone or at the host's Finished, so neither waits
+// out HostIdle before it is sent: the vendor answers a ClientHello within a
+// millisecond. HostIdle is only the fallback for a flight that ends otherwise.
 func (b *Bridge) PumpHost() error {
 	var (
-		flight   [][]byte
-		total    int
-		finished bool // change cipher spec then Finished, seen in this flight
+		flight    [][]byte
+		total     int
+		finished  bool // change cipher spec then Finished, seen in this flight
+		helloDone bool // ServerHelloDone, which ends the server's first flight
 	)
 
-	for !finished {
+	for !finished && !helloDone {
 		rec, err := b.readHostRecord()
 		if errors.Is(err, errHostIdle) {
 			break
@@ -294,6 +340,9 @@ func (b *Bridge) PumpHost() error {
 			// Change cipher spec then Finished: the host has verified the EC's
 			// Finished, so the handshake is up. It still has to go out.
 			finished = true
+		case typ == proto.TLSHandshake && len(rec) > proto.TLSRecordHeaderLen &&
+			rec[proto.TLSRecordHeaderLen] == hsServerHelloDone:
+			helloDone = true
 		}
 	}
 
@@ -310,10 +359,10 @@ func (b *Bridge) PumpHost() error {
 	return nil
 }
 
-// sendFlight writes one flight to the device: one pack, or one pack per record
-// if Options.RecordPerPack says so.
+// sendFlight writes one flight to the device: one pack per record, or one pack
+// for the whole flight if Options.CoalesceFlight says so.
 func (b *Bridge) sendFlight(flight [][]byte, total int) error {
-	if b.opts.RecordPerPack {
+	if !b.opts.CoalesceFlight {
 		for _, rec := range flight {
 			if err := b.dev.SendTLS(rec); err != nil {
 				return fmt.Errorf("session: sending a %s record to the device: %w",
@@ -383,6 +432,12 @@ func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, ma
 	}
 	b.startPlaintextReader()
 
+	// Until a record has gone to openssl, wait for the device the usual time:
+	// the image takes tens of milliseconds to arrive, and a read cancelled
+	// mid-transfer would split it. After that the plaintext is what matters,
+	// and a full-length device read would hold it back — in Run 21 the frame
+	// sat decrypted for 2 s behind one. So the device is then only polled.
+	wait := b.opts.DeviceTimeout
 	for {
 		if err := ctx.Err(); err != nil {
 			if got, _, _ := b.plain.status(); got > 0 {
@@ -395,14 +450,18 @@ func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, ma
 		}
 
 		// Device → host.
-		raw, err := b.dev.Recv(b.opts.DeviceTimeout)
+		raw, err := b.dev.Recv(wait)
 		switch {
 		case errors.Is(err, transport.ErrTimeout):
 		case err != nil:
 			return nil, fmt.Errorf("session: reading from the device: %w", err)
 		default:
-			if _, err := b.Deliver(raw); err != nil {
+			forwarded, err := b.Deliver(raw)
+			if err != nil {
 				return nil, err
+			}
+			if forwarded {
+				wait = min(b.opts.DeviceTimeout, idle/4)
 			}
 		}
 

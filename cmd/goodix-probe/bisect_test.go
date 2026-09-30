@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func bisectReplaySteps(t *testing.T, list string, presses ...bool) (string, *fak
 	opened := false
 	open := func() (transport.Transport, error) { opened = true; return tr, nil }
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, nil)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthOff, nil)
 	return buf.String(), host, tr.(replayCounters), opened, err
 }
 
@@ -211,7 +212,7 @@ func TestBisectAllowE4(t *testing.T) {
 	// baseline ok, attach ok, 0xe4 dead — what Run 2 saw.
 	host := &fakeHost{presses: []bool{true, true, false}}
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, nil)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthOff, nil)
 	out := buf.String()
 	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "preset_psk_read") {
 		t.Fatalf("err = %v, want errKeyboardLost after preset_psk_read\n%s", err, out)
@@ -248,7 +249,7 @@ func TestBisectAllowA2(t *testing.T) {
 	// baseline ok, attach ok, reset ok — the keyboard survives the reset.
 	host := &fakeHost{presses: []bool{true, true, true}}
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, nil)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthOff, nil)
 	if err != nil {
 		t.Fatalf("runBisect with --allow-a2 = %v\n%s", err, buf.String())
 	}
@@ -315,5 +316,197 @@ func TestLinuxHostKeyEvents(t *testing.T) {
 	}()
 	if ok, err := h.WaitKey(time.Second); !ok || err != nil {
 		t.Fatalf("WaitKey = %t, %v; want a press", ok, err)
+	}
+}
+
+// TestHealthCheckStopsBeforeTheFirstStep is Run 12's regression test. That run
+// began with an EC that answered nothing, sent ten frames into it anyway, and
+// lost the internal keyboard at step 8. The health check must stop such a run
+// before the first step, and it must not be reported as a keyboard failure —
+// the keyboard was fine, the EC was not.
+func TestHealthCheckStopsBeforeTheFirstStep(t *testing.T) {
+	ops, err := parseSteps("a8,ae")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	host := &fakeHost{}
+	// An exchange that accepts the probe and answers nothing: exactly what Run 12
+	// saw from a stuck EC, which took the frame and stayed silent.
+	silent := []transport.Exchange{{Cmd: opFirmwareVer}}
+	tr := transport.NewReplay(silent, transport.Options{Ceiling: proto.ClassSafe})
+	open := func() (transport.Transport, error) { return tr, nil }
+
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthCheck, nil)
+	if !errors.Is(err, errECUnresponsive) {
+		t.Fatalf("runBisect with an unresponsive EC = %v, want errECUnresponsive\nlog:\n%s", err, &buf)
+	}
+	if errors.Is(err, errKeyboardLost) {
+		t.Error("an unresponsive EC was reported as a lost keyboard")
+	}
+	if got := buf.String(); !strings.Contains(got, "health check") {
+		t.Errorf("the log does not mention the health check:\n%s", got)
+	}
+	// The steps must not have run. step 1 is the first thing after the check.
+	if got := buf.String(); strings.Contains(got, "--- step 1") {
+		t.Errorf("a step ran after the health check failed:\n%s", got)
+	}
+}
+
+// TestHealthCheckPassesOnAnAnsweringEC is the other half: a healthy EC answers
+// 0xa8 and the run proceeds normally.
+func TestHealthCheckPassesOnAnAnsweringEC(t *testing.T) {
+	ops, err := parseSteps("a8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two a8 exchanges: one for the health check, one for the step itself.
+	script := append(scriptFor(ops), scriptFor(ops)...)
+	var buf bytes.Buffer
+	host := &fakeHost{}
+	tr := transport.NewReplay(script, transport.Options{Ceiling: proto.ClassSafe})
+	open := func() (transport.Transport, error) { return tr, nil }
+
+	if err := runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthCheck, nil); err != nil {
+		t.Fatalf("runBisect with a healthy EC = %v\nlog:\n%s", err, &buf)
+	}
+	if got := buf.String(); !strings.Contains(got, "the run may proceed") {
+		t.Errorf("the health check did not report success:\n%s", got)
+	}
+	// Run 16: the version string follows the ACK, and the health check must
+	// read it rather than leave it for the drain to call unsolicited.
+	if got := buf.String(); strings.Contains(got, "unsolicited message cmd=0xa8") {
+		t.Errorf("the health check left its own reply for the drain:\n%s", got)
+	}
+	// Run 18: the health check read the ACK itself, then logged the version
+	// string as "data arrived with no ACK".
+	if got := buf.String(); strings.Contains(got, "no ACK") {
+		t.Errorf("the health check forgot the ACK it read:\n%s", got)
+	}
+}
+
+// run12State is the 0xae reply Run 12 received from the EC Run 11 left inside
+// an unfinished handshake (goodix-bisect-20260920-161701.log): status 0x08,
+// counter 0x14. Observed, not invented.
+var run12State = []byte{
+	0x02, 0x08, 0x31, 0x00, 0x00, 0x00, 0x01, 0x00, 0x90, 0x63,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14, 0x14,
+}
+
+// runReadState runs a bisect with --read-state against an EC that ignores 0xa8
+// and answers 0xae with state (nil: answers nothing).
+func runReadState(t *testing.T, state []byte, presses ...bool) (string, *fakeHost, error) {
+	t.Helper()
+	ops, err := parseSteps("a8,ae")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := stepFor(opMCUState)
+	ae := transport.Exchange{Cmd: opMCUState, Payload: st.payload}
+	if state != nil {
+		ae.Responses = [][]byte{dataFor(opMCUState, state)}
+	}
+	script := []transport.Exchange{{Cmd: opFirmwareVer}, ae}
+	tr := transport.NewReplay(script, transport.Options{Ceiling: proto.ClassSafe})
+	open := func() (transport.Transport, error) { return tr, nil }
+
+	var buf bytes.Buffer
+	host := &fakeHost{presses: presses}
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthReadState, nil)
+	return buf.String(), host, err
+}
+
+// TestReadStateOnAStuckEC replays Run 12's EC under --read-state: 0xa8 goes
+// unanswered, exactly one 0xae follows, the verdict names the stuck handshake,
+// the keyboard is checked after it, and the run still stops before any step.
+// The replay script holds only those two exchanges, so any further frame would
+// fail the run with a script error instead of errECUnresponsive.
+func TestReadStateOnAStuckEC(t *testing.T) {
+	out, host, err := runReadState(t, run12State)
+	if !errors.Is(err, errECUnresponsive) {
+		t.Fatalf("err = %v, want errECUnresponsive\n%s", err, out)
+	}
+	for _, want := range []string{"--read-state", "status 0x08", "trailing counter 0x14", "still Run 12's state"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "--- step 1") {
+		t.Errorf("a step ran after the health check failed:\n%s", out)
+	}
+	// baseline, attach, read-state.
+	if host.checks != 3 {
+		t.Errorf("keyboard checks = %d, want 3 (baseline, attach, read-state)", host.checks)
+	}
+}
+
+// TestReadStateKeyboardLost: if the keyboard dies after the 0xae, that is what
+// the run reports — it is the more important of the two facts.
+func TestReadStateKeyboardLost(t *testing.T) {
+	out, _, err := runReadState(t, run12State, true, true, false)
+	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "read-state") {
+		t.Fatalf("err = %v, want errKeyboardLost after read-state\n%s", err, out)
+	}
+}
+
+// TestReadStateSilentEC: an EC that ignores 0xae as well gets the "worse than
+// Run 12" verdict, and nothing else is sent to it.
+func TestReadStateSilentEC(t *testing.T) {
+	out, _, err := runReadState(t, nil)
+	if !errors.Is(err, errECUnresponsive) {
+		t.Fatalf("err = %v, want errECUnresponsive\n%s", err, out)
+	}
+	if !strings.Contains(out, "not even 0xae") {
+		t.Errorf("log lacks the silent-EC verdict:\n%s", out)
+	}
+}
+
+// TestStuckVerdict pins how a 0xae reply is read: Run 12's state, an EC whose
+// counter went back down (it was reset), and a status never seen when stuck.
+func TestStuckVerdict(t *testing.T) {
+	withStatus := func(status, counter byte) *proto.MCUState {
+		raw := slices.Clone(run12State)
+		raw[1], raw[18], raw[19] = status, counter, counter
+		s, err := proto.DecodeMCUState(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &s
+	}
+	for _, tc := range []struct {
+		name  string
+		state *proto.MCUState
+		want  string
+	}{
+		{"silent", nil, "not even 0xae"},
+		{"run 12", withStatus(0x08, 0x16), "still Run 12's state"},
+		{"reset, cold init status", withStatus(0x11, 0x02), "the counter went DOWN"},
+		{"tls up, counter higher", withStatus(0x02, 0x16), "a status not seen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strings.Join(stuckVerdict(tc.state), "\n"); !strings.Contains(got, tc.want) {
+				t.Errorf("verdict = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHealthCheckIgnoresUnsolicitedEvents: a 0x32 finger-detect event is not
+// an answer to 0xa8. An EC that sends one and then nothing is still stuck, and
+// the run must stop.
+func TestHealthCheckIgnoresUnsolicitedEvents(t *testing.T) {
+	ops, err := parseSteps("a8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fdt := dataFor(0x32, []byte{0x02, 0x00, 0x2f, 0x00, 0x1e, 0x01, 0x38, 0x01, 0xff, 0x00, 0xf7, 0x00, 0x3f, 0x01, 0x34, 0x01})
+	script := []transport.Exchange{{Cmd: opFirmwareVer, Responses: [][]byte{fdt}}}
+	tr := transport.NewReplay(script, transport.Options{Ceiling: proto.ClassSafe})
+	open := func() (transport.Transport, error) { return tr, nil }
+
+	var buf bytes.Buffer
+	err = runBisect(log.New(&buf, "", 0), &fakeHost{}, open, ops, 0, time.Second, healthCheck, nil)
+	if !errors.Is(err, errECUnresponsive) {
+		t.Fatalf("runBisect with only an unsolicited 0x32 = %v, want errECUnresponsive\nlog:\n%s", err, &buf)
 	}
 }

@@ -50,12 +50,15 @@ func main() {
 		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
 		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
 		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
+		readState  = flag.Bool("read-state", false, "bisect: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to find out why, then stop. Live only: 0xae is the one command the stuck EC answered in Run 12, and its status and counter tell a failed cold power cycle from a new fault")
 
-		useTLS   = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
-		pskPath  = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
-		capture  = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
-		wrongPSK = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
-		perPack  = flag.Bool("tls-record-per-pack", false, "--tls: send each record of a server flight in its own b0 pack instead of one pack per flight. Run 11's framing, which stalled; kept so the two can be compared on hardware")
+		useTLS        = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
+		pskPath       = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
+		capture       = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
+		waitFinger    = flag.Bool("wait-finger", false, "--tls --capture: arm finger detection and take the frame when the EC reports a touch, then wait for the lift (PLAN.md Phase 5d). Needs --allow-32 and --allow-34")
+		fingerTimeout = flag.Duration("finger-timeout", 30*time.Second, "--wait-finger: how long to wait for the touch, and again for the lift")
+		wrongPSK      = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
+		coalesce      = flag.Bool("tls-coalesce-flight", false, "--tls: send all records of a server flight in ONE b0 pack, the way openssl writes them. The default is one pack per record, which is what the vendor driver sends; this is kept for comparison only")
 	)
 
 	// One --allow-<opcode> flag per above-ceiling opcode, registered from the
@@ -76,11 +79,16 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if *useTLS || *pskPath != "" || *capture != "" || *perPack {
+		if *useTLS || *pskPath != "" || *capture != "" || *coalesce || *waitFinger {
 			logger.Print("--tls, --psk and --capture only work with --bisect: the bridge runs as the tail of a " +
 				"bisect run so it inherits the keyboard checks (see docs/bisect-runbook.md)")
 			os.Exit(1)
 		}
+	}
+	if *readState && (!*bisect || *replay) {
+		logger.Print("--read-state only works with a live --bisect: it asks a real EC why it ignored the health " +
+			"check, and a rehearsal has no EC and runs no health check (TestReadStateOnAStuckEC covers it offline)")
+		os.Exit(1)
 	}
 	if *wrongPSK && !(*useTLS && *replay) {
 		logger.Print("--rehearse-rejection only works with --tls --replay: it is a rehearsal of the failure, " +
@@ -109,9 +117,14 @@ func main() {
 			sendD4:   allowed[opTLSEstablished],
 			getImage: allowed[opGetImage],
 
-			recordPerPack: *perPack,
+			waitFinger:    *waitFinger,
+			fingerTimeout: *fingerTimeout,
+			armDown:       allowed[opFDTDown],
+			armUp:         allowed[opFDTUp],
+
+			coalesceFlight: *coalesce,
 		}
-		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
+		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, *readState, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
 	}
 
 	opts := transport.Options{
@@ -144,7 +157,7 @@ func main() {
 // mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
 // survived every step, 2 if it stopped (or was not working to begin with), 1
 // on any other failure.
-func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
+func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
 	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration) int {
 
 	stderr := log.New(os.Stderr, "", 0)
@@ -163,6 +176,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, a
 		stderr.Printf("%v", err)
 		return 1
 	}
+	tls.steps = ops
 
 	if logPath == "" {
 		logPath = "goodix-bisect-" + time.Now().Format("20060102-150405") + ".log"
@@ -253,7 +267,18 @@ func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, a
 		}
 	}
 
-	err = runBisect(logger, host, open, ops, timeout, keyWait, after)
+	// The health check is a live-hardware precondition: it asks the EC whether it
+	// is in the state a run assumes. A rehearsal has no EC, and the scripted
+	// replay answers a fixed list of exchanges, so an extra frame there would
+	// desynchronise the script rather than check anything.
+	health := healthCheck
+	switch {
+	case replay:
+		health = healthOff
+	case readState:
+		health = healthReadState
+	}
+	err = runBisect(logger, host, open, ops, timeout, keyWait, health, after)
 	if rehearsal != nil {
 		if cerr := rehearsal.Close(); cerr != nil {
 			logger.Printf("tearing down the rehearsal stand-in: %v", cerr)
@@ -265,7 +290,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK bool, allow []proto.Opcode, a
 	case errors.Is(err, errKeyboardLost), errors.Is(err, errBaseline):
 		logger.Printf("\nstopped: %v", err)
 		if errors.Is(err, errKeyboardLost) {
-			logger.Printf("recover with a cold power cycle: shut down, unplug the charger, hold power ~30 s")
+			logger.Printf("recover with an EC reset: shut down with the charger PLUGGED IN, hold the power button 40 s, then boot; confirm with --bisect --read-state")
 		}
 		return 2
 	default:
@@ -306,7 +331,12 @@ func run(logger *log.Logger, tr transport.Transport, timeout time.Duration) erro
 // arrives, the device goes quiet, or maxReadsPerStep is reached. Run 1 read
 // once per command and so ran one transfer behind.
 func collect(logger *log.Logger, tr transport.Transport, sent proto.Opcode, timeout time.Duration) error {
-	acked := false
+	return collectFrom(logger, tr, sent, timeout, false)
+}
+
+// collectFrom is collect for a caller that may already have read the ACK
+// itself, so the data message that follows is not reported as unacknowledged.
+func collectFrom(logger *log.Logger, tr transport.Transport, sent proto.Opcode, timeout time.Duration, acked bool) error {
 	for range maxReadsPerStep {
 		raw, err := tr.Recv(timeout)
 		if errors.Is(err, transport.ErrTimeout) {
@@ -325,7 +355,7 @@ func collect(logger *log.Logger, tr transport.Transport, sent proto.Opcode, time
 			continue
 		}
 
-		logger.Printf("  raw  %s", hexdump(raw))
+		logger.Printf("  raw  %s", rawdump(raw))
 		switch describe(logger, sent, raw) {
 		case replyAck:
 			acked = true
@@ -359,7 +389,7 @@ func drain(logger *log.Logger, tr transport.Transport, timeout time.Duration) {
 			logger.Printf("  drain stopped: %v", err)
 			return
 		}
-		logger.Printf("  leftover raw  %s", hexdump(raw))
+		logger.Printf("  leftover raw  %s", rawdump(raw))
 		if len(raw) > 0 {
 			describe(logger, 0, raw)
 		}
@@ -425,7 +455,9 @@ func describe(logger *log.Logger, sent proto.Opcode, raw []byte) reply {
 		kind = replyOther
 		logger.Printf("  unsolicited message cmd=0x%02x (%s)", byte(cmd), cmd.Name())
 	}
-	if len(msgPayload) > 0 {
+	if why, secret := proto.SecretReply(cmd); secret && len(msgPayload) > 0 {
+		logger.Printf("  payload of %d byte(s) withheld: %s", len(msgPayload), why)
+	} else if len(msgPayload) > 0 {
 		logger.Printf("  payload %s", hexdump(msgPayload))
 		if s := printable(msgPayload); s != "" {
 			logger.Printf("  as text %q", s)
@@ -473,8 +505,9 @@ func dryRunFrames(logger *log.Logger) {
 		printFrame(logger, fmt.Sprintf("#%d ", i+1), st)
 	}
 
-	logger.Printf("\n\n=== the vendor's capture loop, the part with a fixed payload ===")
-	logger.Printf("observed in dump.pcapng. Only --tls --capture sends this, and only behind --allow-20.")
+	logger.Printf("\n\n=== the vendor's capture loop ===")
+	logger.Printf("observed in dump.pcapng. Only --tls --capture sends 0x20 (behind --allow-20), and only --wait-finger")
+	logger.Printf("sends the arms (behind --allow-32/--allow-34), with thresholds derived at run time rather than these.")
 	for _, st := range vendorLoop {
 		printFrame(logger, "", st)
 	}
@@ -548,6 +581,17 @@ func explainOpenError(logger *log.Logger, err error) {
 	case errors.Is(err, transport.ErrNotFound):
 		logger.Printf("hint: sensor not enumerated. Check `lsusb -d 27c6:5120`")
 	}
+}
+
+// rawdump is hexdump for a transfer read from the device: a reply that
+// proto.SecretPack names (the PSK hash in 0xe4's, the OTP in 0xa6's) is reduced
+// to its pack header and command byte. Every "raw" line goes through it.
+func rawdump(b []byte) string {
+	op, why, secret := proto.SecretPack(b)
+	if !secret {
+		return hexdump(b)
+	}
+	return fmt.Sprintf("%s ... (0x%02x reply, %d more withheld: %s)", hexdump(b[:5]), byte(op), len(b)-5, why)
 }
 
 func hexdump(b []byte) string {

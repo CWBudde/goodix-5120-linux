@@ -148,3 +148,83 @@ func TestFDTArmRejectsBadZoneMarker(t *testing.T) {
 		t.Errorf("DecodeFDTArm with a 0x81 marker = %v, want ErrFDTEvent", err)
 	}
 }
+
+// fdtPair is an event from dump.pcapng and the arm the vendor driver sent next.
+type fdtPair struct {
+	name  string
+	cmd   Opcode // the event's opcode
+	event string
+	arm   Opcode
+	want  string // the arm payload the driver sent
+}
+
+// fdtCapturePairs are consecutive event/arm pairs read out of dump.pcapng with
+// `goodix-pcap -show 32` (and 34), frame numbers in the names. They include
+// every case the rules have to get right: a plain lift, a lift that was not
+// quite a lift (the base-invalid reply after it), and down events where the
+// finger missed a zone.
+var fdtCapturePairs = []fdtPair{
+	{"up 26 -> down arm 27", 0x34, "0002000070018b015701730154017201",
+		0x32, "0c0180b880c580ab80b980aa80b9ec5f"},
+	{"up 60 -> down arm 61", 0x34, "000200005c01830151016f0153017101",
+		0x32, "0c0180ae80c180a880b780a980b8136a"},
+	{"up 128, finger not quite lifted -> down arm 129", 0x34, "0002000051018601fb006a012b016a01",
+		0x32, "0c0180a880c3807d80b5809580b5cf7f"},
+	{"base invalid 131 -> down arm 132", 0x32, "8000000071018c015601720154017201",
+		0x32, "0c0180b880c680ab80b980aa80b9fd7f"},
+	{"down 4, all zones -> up arm 8", 0x32, "02003f0032011f01cb00ee00de00ee00",
+		0x34, "0e0180b480aa80808092808a8092"},
+	{"down 29, zone 4 uncovered -> up arm 33", 0x32, "02002f00d1000d01b50005013f011c01",
+		0x34, "0e01808380a18075809d801980a9"},
+	{"down 134, zone 1 uncovered -> up arm 138", 0x32, "02003d00ea008301bb003701c200fd00",
+		0x34, "0e0180908019807880b6807c8099"},
+}
+
+// TestThresholdRulesReproduceTheVendor derives each arm from the event before
+// it and compares with what the vendor driver actually sent. The timestamp in
+// a down arm is not derived, so it is copied from the capture.
+func TestThresholdRulesReproduceTheVendor(t *testing.T) {
+	for _, p := range fdtCapturePairs {
+		t.Run(p.name, func(t *testing.T) {
+			raw, _ := hex.DecodeString(p.event)
+			want, _ := hex.DecodeString(p.want)
+			ev, err := DecodeFDTEvent(p.cmd, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent, err := DecodeFDTArm(p.arm, want)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var arm FDTArm
+			switch p.arm {
+			case 0x32:
+				arm.Thresholds = DownThresholds(ev.Zones)
+				arm.Timestamp = sent.Timestamp
+			case 0x34:
+				arm.Thresholds = UpThresholds(ev, FDTDeltaObserved)
+			}
+			got, err := EncodeFDTArm(p.arm, arm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("derived %x, the driver sent %x", got, want)
+			}
+		})
+	}
+}
+
+// A reading too large for a byte must saturate rather than wrap: a wrapped
+// threshold would be tiny, and a tiny down threshold never fires.
+func TestThresholdsSaturate(t *testing.T) {
+	down := DownThresholds([FDTZones]uint16{0xffff, 0x200, 0x1fe, 0, 1, 2})
+	if want := [FDTZones]byte{0xff, 0xff, 0xff, 0, 0, 1}; down != want {
+		t.Errorf("DownThresholds = %x, want %x", down, want)
+	}
+	up := UpThresholds(FDTEvent{Flags: 0x3f, Zones: [FDTZones]uint16{0x1f0, 0x1c8, 0, 0, 0, 0}}, FDTDeltaObserved)
+	if up[0] != 0xff || up[1] != 0xff || up[2] != FDTDeltaObserved {
+		t.Errorf("UpThresholds = %x, want ff ff %02x …", up, FDTDeltaObserved)
+	}
+}

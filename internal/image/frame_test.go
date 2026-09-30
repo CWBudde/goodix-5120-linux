@@ -7,7 +7,7 @@ import (
 )
 
 // TestPackedLenForThisPart pins the arithmetic the whole Phase 5c expectation
-// rests on: 80 x 64 = 5120 samples at four per six bytes is 7680 bytes exactly,
+// rests on: 64 x 80 = 5120 samples at four per six bytes is 7680 bytes exactly,
 // and with upstream's header and trailer, 7693. Both fit inside the 7744-byte
 // record observed on the wire, which is why the length alone cannot tell them
 // apart (docs/protocol.md, "How big is an image, really").

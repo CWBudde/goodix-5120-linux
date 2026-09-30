@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"goodix5120/internal/image"
 	"goodix5120/internal/proto"
@@ -100,6 +101,14 @@ func TestParseStepsNeedsTheFlagForEveryNewOpcode(t *testing.T) {
 			}
 
 			ops, err := parseSteps(hex, u.op)
+			if fdtArm(u.op) {
+				// The finger-detect arms have no fixed payload, so the flag
+				// admits them to --wait-finger and never to --steps.
+				if err == nil || !strings.Contains(err.Error(), "--wait-finger") {
+					t.Fatalf("--steps %s with the flag set = %v, want a refusal naming --wait-finger", hex, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("--steps %s with the flag set = %v", hex, err)
 			}
@@ -166,6 +175,30 @@ func TestTLSConfigValidate(t *testing.T) {
 			allowed: allowD0,
 		},
 		{
+			name:    "--wait-finger without --capture",
+			cfg:     tlsConfig{enabled: true, pskPath: "k.bin", waitFinger: true, armDown: true, armUp: true, fingerTimeout: time.Second},
+			allowed: allowD0,
+			wantErr: "needs --capture",
+		},
+		{
+			name: "--wait-finger without --allow-34",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, armDown: true, fingerTimeout: time.Second},
+			allowed: allowD0And20,
+			wantErr: "--allow-34",
+		},
+		{
+			name:    "--wait-finger without --tls",
+			cfg:     tlsConfig{waitFinger: true},
+			wantErr: "only mean something with --tls",
+		},
+		{
+			name: "capture on touch",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, armDown: true, armUp: true, fingerTimeout: time.Second},
+			allowed: allowD0And20,
+		},
+		{
 			name:    "handshake and capture",
 			cfg:     tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true},
 			allowed: allowD0And20,
@@ -216,7 +249,7 @@ func TestTLSOpcodesAreCataloguedAndUnlocked(t *testing.T) {
 }
 
 // TestSyntheticFrameMatchesTheSensor keeps the rehearsal honest about geometry:
-// the stand-in's frame must be exactly what 80 x 64 packed 12-bit samples
+// the stand-in's frame must be exactly what 64 x 80 packed 12-bit samples
 // occupy, or the rehearsal would exercise TrimFrame's error path instead of its
 // success path.
 func TestSyntheticFrameMatchesTheSensor(t *testing.T) {
@@ -241,5 +274,62 @@ func TestSyntheticFrameMatchesTheSensor(t *testing.T) {
 	}
 	if _, err := image.Decode12BitPacked(trimmed, sensorWidth, sensorHeight); err != nil {
 		t.Errorf("decoding the synthetic frame: %v", err)
+	}
+}
+
+// TestVendorInitBeforeTLS pins the vendor's pre-0xd0 order, which the stall
+// diagnosis and the runbook's --tls command line are both read against. The
+// driver log shows it in every init, 0xe4 included, ahead of every handshake
+// that completed.
+func TestVendorInitBeforeTLS(t *testing.T) {
+	const want = "96,a8,ae,e4,a2,82,a6,a2,70,98,90"
+	if got := opList(vendorBeforeTLS()); got != want {
+		t.Fatalf("vendorBeforeTLS() = %s, want %s", got, want)
+	}
+
+	// The whole list has to be sendable as --steps, each above-ceiling opcode
+	// behind its own flag, or the runbook's command line cannot be typed.
+	var allow []proto.Opcode
+	for _, u := range unlockable {
+		allow = append(allow, u.op)
+	}
+	ops, err := parseSteps(want, allow...)
+	if err != nil {
+		t.Fatalf("parseSteps(%q) with every unlock flag = %v", want, err)
+	}
+	if missing := missingFromVendorInit(ops); len(missing) != 0 {
+		t.Errorf("the vendor's own init is missing %s from itself", opList(missing))
+	}
+}
+
+// TestMissingFromVendorInitNamesRun11sGap checks the diagnosis on the run that
+// needed it: Run 11 sent the vendor's init without 0xe4, and stalled.
+func TestMissingFromVendorInitNamesRun11sGap(t *testing.T) {
+	var allow []proto.Opcode
+	for _, u := range unlockable {
+		allow = append(allow, u.op)
+	}
+	run11, err := parseSteps("96,a8,ae,a2,82,a6,a2,70,98,90", allow...)
+	if err != nil {
+		t.Fatalf("parseSteps: %v", err)
+	}
+	if got := opList(missingFromVendorInit(run11)); got != "e4" {
+		t.Errorf("missingFromVendorInit(Run 11) = %q, want \"e4\"", got)
+	}
+}
+
+// TestMissingFromVendorInitCountsRepeats checks that one 0xa2 does not stand in
+// for both of the vendor's: an init that drops the second reset is incomplete.
+func TestMissingFromVendorInitCountsRepeats(t *testing.T) {
+	var allow []proto.Opcode
+	for _, u := range unlockable {
+		allow = append(allow, u.op)
+	}
+	oneReset, err := parseSteps("96,a8,ae,e4,a2,82,a6,70,98,90", allow...)
+	if err != nil {
+		t.Fatalf("parseSteps: %v", err)
+	}
+	if got := opList(missingFromVendorInit(oneReset)); got != "a2" {
+		t.Errorf("missingFromVendorInit(one a2) = %q, want \"a2\"", got)
 	}
 }

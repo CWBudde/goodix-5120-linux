@@ -115,7 +115,7 @@ func (t *replayTransport) Recv(time.Duration) ([]byte, error) {
 
 	out := t.queue[0]
 	t.queue = t.queue[1:]
-	t.opts.logf("transport: RX (replay) %d bytes: %s", len(out), dump(out))
+	t.opts.logf("transport: RX (replay) %d bytes: %s", len(out), dumpRX(out))
 	return out, nil
 }
 

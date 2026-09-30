@@ -48,10 +48,12 @@ const (
 	FDTEventDown                 // 0x32, header 02 00 <flags> 00 — 21 of 26
 	FDTEventUp                   // 0x34, header 00 02 00 00 — 21 of 21
 	FDTEventManual               // 0x36, header 00 01 <flags> 00 — 22 of 22
-	// FDTEventBaseInvalid is a 0x32 event whose header starts with 0x80, with
-	// zeroed readings — 5 of 26 in dump.pcapng. HYPOTHESIS: "base invalid". It
-	// arrives about 30 ms after an arm whose thresholds were far from the base,
-	// and the driver re-arms at once with fresh ones.
+	// FDTEventBaseInvalid is a 0x32 event whose header is 80 00 00 00 — 5 of 26
+	// in dump.pcapng. HYPOTHESIS: "base invalid". It arrives about 30 ms after
+	// an arm whose thresholds were far from the untouched readings, and its
+	// zones carry those untouched readings (they are not zero, whatever the
+	// header suggests). The driver re-arms at once, with thresholds derived from
+	// them — which is how a stale base heals itself.
 	FDTEventBaseInvalid
 )
 
@@ -84,7 +86,7 @@ type FDTEvent struct {
 	Flags byte
 
 	// Zones holds the six readings, little endian. HYPOTHESIS: per-zone
-	// capacitance. A base-invalid frame carries zeroes here.
+	// capacitance. They drop when a finger covers the zone.
 	Zones [FDTZones]uint16
 }
 
@@ -192,4 +194,57 @@ func DecodeFDTArm(cmd Opcode, payload []byte) (FDTArm, error) {
 		a.Timestamp = binary.LittleEndian.Uint16(payload[length-2:])
 	}
 	return a, nil
+}
+
+// Threshold derivation. OBSERVED (2026-09-30): both rules below reproduce all
+// 68 derived arms in dump.pcapng — 25 fdt_down and 43 fdt_up, every arm but the
+// capture's first, whose inputs predate the capture — and the vendor driver's
+// debug log states the up rule's inputs ("fdt_upbase[i]", "diff_use 27",
+// "touchflag") beside the values it sends. See docs/protocol.md, "Finger
+// detection: where the thresholds come from".
+
+// FDTDeltaDefault is the up-threshold margin the vendor driver uses when the
+// OTP gives none ("default fdt delta 21").
+const FDTDeltaDefault = 21
+
+// FDTDeltaObserved is the margin this device's driver derived from its OTP
+// ("OTP tcode 272, fdt delta 27") and used in every up arm on record. How the
+// OTP yields it is not known, so it is a constant rather than a computation.
+const FDTDeltaObserved = 27
+
+// FDTUntouchedUp is the up threshold the driver sends for a zone the finger
+// did not cover (its bit clear in the down event's flags). Observed for every
+// such zone in dump.pcapng.
+const FDTUntouchedUp = 0x19
+
+// DownThresholds derives fdt_down thresholds from untouched readings — those of
+// an up event or a base-invalid event: each zone's reading halved. A reading too large for a byte saturates;
+// none observed comes near (they sit around 0x150–0x190).
+func DownThresholds(untouched [FDTZones]uint16) [FDTZones]byte {
+	var th [FDTZones]byte
+	for i, z := range untouched {
+		th[i] = saturate(uint32(z) >> 1)
+	}
+	return th
+}
+
+// UpThresholds derives fdt_up thresholds from a finger-down event: a covered
+// zone gets its halved reading plus delta, an uncovered one FDTUntouchedUp.
+func UpThresholds(down FDTEvent, delta byte) [FDTZones]byte {
+	var th [FDTZones]byte
+	for i, z := range down.Zones {
+		if down.Flags&(1<<i) == 0 {
+			th[i] = FDTUntouchedUp
+			continue
+		}
+		th[i] = saturate(uint32(z)>>1 + uint32(delta))
+	}
+	return th
+}
+
+func saturate(v uint32) byte {
+	if v > 0xff {
+		return 0xff
+	}
+	return byte(v)
 }

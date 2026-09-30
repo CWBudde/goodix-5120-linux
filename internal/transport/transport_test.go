@@ -202,3 +202,18 @@ func TestOptionsDefaults(t *testing.T) {
 		t.Errorf("Ceiling = %v, want %v", o.Ceiling, proto.ClassSafe)
 	}
 }
+
+// The verbose RX line printed the 0xe4 and 0xa6 replies in full in Run 21. It
+// now keeps the pack header and command byte and says the rest was withheld.
+func TestDumpRXWithholdsSecretReplies(t *testing.T) {
+	marker := bytes.Repeat([]byte{0x5e, 0xc7}, 20)
+	for _, op := range []proto.Opcode{0xe4, 0xa6} {
+		got := dumpRX(proto.Encode(op, marker))
+		if strings.Contains(got, "5ec75ec7") || !strings.Contains(got, "withheld") {
+			t.Errorf("0x%02x: dumpRX = %q", byte(op), got)
+		}
+	}
+	if got, want := dumpRX(proto.Encode(0xa8, marker)), dump(proto.Encode(0xa8, marker)); got != want {
+		t.Errorf("0xa8: dumpRX = %q, want the plain dump %q", got, want)
+	}
+}
