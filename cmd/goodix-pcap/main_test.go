@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"goodix5120/internal/proto"
 )
 
 // TestPcapToolCannotReachHardware asserts this command cannot talk to a device.
@@ -76,19 +74,5 @@ func TestSecretPayloadsAreRefused(t *testing.T) {
 
 	if _, err := parseShow("zz"); err == nil {
 		t.Error("parseShow(\"zz\") was accepted")
-	}
-}
-
-// The deny list is keyed by opcode, so it must name opcodes that exist.
-func TestSecretOpcodesAreRegistered(t *testing.T) {
-	for op := range secret {
-		if _, ok := op.Class(); !ok {
-			t.Errorf("deny list names unregistered opcode 0x%02x", byte(op))
-		}
-	}
-	for _, op := range []proto.Opcode{0xe4, 0xa6} {
-		if _, ok := secret[op]; !ok {
-			t.Errorf("0x%02x (%s) is not on the deny list", byte(op), op.Name())
-		}
 	}
 }

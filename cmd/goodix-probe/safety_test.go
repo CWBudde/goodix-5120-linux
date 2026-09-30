@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 
 	"goodix5120/internal/proto"
@@ -229,6 +231,32 @@ func TestReplayScriptMatchesSteps(t *testing.T) {
 		if !bytes.Equal(ex.Payload, steps[i].payload) {
 			t.Errorf("script[%d] expects payload %x, but the probe sends %x",
 				i, ex.Payload, steps[i].payload)
+		}
+	}
+}
+
+// Run 21 printed the PSK hash from the 0xe4 reply and the OTP from the 0xa6
+// reply in full, on the "raw" line and again on the "payload" line. Neither
+// may reach a log (PLAN.md, "Never publish"). The payloads here are markers,
+// not the device's bytes.
+func TestSecretRepliesAreNotLogged(t *testing.T) {
+	marker := bytes.Repeat([]byte{0x5e, 0xc7}, 20)
+	for _, op := range []proto.Opcode{0xe4, 0xa6} {
+		raw := proto.Encode(op, marker)
+		var buf bytes.Buffer
+		logger := log.New(&buf, "", 0)
+		logger.Printf("  raw  %s", rawdump(raw))
+		if got := describe(logger, op, raw); got != replyData {
+			t.Errorf("0x%02x: describe = %v, want data", byte(op), got)
+		}
+		logged := buf.String()
+		for _, form := range []string{hexdump(marker[:8]), hex.EncodeToString(marker[:8])} {
+			if strings.Contains(logged, form) {
+				t.Errorf("0x%02x reply payload reached the log:\n%s", byte(op), logged)
+			}
+		}
+		if !strings.Contains(logged, "withheld") {
+			t.Errorf("0x%02x: the log does not say the payload was withheld:\n%s", byte(op), logged)
 		}
 	}
 }

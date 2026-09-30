@@ -127,6 +127,10 @@ The safety guarantee is structural, and changes must preserve it:
   The rule lives in one function (`proto.TLSRecord.PlaintextHex`) and is by record *type*, so it holds at
   every point in the session: those three types carry key agreement, a MAC or a reason code, never an image,
   and the PSK appears in none of them. `TestPlaintextHexNeverPrintsAnImage` pins the half that matters.
+- **The `0xe4` reply (PSK hash) and the `0xa6` reply (OTP) are never printed.** `proto.SecretReply` /
+  `proto.SecretPack` is the one deny list. `goodix-pcap` refuses to show those replies, and the probe's
+  `raw`/`payload` lines and every transport's RX line keep only the header (Run 21 printed both in full).
+  Print a received transfer through `rawdump` or `dumpRX`, never plain `hexdump`/`dump`.
 - **`session.LoopbackEC` is not a device and must never become one.** It is an `openssl s_client` in Goodix framing,
   used to rehearse the bridge offline; like the EC it stays silent until `0xd0`. It goes through
   `transport.NewPeer`, so a rehearsal refuses exactly what a live run refuses. `usb.go` remains the only code in the

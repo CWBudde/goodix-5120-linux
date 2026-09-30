@@ -355,7 +355,7 @@ func collectFrom(logger *log.Logger, tr transport.Transport, sent proto.Opcode, 
 			continue
 		}
 
-		logger.Printf("  raw  %s", hexdump(raw))
+		logger.Printf("  raw  %s", rawdump(raw))
 		switch describe(logger, sent, raw) {
 		case replyAck:
 			acked = true
@@ -389,7 +389,7 @@ func drain(logger *log.Logger, tr transport.Transport, timeout time.Duration) {
 			logger.Printf("  drain stopped: %v", err)
 			return
 		}
-		logger.Printf("  leftover raw  %s", hexdump(raw))
+		logger.Printf("  leftover raw  %s", rawdump(raw))
 		if len(raw) > 0 {
 			describe(logger, 0, raw)
 		}
@@ -455,7 +455,9 @@ func describe(logger *log.Logger, sent proto.Opcode, raw []byte) reply {
 		kind = replyOther
 		logger.Printf("  unsolicited message cmd=0x%02x (%s)", byte(cmd), cmd.Name())
 	}
-	if len(msgPayload) > 0 {
+	if why, secret := proto.SecretReply(cmd); secret && len(msgPayload) > 0 {
+		logger.Printf("  payload of %d byte(s) withheld: %s", len(msgPayload), why)
+	} else if len(msgPayload) > 0 {
 		logger.Printf("  payload %s", hexdump(msgPayload))
 		if s := printable(msgPayload); s != "" {
 			logger.Printf("  as text %q", s)
@@ -579,6 +581,17 @@ func explainOpenError(logger *log.Logger, err error) {
 	case errors.Is(err, transport.ErrNotFound):
 		logger.Printf("hint: sensor not enumerated. Check `lsusb -d 27c6:5120`")
 	}
+}
+
+// rawdump is hexdump for a transfer read from the device: a reply that
+// proto.SecretPack names (the PSK hash in 0xe4's, the OTP in 0xa6's) is reduced
+// to its pack header and command byte. Every "raw" line goes through it.
+func rawdump(b []byte) string {
+	op, why, secret := proto.SecretPack(b)
+	if !secret {
+		return hexdump(b)
+	}
+	return fmt.Sprintf("%s ... (0x%02x reply, %d more withheld: %s)", hexdump(b[:5]), byte(op), len(b)-5, why)
 }
 
 func hexdump(b []byte) string {

@@ -62,7 +62,7 @@ func (t *peerTransport) Recv(timeout time.Duration) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.opts.logf("transport: RX (peer) %d bytes: %s", len(out), dump(out))
+	t.opts.logf("transport: RX (peer) %d bytes: %s", len(out), dumpRX(out))
 	return out, nil
 }
 

@@ -118,6 +118,17 @@ func dump(b []byte) string {
 	return fmt.Sprintf("%s… (%d more byte(s))", hex.EncodeToString(b[:maxDump]), len(b)-maxDump)
 }
 
+// dumpRX is dump for a transfer read from the device. A reply that
+// proto.SecretPack names is reduced to its pack header and command byte.
+func dumpRX(b []byte) string {
+	op, why, secret := proto.SecretPack(b)
+	if !secret {
+		return dump(b)
+	}
+	return fmt.Sprintf("%s… (0x%02x reply, %d more byte(s) withheld: %s)",
+		hex.EncodeToString(b[:5]), byte(op), len(b)-5, why)
+}
+
 // ErrRefused is the classification sentinel for a command the safety gate
 // declined to transmit, whether because the opcode is unregistered or because
 // its class exceeds the ceiling. Every refusal wraps it, so callers can match

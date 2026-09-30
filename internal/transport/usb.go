@@ -233,7 +233,7 @@ func (t *usbTransport) Recv(timeout time.Duration) ([]byte, error) {
 	}
 
 	out := buf[:n]
-	t.opts.logf("transport: RX %d bytes: %s", len(out), dump(out))
+	t.opts.logf("transport: RX %d bytes: %s", len(out), dumpRX(out))
 	return out, nil
 }
 

@@ -74,7 +74,7 @@ func checkECResponsive(logger *log.Logger, tr transport.Transport, timeout time.
 			logger.Printf("  empty transfer")
 			continue
 		}
-		logger.Printf("  raw  %s", hexdump(raw))
+		logger.Printf("  raw  %s", rawdump(raw))
 		// Only an answer to 0xa8 itself counts. The EC emits 0x32 finger-detect
 		// events on its own (Run 1), so "something arrived" would let a stuck
 		// EC pass on a touch of the sensor.
@@ -173,7 +173,7 @@ func readStuckState(logger *log.Logger, host bisectHost, tr transport.Transport,
 			logger.Printf("  empty transfer")
 			continue
 		}
-		logger.Printf("  raw  %s", hexdump(raw))
+		logger.Printf("  raw  %s", rawdump(raw))
 		if describe(logger, opMCUState, raw) != replyData {
 			continue
 		}

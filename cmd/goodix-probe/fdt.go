@@ -158,7 +158,7 @@ func waitFDTEvent(ctx context.Context, logger *log.Logger, tr transport.Transpor
 		if len(raw) == 0 {
 			continue
 		}
-		logger.Printf("  raw  %s", hexdump(raw))
+		logger.Printf("  raw  %s", rawdump(raw))
 
 		flags, body, err := proto.DecodePack(raw)
 		if err != nil || flags != proto.FlagMessage {
