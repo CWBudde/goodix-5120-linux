@@ -81,6 +81,7 @@ struct _FpiDeviceGoodix5120
   FpImageDevice parent;
 
   G5120Tls     *tls;
+  gboolean      session_valid; /* only a successful open permits operations */
 
   /* The exchange in progress. One at a time: the driver is half duplex. */
   guint8        x_cmd;
@@ -969,6 +970,7 @@ open_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
 
+  self->session_valid = error == NULL;
   if (error)
     {
       /* Releasing an interface that was never claimed just fails; fine. */
@@ -983,8 +985,10 @@ open_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 static void
 dev_open (FpImageDevice *dev)
 {
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
   FpiSsm *ssm = fpi_ssm_new (FP_DEVICE (dev), open_run_state, OPEN_NUM_STATES);
 
+  self->session_valid = FALSE;
   fpi_ssm_start (ssm, open_done);
 }
 
@@ -998,6 +1002,7 @@ dev_close (FpImageDevice *dev)
    * the TLS session and whatever FDT arm it last had, as Windows leaves it;
    * a later open repeats the full init and handshake, which Runs 20-22 showed
    * works after a completed handshake, four times with no EC reset. */
+  self->session_valid = FALSE;
   g_clear_pointer (&self->tls, g5120_tls_free);
   g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (dev)),
                                   G5120_INTERFACE, 0, &error);
@@ -1290,6 +1295,20 @@ session_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   self->result = RESULT_NONE;
   g_clear_object (&self->fdt_cancel);
 
+  if (error)
+    {
+      /* Neither TLS nor the EC's state is trustworthy after a failed exchange.
+       * Invalidate before notifying libfprint, whose callbacks may re-enter.
+       * This also applies to errors suppressed during deactivation. Expected
+       * cancellation of an FDT wait completes without an error. */
+      self->session_valid = FALSE;
+      g_clear_pointer (&self->tls, g5120_tls_free);
+      if (self->plain->len)
+        memset (self->plain->data, 0, self->plain->len);
+      g_byte_array_set_size (self->plain, 0);
+      g_byte_array_set_size (self->rx_tls, 0);
+    }
+
   if (self->deactivating)
     {
       if (error)
@@ -1346,7 +1365,7 @@ dev_change_state (FpImageDevice *dev, FpiImageDeviceState state)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
 
-  if (self->deactivating)
+  if (self->deactivating || !self->session_valid)
     return;
 
   switch (state)
@@ -1377,6 +1396,15 @@ static void
 dev_activate (FpImageDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+
+  if (!self->session_valid)
+    {
+      fpi_image_device_activate_complete (dev,
+                                          fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                                    "Session unavailable; close and reopen "
+                                                                    "the device before another operation"));
+      return;
+    }
 
   /* The TLS session was set up at open; there is nothing to send here. */
   self->deactivating = FALSE;

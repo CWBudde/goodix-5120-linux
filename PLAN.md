@@ -277,11 +277,24 @@ sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply
       leak detection disabled under ptrace; `just check` and Go race tests pass (existing formatting
       differences remain). Independent review found no actionable issues. Four mutation checks
       catch missing validation, unchecked chip ID, an unset TLS bit, and a non-NUL terminator.
-      The five remaining 6b tasks still gate the first hardware run; the owner has passed the 6a sudo check.
-- [ ] **Invalidate failed sessions.** After an image / TLS / transport failure, `session_done` retains
-      the TLS object and `dev_activate` treats the session as usable for another operation. Require a
+      At that point five 6b tasks still gated the first hardware run; the owner has passed the 6a sudo check.
+- [x] **Invalidate failed sessions.** After an image / TLS / transport failure, `session_done` previously
+      retained the TLS object and `dev_activate` treated the session as usable for another operation. Require a
       deliberate recovery / reopen boundary rather than reusing a failed session; test late image
       arrival and activation after failure. Do not invent an untested EC reset or cleanup command.
+      **Done 2026-09-30:** only successful open permits operations. A session error invalidates that
+      permission, discards TLS, and clears buffered plaintext before notifying libfprint, including
+      errors suppressed during deactivation. Activation requires close/reopen; late capture/FDT
+      transitions submit no USB work. Healthy FDT/capture cancellation remains reusable without a
+      handshake. No device recovery commands were added; real EC recovery remains unverified.
+      **Verified:** nine added cases plus three extended image-failure regressions exercise malformed
+      TLS / ciphertext, OUT/IN failures, failure during deactivation, repeated activation, late images,
+      cancellation reuse and close/reopen. Ten failure regressions failed before the fix; both new
+      healthy-cancellation checks already passed. All 116 driver and 43 helper subtests pass normally
+      and under ASan/UBSan (leak detection disabled under ptrace). `just check` passes with existing
+      formatting differences. Independent review found no actionable issues. Four mutation checks
+      catch retained session validity, late state rearming, ignored deactivation failures and broken
+      healthy-cancellation reuse. The four remaining 6b tasks below still gate the first hardware run.
 - [ ] **Fix capture-read budget ordering.** `cap_read_cb` rejects the fourth additional transfer
       before attempting to decrypt the bytes it just fed. Try decoding the newly completed record
       before declaring the read budget exhausted; test completion on the final permitted read.

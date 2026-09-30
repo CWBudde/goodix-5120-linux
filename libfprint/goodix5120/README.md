@@ -238,6 +238,10 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 7. **What the EC is left in after a failure.** A handshake failure (wrong PSK, timeout) probably leaves the EC stuck.
    The driver says so and sends nothing more; the next open's health check then refuses. Sending a TLS fatal alert
    to unstick it is untested ("Recovering the EC", item 4) and deliberately not done.
+   After an image, TLS or transport failure during an operation, the driver discards its TLS session and refuses
+   activation until close/reopen. Late capture/FDT state changes send nothing. This also applies to unrelated
+   errors during deactivation; normal cancellation of a healthy operation remains reusable. Reopening repeats
+   the health check and full init, but recovery after a failed operation has only been tested with a synthetic EC.
 8. **Autosuspend.** The hwdb gives this device `ID_AUTOSUSPEND=1` (already true today through the unsupported list).
    Whether USB autosuspend between sessions upsets the EC is unknown.
 9. **Kernel driver.** `cdc_acm` is not bound on this machine. If it binds elsewhere, the claim detaches it

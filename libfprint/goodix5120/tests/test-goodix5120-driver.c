@@ -22,6 +22,7 @@ typedef struct {
   gboolean auto_events;
   gboolean no_hello, corrupt_image;
   gboolean wrong_key;
+  guint tls_fault; /* synthetic image: 1 = bad record type, 2 = bad ciphertext */
   guint image_parts;
   const char *cancel_machine;
   gint cancel_state;
@@ -116,6 +117,13 @@ collect_client_records (Fixture *f)
       g_assert_cmpuint (len, <=, sizeof (record) - 5);
       n = BIO_read (out, record + 5, len);
       g_assert_cmpint (n, ==, len);
+      if (record[0] == 0x17 && f->tls_fault)
+        {
+          if (f->tls_fault == 1)
+            record[0] = 0x18;
+          else
+            record[len + 4] ^= 1;
+        }
       if (record[0] == 0x17 && f->image_parts > 1)
         {
           gsize pos = 0;
@@ -661,6 +669,52 @@ test_unexpected_messages (Fixture *f, gconstpointer data)
 }
 
 static void
+assert_session_invalid (Fixture *f)
+{
+  guint writes = f->usb.writes->len;
+  guint images = f->usb.notify.images;
+  guint errors = f->usb.notify.session_errors;
+  guint activations = f->usb.notify.activations;
+  guint handshakes = f->handshakes;
+
+  /* Clearing the framework's error or requesting activation is not recovery. */
+  for (guint i = 0; i < 2; i++)
+    {
+      g_clear_error (&f->usb.notify.error);
+      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
+      g_assert_nonnull (f->usb.notify.error);
+      g_assert_nonnull (strstr (f->usb.notify.error->message, "close and reopen"));
+      g_assert_cmpuint (f->usb.notify.activations, ==, activations + i + 1);
+      g_assert_cmpuint (f->usb.writes->len, ==, writes);
+      g_assert_null (f->usb.pending);
+    }
+
+  /* A real encrypted synthetic image can arrive after the failed operation.
+   * Stale framework transitions and processing completion must leave it unread. */
+  f->corrupt_image = FALSE;
+  f->tls_fault = 0;
+  f->image_parts = 1;
+  queue_image (f);
+  const FpiImageDeviceState states[] = {
+    FPI_IMAGE_DEVICE_STATE_CAPTURE,
+    FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON,
+    FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF,
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (states); i++)
+    {
+      fake_change_state (&f->usb, states[i]);
+      fake_processing_complete (&f->usb);
+      g_assert_null (f->usb.pending);
+      g_assert_cmpuint (f->usb.writes->len, ==, writes);
+    }
+  g_assert_cmpuint (f->usb.machines, ==, 0);
+  g_assert_cmpuint (f->usb.notify.images, ==, images);
+  g_assert_cmpuint (f->usb.notify.session_errors, ==, errors);
+  g_assert_cmpuint (f->handshakes, ==, handshakes);
+  fake_deactivate (&f->usb);
+}
+
+static void
 test_image_failure (Fixture *f, gconstpointer data)
 {
   guint mode = GPOINTER_TO_UINT (data);
@@ -681,6 +735,7 @@ test_image_failure (Fixture *f, gconstpointer data)
   g_assert_nonnull (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
   g_assert_cmpuint (f->usb.notify.images, ==, 0);
+  assert_session_invalid (f);
   /* Recovery is tested only across an explicit close/reopen. */
   FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
   fake_drop_replies (&f->usb);
@@ -694,6 +749,110 @@ test_image_failure (Fixture *f, gconstpointer data)
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.images, ==, 1);
+}
+
+/* Mutation targets: retaining a failed TLS session, successful reactivation,
+ * writes from late state transitions, and errors hidden by deactivation. */
+static void
+test_failed_session (Fixture *f, gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT (data);
+  open_driver (f);
+  f->usb.notify.automatic = TRUE;
+  f->tls_fault = mode < 2 ? mode + 1 : 0;
+  f->image_parts = 2;
+  if (mode == 3)
+    {
+      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+      pump (f); /* cancellable indefinite FDT read */
+    }
+  else
+    {
+      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+      if (mode != 2)
+        {
+          g_assert_true (fake_usb_step (&f->usb)); /* image request */
+          g_assert_true (fake_usb_step (&f->usb)); /* ACK */
+          g_assert_true (fake_usb_step (&f->usb)); /* first TLS fragment */
+        }
+    }
+  if (mode >= 2)
+    {
+      if (mode == 5)
+        fake_deactivate (&f->usb); /* an unrelated I/O error still invalidates */
+      fake_usb_complete (&f->usb, NULL, 0,
+                         g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED,
+                                              "synthetic session I/O failure"));
+    }
+  pump (f);
+  g_assert_null (f->usb.pending);
+  g_assert_cmpuint (f->usb.notify.images, ==, 0);
+  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
+  g_assert_cmpuint (f->usb.notify.session_errors, ==, mode == 5 ? 0 : 1);
+  if (mode != 5)
+    g_assert_nonnull (f->usb.notify.error);
+  assert_session_invalid (f);
+
+  /* Only a fresh successful open with a healthy fake EC restores usability. */
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+  fake_drop_replies (&f->usb);
+  g_clear_error (&f->usb.notify.error);
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->handshakes, ==, 2);
+  start_operation (f);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+}
+
+static void
+test_late_image_after_failure (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  open_driver (f);
+  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+  fake_usb_complete (&f->usb, NULL, 0,
+                     g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED,
+                                          "synthetic failed request"));
+  g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
+  guint writes = f->usb.writes->len;
+  queue_image (f);
+  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_null (f->usb.pending);
+  g_assert_cmpuint (f->usb.notify.images, ==, 0);
+}
+
+static void
+test_cancel_reactivation (Fixture *f, gconstpointer data)
+{
+  gboolean capture = GPOINTER_TO_UINT (data);
+  open_driver (f);
+  if (capture)
+    {
+      f->image_parts = 2;
+      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+      for (guint i = 0; i < 3; i++)
+        g_assert_true (fake_usb_step (&f->usb));
+    }
+  else
+    {
+      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+      pump (f);
+    }
+  fake_deactivate (&f->usb);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 0);
+  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
+  g_assert_cmpuint (f->usb.notify.session_errors, ==, 0);
+  start_operation (f);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
 }
 
 static void
@@ -1056,5 +1215,18 @@ main (int argc, char **argv)
       g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/image/%s", image_names[i]);
       g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_image_failure, teardown);
     }
+  const char *failure_names[] = { "tls-record", "tls-ciphertext", "write", "fdt-read",
+                                  "image-read", "io-during-deactivation" };
+  for (guint i = 0; i < G_N_ELEMENTS (failure_names); i++)
+    {
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/failed-session/%s", failure_names[i]);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_failed_session, teardown);
+    }
+  g_test_add ("/goodix5120/driver/late-image-after-failure", Fixture, NULL, setup,
+              test_late_image_after_failure, teardown);
+  g_test_add ("/goodix5120/driver/cancel-reactivation/fdt", Fixture, NULL, setup,
+              test_cancel_reactivation, teardown);
+  g_test_add ("/goodix5120/driver/cancel-reactivation/capture", Fixture, GUINT_TO_POINTER (1), setup,
+              test_cancel_reactivation, teardown);
   return g_test_run ();
 }

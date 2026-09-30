@@ -40,7 +40,13 @@ Init regressions inject empty, truncated and oversized data at every init exchan
 replies and the final MCU state. They change each documented status/header byte, chip ID and TLS-connected bit,
 then assert failed open with no further OUT submission. Firmware permits exactly the supported name with an optional
 NUL; hidden suffixes are rejected. Positive cases vary synthetic hashes, OTP, MCU counters and the unexplained PSK
-trailing byte to keep undocumented fields opaque. The driver suite contains 107 subtests; the helper suites add 43.
+trailing byte to keep undocumented fields opaque.
+
+Session-failure regressions cover invalid image layout, timeout/read-budget exhaustion, malformed TLS records,
+corrupt ciphertext, OUT/IN errors and I/O failure during deactivation. Repeated activation must fail without
+a USB submission or handshake; late capture/FDT transitions cannot consume a queued synthetic encrypted image.
+Close/reopen with a healthy fake EC restores operation. Cancellation of FDT waiting or capture remains reusable
+without a new handshake. The driver suite contains 116 subtests; the helper suites add 43.
 
 ## Limits and next regression targets
 
@@ -48,7 +54,6 @@ This adapter does not run libfprint's action framework, GUsb, libusb, Pixman or 
 and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. It cannot validate
 enrollment quality, matching, timing, suspend or EC recovery.
 
-The remaining Phase 6b tasks still require failed-session invalidation, completion on
-the final permitted image read, per-operation retry reset, symmetric interface release and shared independent
-protocol fixtures. Recovery tests here use an explicit close/reopen with a healthy synthetic EC; they do not assert
-that immediate activation after a failed session is safe. Keep the first hardware-run gate in `PLAN.md`.
+The remaining Phase 6b tasks still require completion on the final permitted image read, per-operation retry reset,
+symmetric interface release and shared independent protocol fixtures. Failed sessions require close/reopen;
+the fake EC does not establish that reopening recovers real hardware. Keep the first hardware-run gate in `PLAN.md`.
