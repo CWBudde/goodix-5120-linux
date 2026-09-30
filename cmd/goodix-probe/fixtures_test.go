@@ -89,14 +89,10 @@ func vendorInitScript() []transport.Exchange {
 		return transport.Exchange{Cmd: st.cmd, Payload: st.payload, Responses: responses}
 	}
 
-	// The 0xe4 reply is 41 bytes: data_type (4) + length (4) + a 32-byte hash
-	// is 40, so one byte is unaccounted for. Rather than quietly pad, the
-	// fixture keeps the recorded length and names the gap.
-	pskReply := make([]byte, 0, 41)
-	pskReply = binary.LittleEndian.AppendUint32(pskReply, 0xbb020003)
-	pskReply = binary.LittleEndian.AppendUint32(pskReply, 0x20)
+	// Run 8 records a nine-byte reply envelope, followed by a 32-byte hash.
+	// The response is not an echo of the request's data_type.
+	pskReply := []byte{0x00, 0x03, 0x00, 0x01, 0xbb, 0x20, 0x00, 0x00, 0x00}
 	pskReply = append(pskReply, synthetic("e4-psk-hash", 32)...)
-	pskReply = append(pskReply, 0x00) // unexplained 41st byte; re-read the ETW log
 
 	clientHello := append([]byte{0x16, 0x03, 0x03, 0x00, 0x40}, synthetic("tls-clienthello", 64)...)
 

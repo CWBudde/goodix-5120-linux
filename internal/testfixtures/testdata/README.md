@@ -15,6 +15,8 @@ unknown fields, malformed hex/numbers, and incomplete inventories. No capture fi
   rather than either implementation's array or a checksum-only assertion.
 - Firmware, reset/chip/status/header bytes and response modes follow the same protocol evidence.
   Firmware uses the supported unterminated form; existing C regressions also test one trailing NUL.
+  `init.03` uses Run 8's nine-byte reply prefix `00 03 00 01 bb 20 00 00 00`, then
+  a synthetic 32-byte hash. It does not echo the request's type or add a trailing byte.
 - PSK hash and OTP bytes are **synthetic**: SHA-256 of `e4-psk-hash/0` and consecutive
   `a6-otp/<counter>` labels. MCU-state bodies retain the reference replay's example fields;
   their counters and unrelated flags are opaque. They do not represent calibration support.

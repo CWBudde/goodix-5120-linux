@@ -1253,7 +1253,7 @@ typedef struct {
 static const InitField init_fields[] = {
   { 0, 0 }, { 1, 0 },
   { 3, 0 }, { 3, 1 }, { 3, 2 }, { 3, 3 },
-  { 3, 4 }, { 3, 5 }, { 3, 6 }, { 3, 7 },
+  { 3, 4 }, { 3, 5 }, { 3, 6 }, { 3, 7 }, { 3, 8 },
   { 4, 0 }, { 4, 1 }, { 4, 2 }, { 7, 0 }, { 7, 1 }, { 7, 2 },
   { 5, 0 }, { 5, 1 }, { 5, 2 }, { 5, 3 },
   { 8, 0 }, { 8, 1 }, { 9, 0 }, { 9, 1 },
@@ -1270,6 +1270,29 @@ test_init_reply_field (Fixture *f, gconstpointer data)
   bytes[field->offset] ^= reply->cmd == 0xae ? 2 : 1;
   replace_init_reply (f, reply, bytes, reply->len);
   assert_init_rejected (f, reply->cmd);
+}
+
+/* Run 8 records this nine-byte envelope, not an echo of the request type.
+ * The remaining 32 bytes below are a synthetic hash, never device data. */
+static void
+test_psk_reply_run8 (Fixture *f, gconstpointer data)
+{
+  const guint8 bytes[41] = { 0x00, 0x03, 0x00, 0x01, 0xbb, 0x20, 0x00, 0x00, 0x00 };
+  replace_init_reply (f, &init_replies[3], bytes, sizeof (bytes));
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+}
+
+/* The old synthetic echo + hash + unexplained trailing byte is not a
+ * documented device reply and must not become a permissive fallback. */
+static void
+test_psk_reply_request_echo (Fixture *f, gconstpointer data)
+{
+  const guint8 bytes[41] = { 0x03, 0x00, 0x02, 0xbb, 0x20, 0x00, 0x00, 0x00 };
+  replace_init_reply (f, &init_replies[3], bytes, sizeof (bytes));
+  assert_init_rejected (f, 0xe4);
 }
 
 static void
@@ -1300,7 +1323,7 @@ test_init_reply_opaque (Fixture *f, gconstpointer data)
   if (reply->cmd == 0xa8)
     len++;
   else if (reply->cmd == 0xe4)
-    memset (bytes + 8, 0x5a, len - 8); /* synthetic hash + unexplained last byte */
+    memset (bytes + 9, 0x5a, len - 9); /* synthetic 32-byte hash */
   else if (reply->cmd == 0xa6)
     memset (bytes, 0x5a, len);
   else
@@ -1351,6 +1374,10 @@ main (int argc, char **argv)
       memcpy (r->bytes, bytes->data, r->len);
     }
   g_test_add ("/goodix5120/driver/shared-init", Fixture, NULL, setup, test_shared_init, teardown);
+  g_test_add ("/goodix5120/driver/psk-reply/run8", Fixture, NULL, setup,
+              test_psk_reply_run8, teardown);
+  g_test_add ("/goodix5120/driver/psk-reply/request-echo", Fixture, NULL, setup,
+              test_psk_reply_request_echo, teardown);
   g_test_add ("/goodix5120/driver/enrollment", Fixture, NULL, setup, test_enrollment, teardown);
   g_test_add ("/goodix5120/driver/processing-after-lift", Fixture, NULL, setup,
               test_processing_after_lift, teardown);

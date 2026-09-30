@@ -322,13 +322,15 @@ missing_reply_error (FpiDeviceGoodix5120 *self)
                                    opcode_name (self->x_cmd), self->x_cmd, self->x_purpose);
 }
 
-/* Init replies documented in docs/protocol.md, "Init sequence". Only check
- * known fields: the hash, OTP, MCU counters and final PSK byte are opaque.
+/* Init replies documented in docs/protocol.md, "Init sequence" and Run 8.
+ * Only check known fields: the hash, OTP and MCU counters are opaque.
  * Errors deliberately describe the envelope, never sensitive contents. */
 static GError *
 validate_data_reply (FpiDeviceGoodix5120 *self)
 {
-  static const guint8 psk_header[] = { 3, 0, 2, 0xbb, 0x20, 0, 0, 0 };
+  /* Run 8: nine-byte reply envelope + 32-byte hash. The reply type differs
+   * from the request; do not infer it by echoing p_psk_read. */
+  static const guint8 psk_header[] = { 0, 3, 0, 1, 0xbb, 0x20, 0, 0, 0 };
   static const guint8 reset_reply[] = { 1, 0, 8 };
   static const guint8 chip_reply[] = { 0xa2, 4, 0x25, 0 };
   static const guint8 success_reply[] = { 1, 1 };

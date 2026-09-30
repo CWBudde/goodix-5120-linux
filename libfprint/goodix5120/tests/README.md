@@ -39,8 +39,9 @@ with a two-piece image. State-entry hooks also cancel both FDT states in each di
 Init regressions inject empty, truncated and oversized data at every init exchange, including both firmware/reset
 replies and the final MCU state. They change each documented status/header byte, chip ID and TLS-connected bit,
 then assert failed open with no further OUT submission. Firmware permits exactly the supported name with an optional
-NUL; hidden suffixes are rejected. Positive cases vary synthetic hashes, OTP, MCU counters and the unexplained PSK
-trailing byte to keep undocumented fields opaque.
+NUL; hidden suffixes are rejected. Positive cases vary synthetic hashes, OTP and MCU counters to keep
+undocumented fields opaque. The PSK reply requires Run 8's nine-byte envelope plus a 32-byte synthetic hash;
+dedicated regressions accept that recorded shape and reject the old request-echo fixture.
 
 Session-failure regressions cover invalid image layout, timeout/read-budget exhaustion, malformed TLS records,
 corrupt ciphertext, OUT/IN errors and I/O failure during deactivation. Repeated activation must fail without
