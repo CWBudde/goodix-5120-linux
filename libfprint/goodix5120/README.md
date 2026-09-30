@@ -233,7 +233,9 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
    between that drain and the first arm is dropped as stale before the arm's ACK.
 5. **Base invalid with zeros.** Tonight's reading is that a base-invalid event carries current readings. The older
    note in `internal/proto/fdt.go` says zeroes. If it is zeroes, the driver keeps its previous thresholds, and gives
-   up after 8 in a row. No live run has seen the event yet: Runs 21 and 22 armed down four times without one.
+   up after 8 in a row. Each activation resets that retry budget, including after cancellation or close/reopen;
+   rearming within an operation keeps the count. No live run has seen the event yet: Runs 21 and 22 armed down
+   four times without one.
 6. **ACK status.** Only `0x01` has ever been seen, and anything else stops the driver. That may be too strict.
 7. **What the EC is left in after a failure.** A handshake failure (wrong PSK, timeout) probably leaves the EC stuck.
    The driver says so and sends nothing more; the next open's health check then refuses. Sending a TLS fatal alert
@@ -245,7 +247,12 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 8. **Autosuspend.** The hwdb gives this device `ID_AUTOSUSPEND=1` (already true today through the unsupported list).
    Whether USB autosuspend between sessions upsets the EC is unknown.
 9. **Kernel driver.** `cdc_acm` is not bound on this machine. If it binds elsewhere, the claim detaches it
-   (`G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`), which is untested.
+   (`G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`). Close and failed-open rollback use the same flag to
+   request reattachment, only after a successful claim. Offline tests cover a bound driver and both release/
+   attachment failure paths; real kernel-driver restoration remains unverified. A cleanup failure prevents
+   reopening that device object: recreate it before retrying, without assuming that fixes kernel binding.
+   [GUsb detaches before claiming](https://github.com/hughsie/libgusb/blob/0.4.9/gusb/gusb-device.c#L1602)
+   and performs no rollback if the claim itself fails; its public API offers no separate attach operation.
 10. **Re-init after a completed session.** Each open repeats the full init and handshake. Runs 18, 20, 21 and 22
     did that four times with no EC reset in between (the `0xae` counter rose by 2 each time), each run a separate
     process that exited without closing TLS. Those opens were minutes to hours apart. Many opens in quick

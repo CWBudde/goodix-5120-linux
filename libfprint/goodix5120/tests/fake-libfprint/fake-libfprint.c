@@ -480,6 +480,12 @@ g_usb_device_claim_interface (FakeUsb *usb, guint interface, guint flags, GError
   g_assert_cmpuint (interface, ==, 1);
   usb->claims++;
   usb->claim_flags = flags;
+  /* GUsb detaches before claiming, with no rollback when claim fails. */
+  if ((flags & G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER) && usb->kernel_bound)
+    {
+      usb->kernel_bound = FALSE;
+      usb->kernel_detached = TRUE;
+    }
   if (usb->claim_fails)
     {
       g_set_error_literal (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED, "claim failed");
@@ -501,6 +507,24 @@ g_usb_device_release_interface (FakeUsb *usb, guint interface, guint flags, GErr
       g_set_error_literal (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED, "not claimed");
       return FALSE;
     }
+  if (usb->release_fails)
+    {
+      g_set_error_literal (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED, "release failed");
+      return FALSE;
+    }
   usb->claimed = FALSE;
+  if (flags & G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER)
+    {
+      if (usb->attach_fails)
+        {
+          g_set_error_literal (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED, "attach failed");
+          return FALSE;
+        }
+      if (usb->kernel_detached)
+        {
+          usb->kernel_bound = TRUE;
+          usb->kernel_detached = FALSE;
+        }
+    }
   return TRUE;
 }

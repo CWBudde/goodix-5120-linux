@@ -25,6 +25,8 @@ struct _FakeUsb {
   GPtrArray *writes;
   guint claims, releases, claim_flags, release_flags;
   gboolean claimed, claim_fails;
+  gboolean kernel_bound, kernel_detached;
+  gboolean release_fails, attach_fails;
   guint machines;
   FakeNotifications notify;
   FakeStateHook state_hook;

@@ -46,7 +46,19 @@ Session-failure regressions cover invalid image layout, timeout/read-budget exha
 corrupt ciphertext, OUT/IN errors and I/O failure during deactivation. Repeated activation must fail without
 a USB submission or handshake; late capture/FDT transitions cannot consume a queued synthetic encrypted image.
 Close/reopen with a healthy fake EC restores operation. Cancellation of FDT waiting or capture remains reusable
-without a new handshake. The driver suite contains 116 subtests; the helper suites add 43.
+without a new handshake.
+
+Capture-budget regressions complete a TLS record on the fourth additional read, validate the decoded image,
+and reject a wrong layout after decrypting on that same boundary. Six-fragment images still exhaust the budget
+with the final fragment unread. FDT retries get eight fresh rearms after cancellation/reactivation or failed
+operation/close/reopen; the existing exhaustion case guards the limit within one operation.
+
+The USB adapter models a previously bound kernel driver and GUsb's detach-before-claim / release-before-attach
+ordering, based on [GUsb 0.4.9](https://github.com/hughsie/libgusb/blob/0.4.9/gusb/gusb-device.c#L1602).
+Tests require matching binding flags on close and rollback, and no release before successful claim. Injected
+release and attachment failures preserve errors and block reopening that device object without new USB work.
+These checks exercise the driver's GUsb calls; they do not run actual detach/attach operations.
+The driver suite contains 126 subtests; the helper suites add 43.
 
 ## Limits and next regression targets
 
@@ -54,6 +66,8 @@ This adapter does not run libfprint's action framework, GUsb, libusb, Pixman or 
 and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. It cannot validate
 enrollment quality, matching, timing, suspend or EC recovery.
 
-The remaining Phase 6b tasks still require completion on the final permitted image read, per-operation retry reset,
-symmetric interface release and shared independent protocol fixtures. Failed sessions require close/reopen;
-the fake EC does not establish that reopening recovers real hardware. Keep the first hardware-run gate in `PLAN.md`.
+The remaining Phase 6b task requires shared independent protocol fixtures. Failed sessions require close/reopen;
+the fake EC does not establish that reopening recovers real hardware. GUsb may detach a kernel driver before an
+unsuccessful claim, and its public API does not expose a separate attachment operation to undo that case.
+An ambiguous release failure requires recreating the device object; that alone does not guarantee kernel-driver
+restoration. Keep the first hardware-run gate in `PLAN.md`.

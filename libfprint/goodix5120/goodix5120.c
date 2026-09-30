@@ -104,6 +104,8 @@ struct _FpiDeviceGoodix5120
   GByteArray   *rx_tls;
 
   /* Open. */
+  gboolean      interface_claimed;
+  gboolean      interface_cleanup_failed; /* release failure has ambiguous ownership */
   guint         init_idx;
   gint64        hs_deadline;
   gboolean      hs_done;
@@ -878,6 +880,7 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
           fpi_ssm_mark_failed (ssm, error);
           return;
         }
+      self->interface_claimed = TRUE;
       fpi_ssm_next_state (ssm);
       break;
 
@@ -966,6 +969,21 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
 }
 
 static void
+release_interface (FpiDeviceGoodix5120 *self, GError **error)
+{
+  if (!self->interface_claimed)
+    return;
+
+  /* GUsb releases, then attaches. FALSE does not tell us which failed,
+   * so do not release twice or reclaim on this object after failure. */
+  self->interface_claimed = FALSE;
+  if (!g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (self)),
+                                       G5120_INTERFACE,
+                                       G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER, error))
+    self->interface_cleanup_failed = TRUE;
+}
+
+static void
 open_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
@@ -973,9 +991,10 @@ open_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   self->session_valid = error == NULL;
   if (error)
     {
-      /* Releasing an interface that was never claimed just fails; fine. */
-      g_usb_device_release_interface (fpi_device_get_usb_device (dev), G5120_INTERFACE,
-                                      0, NULL);
+      g_autoptr(GError) cleanup_error = NULL;
+      release_interface (self, &cleanup_error);
+      if (cleanup_error)
+        g_prefix_error (&error, "Interface cleanup also failed (%s): ", cleanup_error->message);
       g_clear_pointer (&self->tls, g5120_tls_free);
     }
 
@@ -986,9 +1005,18 @@ static void
 dev_open (FpImageDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
-  FpiSsm *ssm = fpi_ssm_new (FP_DEVICE (dev), open_run_state, OPEN_NUM_STATES);
+  FpiSsm *ssm;
 
   self->session_valid = FALSE;
+  if (self->interface_cleanup_failed)
+    {
+      fpi_image_device_open_complete (dev,
+                                      fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                                "Previous interface cleanup failed; recreate "
+                                                                "the device before reopening"));
+      return;
+    }
+  ssm = fpi_ssm_new (FP_DEVICE (dev), open_run_state, OPEN_NUM_STATES);
   fpi_ssm_start (ssm, open_done);
 }
 
@@ -1004,8 +1032,7 @@ dev_close (FpImageDevice *dev)
    * works after a completed handshake, four times with no EC reset. */
   self->session_valid = FALSE;
   g_clear_pointer (&self->tls, g5120_tls_free);
-  g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (dev)),
-                                  G5120_INTERFACE, 0, &error);
+  release_interface (self, &error);
   fpi_image_device_close_complete (dev, error);
 }
 
@@ -1190,13 +1217,7 @@ cap_read_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError
       return;
     }
 
-  if (++self->cap_reads >= G5120_MAX_READS_PER_STEP)
-    {
-      fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                          "no whole image after %u transfers",
-                                                          self->cap_reads));
-      return;
-    }
+  self->cap_reads++;
   fpi_ssm_jump_to_state (ssm, CAP_READ);
 }
 
@@ -1238,6 +1259,10 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
          * plaintext is complete; its length decides the layout. */
         if (self->plain->len > 0)
           fpi_ssm_next_state (ssm);
+        else if (self->cap_reads >= G5120_MAX_READS_PER_STEP)
+          fpi_ssm_mark_failed (ssm, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                            "no whole image after %u transfers",
+                                                            self->cap_reads));
         else
           submit_read (ssm, dev, G5120_TIMEOUT_IMAGE, NULL, cap_read_cb);
       }
@@ -1407,6 +1432,7 @@ dev_activate (FpImageDevice *dev)
     }
 
   /* The TLS session was set up at open; there is nothing to send here. */
+  self->base_invalid = 0; /* a fresh operation, including after cancellation */
   self->deactivating = FALSE;
   fpi_image_device_activate_complete (dev, NULL);
 }

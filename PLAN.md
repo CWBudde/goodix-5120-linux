@@ -294,17 +294,36 @@ sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply
       and under ASan/UBSan (leak detection disabled under ptrace). `just check` passes with existing
       formatting differences. Independent review found no actionable issues. Four mutation checks
       catch retained session validity, late state rearming, ignored deactivation failures and broken
-      healthy-cancellation reuse. The four remaining 6b tasks below still gate the first hardware run.
-- [ ] **Fix capture-read budget ordering.** `cap_read_cb` rejects the fourth additional transfer
+      healthy-cancellation reuse. At that point four remaining 6b tasks still gated the first hardware run.
+- [x] **Fix capture-read budget ordering.** `cap_read_cb` previously rejected the fourth additional transfer
       before attempting to decrypt the bytes it just fed. Try decoding the newly completed record
       before declaring the read budget exhausted; test completion on the final permitted read.
-- [ ] **Reset per-operation FDT retry state.** `base_invalid` is reset only on accepted finger-down.
+      **Done 2026-09-30:** decrypt newly fed bytes before checking the additional-read budget. Two new cases
+      cover a complete image and invalid layout on the final permitted read; both failed before the fix.
+      The six-fragment exhaustion case still leaves its last fragment unread; no read limit was increased.
+- [x] **Reset per-operation FDT retry state.** `base_invalid` was reset only on accepted finger-down.
       A retry after exhausting that budget inherits the exhausted count. Reset it at the intended
       operation / session boundary and test a retry after failure.
-- [ ] **Restore detached kernel drivers on release.** Claim uses
-      `G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`, but close and open-failure cleanup release with
+      **Done 2026-09-30:** successful activation starts a fresh retry budget; rearming keeps its count.
+      Two new cases retry after cancellation/reactivation and exhausted-budget failure/close/reopen.
+      Both failed before the fix; each now permits eight base-invalid rearms before accepting finger-down.
+- [x] **Restore detached kernel drivers on release.** Claim uses
+      `G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`, but close and open-failure cleanup previously released with
       flags zero. Track successful claim / detach ownership and release symmetrically. Test rollback
       on open failure and close with a previously bound driver.
+      **Done 2026-09-30:** track successful claims and use the matching binding flag for close and rollback.
+      Preclaim/failed-claim paths never release an unowned interface. Cleanup failure is reported, preserving
+      the original open error on rollback; ambiguous ownership prevents reopening that device object.
+      **Verified for this three-item batch:** 10 new and 11 extended lifecycle cases cover final image reads,
+      fresh FDT retries, binding restoration requests, unowned cleanup, and release/attach failures. Thirteen
+      targeted cases failed before their fixes. All 126 driver and 43 helper subtests pass normally and under
+      ASan/UBSan (LeakSanitizer disabled under ptrace); `just check` passes with existing formatting differences.
+      Seven mutation checks catch early exhaustion, a widened limit, retained retries, unowned release,
+      missing binding flags, reopening after cleanup failure, and hidden rollback errors. Independent
+      review found no actionable issues and confirmed the real libfprint completion contracts.
+      **API limitation:** GUsb can detach before an unsuccessful claim with no rollback or public separate
+      attach API. Tests verify successful-claim release symmetry; real restoration remains unverified.
+      The shared-fixture task below still gates the first C-driver hardware run.
 - [ ] **Use independent shared protocol fixtures.** Compare every init payload byte, reply expectation,
       FDT vector, and image layout between Go and C. Selected payload assertions and a config checksum
       cannot establish full byte-for-byte parity.
