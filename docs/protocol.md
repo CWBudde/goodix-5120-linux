@@ -863,6 +863,31 @@ keyboard stayed alive. `--read-state` therefore sent no `0xae`, as designed.
 - The health check no longer logs "data arrived with no ACK" after reading the ACK itself: the Run 18
   log fix, confirmed live.
 
+### Run 20 — 2026-09-30 04:12, Run 18's command plus `--capture captures/frame-1.pgm --allow-20` (observed)
+
+Two minutes after Run 19, same boot, no EC reset. **Result: the first real frame. The handshake completed
+again, `0x20` returned one encrypted image record, it decrypted to 7693 bytes, and the internal keyboard
+stayed alive throughout.** Phase 5c is done.
+
+- **`0xae` after a completed handshake:** `02 02 31 03 00 00 01 00 90 63 00 … 04 04`. Compared with the
+  EC fresh from a reset (Run 17/18: `02 00 31 03 00 00 01 00 00 63 … 02 02`) and stuck mid-handshake
+  (Run 12: `02 08 31 00 00 00 01 00 90 63 … 14 14`):
+  - byte 1 is `0x02`, neither `0x00` (fresh) nor `0x08` (stuck), nor the vendor's cold-init `0x11`;
+  - byte 8 is `0x90`, as in the stuck state, where the fresh EC has `0x00`;
+  - the trailing counter went `02 02` → `04 04` over Run 18's one handshake. That fits `+2` per `0xd0`,
+    as `10` → `12` → `14` did over Runs 11 and 12.
+  What the bits mean is not known. This is the reply of an EC that answers plaintext and completes a new
+  handshake (this run), so it is a healthy state.
+- **The init and handshake repeated Run 18 exactly:** the same replies step for step, 4 records each way,
+  the EC's ChangeCipherSpec 22 ms after its ClientKeyExchange, and `0xd4` ACK only.
+- **`0x20` (payload `01 00`):** ACK after 3 ms, then **one 7753-byte transfer 88 ms after the command**:
+  a `b0` pack holding one application-data record with a 7744-byte body, the size the vendor capture shows.
+  The next log line (decryption finished) came 2 s later; that is the host side, not the EC.
+- **Plaintext: 7693 bytes.** That is 7680 packed samples inside upstream's 8-byte header and 5-byte
+  trailer. **This settles the layout question from "How big is an image, really": the frame is wrapped,
+  not bare.** The 80 × 64 PGM was written to `captures/` (`0600`, gitignored). Neither the frame nor the
+  13 header and trailer bytes were logged, so what they contain is still unknown.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

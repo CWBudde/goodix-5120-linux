@@ -123,7 +123,9 @@ keyboard checks. The runbook has the exact command lines.
       watchdog, not the power button. **Run 16 (2026-09-30) recovered it: shutdown with the charger
       plugged in and a 40 s power-button hold.** That is now the EC reset in the runbook, and every
       stalled `--tls` run needs one, confirmed by `--read-state`, before the next.
-- [ ] **5c — Capture and decode one real frame.** *Built:* `--capture FILE` sends `0x20`, decrypts,
+- [x] **5c — Capture and decode one real frame. Done 2026-09-30 (Run 20): `0x20` returned one 7744-byte
+      record that decrypted to 7693 bytes, so the layout is wrapped (8-byte header + 5-byte trailer around
+      7680 bytes of samples); the 80×64 PGM was written. What the header and trailer hold is still open.** *Built:* `--capture FILE` sends `0x20`, decrypts,
       trims and writes a PGM (`0600`, gitignored). `image.TrimFrame` decides bare (7680) against wrapped
       (7693) from the length that arrives and refuses to guess an offset. The 7744-byte record was
       reproduced exactly from a synthetic 7680-byte frame, so the padding arithmetic is now verified
