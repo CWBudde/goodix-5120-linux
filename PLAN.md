@@ -23,7 +23,7 @@ live-hardware bring-up.
   are confirmed against hardware; the vendor's 14-frame init — including the 224-byte `0x90` config — is in
   the repo, so every outbound byte the vendor sends up to `d0` is reproduced.
 - **Device identified:** an ITE EC (`GF_ITE_EC_20063`) in front of a Goodix sensor, chip ID `0x2504`,
-  80 × 64. Treated as an "EC project": no `nop`, no firmware update, ever.
+  64 × 80 (64 columns, 80 rows; Run 20). Treated as an "EC project": no `nop`, no firmware update, ever.
 - **The wedge is understood and defused:** `0xe4` sent without its 8-byte argument. The transport can no
   longer build that frame, and all six safe init frames (`a8 ae e4 a2 82 a6`) run live with no ill effect.
 - **PSK recovered and wired in.** `goodix-dpapi -goodix` unseals the 32-byte device PSK from
@@ -32,7 +32,7 @@ live-hardware bring-up.
   openssl the scaffold drives and negotiates at the default security level; `TestNegotiatesDeviceSuite`
   pins it.
 - **Image decode verified in code.** `internal/image` implements upstream's irregular 6-byte / 4-sample
-  12-bit layout; 80 × 64 = 5120 samples = 7680 plaintext bytes exactly.
+  12-bit layout; 64 × 80 = 5120 samples = 7680 plaintext bytes exactly.
 
 **Since Run 11 (2026-09-20) the init is confirmed live all the way to `d0`**, including the 224-byte `0x90`
 config, and the EC's own ClientHello confirms cipher suite `0x00ae` from the device rather than from the
@@ -125,7 +125,7 @@ keyboard checks. The runbook has the exact command lines.
       stalled `--tls` run needs one, confirmed by `--read-state`, before the next.
 - [x] **5c — Capture and decode one real frame. Done 2026-09-30 (Run 20): `0x20` returned one 7744-byte
       record that decrypted to 7693 bytes, so the layout is wrapped (8-byte header + 5-byte trailer around
-      7680 bytes of samples); the 80×64 PGM was written. What the header and trailer hold is still open.** *Built:* `--capture FILE` sends `0x20`, decrypts,
+      7680 bytes of samples); the frame shows a clear fingerprint read as **64 columns × 80 rows** (the probe had it as 80×64, now fixed). What the header and trailer hold is still open.** *Built:* `--capture FILE` sends `0x20`, decrypts,
       trims and writes a PGM (`0600`, gitignored). `image.TrimFrame` decides bare (7680) against wrapped
       (7693) from the length that arrives and refuses to guess an offset. The 7744-byte record was
       reproduced exactly from a synthetic 7680-byte frame, so the padding arithmetic is now verified

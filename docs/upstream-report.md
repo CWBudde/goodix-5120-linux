@@ -124,7 +124,7 @@ nothing without it.
       `03 00 02 bb 00 00 00 00`, and the one `0x32` FDT frame that item 2 flags.
 - [x] Draft B carries a real `lsusb -v` dump, not a reconstruction.
 - [x] Dates, counts and the recovery procedure re-read against `docs/protocol.md`: 18 inits of which 9
-      complete, chip ID `0x2504`, 80 × 64, the 7744-byte record giving 7680–7695 bytes of plaintext,
+      complete, chip ID `0x2504`, 64 × 80, the 7744-byte record giving 7680–7695 bytes of plaintext,
       the wedge seen three times (2026-08-17 and twice on 2026-09-19), and the ~30 s cold power cycle.
       All agree.
 - [ ] No capture files attached, and nothing derived from a fingerprint image. **Cannot be ticked
@@ -210,7 +210,7 @@ Two further don'ts for any ITE EC part:
 | OS during the runs | Ubuntu 26.04, kernel 7.0.0-29-generic |
 | Firmware string (`0xa8`) | `GF_ITE_EC_20063` |
 | Chip ID (`0x82` read register) | `0x2504`, which the vendor driver calls "ChicagoHS", sensor type 12 |
-| Sensor geometry | **80 × 64** per the vendor driver — *not* upstream's `SENSOR_WIDTH 80` / `SENSOR_HEIGHT 88` |
+| Sensor geometry | **64 columns × 80 rows**, measured from a real frame — *not* upstream's `SENSOR_WIDTH 80` / `SENSOR_HEIGHT 88` |
 
 ```
 bNumInterfaces 2
@@ -434,7 +434,7 @@ thresholds were far off, and the driver immediately re-arms with fresh ones — 
 - Images arrive as a single `b0` pack of **7749 bytes** carrying one TLS application-data record
   (`17 03 03 1e 40`, 7744 bytes).
 - **Hypothesis, arithmetic only:** for AES-128-CBC with SHA-256, a 7744-byte record is a 16-byte
-  explicit IV plus 7728 bytes of ciphertext, so the plaintext is between 7680 and 7695 bytes. 80 × 64
+  explicit IV plus 7728 bytes of ciphertext, so the plaintext is between 7680 and 7695 bytes. 64 × 80
   samples packed 4-per-6-bytes is 7680 exactly, and 7680 + upstream's 8-byte header and 5-byte trailer
   is 7693, which also fits. Both are consistent; the record length alone cannot separate them, and
   nothing here has been measured against plaintext. Note also that upstream's 12-bit unpacking is
@@ -548,7 +548,7 @@ deliberately never sends `nop` to these parts ("not to send nop for ITE EC proje
 | OS during the runs | Ubuntu 26.04, kernel 7.0.0-29-generic |
 | Firmware string (`0xa8`) | `GF_ITE_EC_20063` |
 | Chip ID (`0x82`) | `0x2504` — vendor calls it "ChicagoHS", sensor type 12 |
-| Sensor geometry | **80 × 64** per the vendor driver, not upstream's 80 × 88 |
+| Sensor geometry | **64 columns × 80 rows**, measured from a real frame; not upstream's 80 × 88 |
 | Transport | USB bulk. **Not SPI** — there is no `/dev/spidev*` on this machine, so `goodix-fp-dump`'s `run_5120_spi.py` path does not apply |
 | Kernel driver bound | none, on either interface. No `/dev/ttyACM*`; the `driver` symlinks under `/sys/bus/usb/devices/1-4:1.{0,1}/` do not resolve |
 | Access | free for userspace libusb, but root-only: an unprivileged open fails `LIBUSB_ERROR_ACCESS` |
@@ -784,10 +784,9 @@ Not a proposal — an honest list of the gates, in the order they bite.
    below is hypothetical. (observed)
 2. **A TLS-PSK server in the host process.** Unusual shape: the peripheral is the client. Whatever TLS
    library a driver used would have to offer `PSK-AES128-CBC-SHA256` on the server side.
-3. **Image decode confirmed against real plaintext.** 80 × 64 is from the vendor driver, not measured
-   here, and upstream's 12-bit sample packing is transcribed for a different part in the family and
+3. **Image decode confirmed against real plaintext.** 5120 samples is from the vendor driver, and upstream's 12-bit sample packing is transcribed for a different part in the family and
    unverified on this one. The one arithmetic hint available: the image record is 7744 bytes, which for
-   AES-CBC/SHA-256 puts the plaintext between 7680 and 7695 bytes, and 80 × 64 packed 12-bit is 7680
+   AES-CBC/SHA-256 puts the plaintext between 7680 and 7695 bytes, and 64 × 80 packed 12-bit is 7680
    exactly. Consistent, not proof. (hypothesis)
 4. **A finger-detect loop.** `32` (down) / `20` (get image) / `34` (up), with `36` for manual FDT; the
    arm payloads carry six per-zone thresholds that the driver recomputes from the previous readings

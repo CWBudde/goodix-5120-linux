@@ -12,7 +12,7 @@ const (
 )
 
 // PackedLen is the number of bytes a width x height frame of 12-bit samples
-// occupies, packed four samples per six bytes. For this part, 80 x 64, it is
+// occupies, packed four samples per six bytes. For this part, 64 x 80, it is
 // 7680.
 func PackedLen(width, height int) (int, error) {
 	if width <= 0 || height <= 0 {

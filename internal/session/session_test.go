@@ -164,7 +164,7 @@ func TestBridgeReportsPSKMismatch(t *testing.T) {
 
 // TestBridgeDecryptsApplicationData rehearses Phase 5c: the device sends an
 // image as TLS application data and the bridge hands back the plaintext, which
-// the 12-bit decoder then turns into 80 x 64 samples.
+// the 12-bit decoder then turns into 64 x 80 samples.
 //
 // The "image" is synthetic. What is real is the record framing, the encryption
 // and the length: 5120 samples packed four per six bytes is 7680 bytes, and the
@@ -181,7 +181,7 @@ func TestBridgeDecryptsApplicationData(t *testing.T) {
 	}
 
 	const (
-		width, height = 80, 64
+		width, height = 64, 80
 		want          = width * height / image.SamplesPer12BitGroup * image.BytesPer12BitGroup // 7680
 	)
 	frame := make([]byte, want)

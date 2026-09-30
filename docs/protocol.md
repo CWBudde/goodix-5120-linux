@@ -220,7 +220,7 @@ kept, struck, because knowing a question *is* settled is worth as much as the an
 |---|---|
 | ~~Does the 5120 accept 51x0 framing at all?~~ | **Resolved — yes.** Every pack and message checksum verifies across both USB captures and all nine complete driver inits. The old answer here said "probe: `nop` → expect ACK `0x01`"; **do not do that** — the vendor driver never sends `nop` to an ITE EC part, and it drew no reply in Runs 2 and 3 |
 | ~~Firmware version string~~ | **Resolved** — `GF_ITE_EC_20063`, via `0xa8` |
-| ~~Sensor resolution~~ | **Resolved — 80 × 64**, from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
+| ~~Sensor resolution~~ | **Resolved — 64 columns × 80 rows.** 5120 samples from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". The orientation is measured, from the first real frame (Run 20) Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
 | ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
 | PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
 | What the 224-byte `0x90` config actually *does* | **Open**, but it is *accepted*: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
@@ -243,7 +243,7 @@ Corroborated by arithmetic: `driver_51x0.py` reads 10573 bytes, strips an 8-byte
 trailer, leaving 10560 payload bytes; 80 x 88 = 7040 samples, and 7040 / 4 * 6 = 10560 exactly.
 
 `internal/image.Decode12BitRaw` implements this exact layout, guarded by a pack→unpack round-trip test
-(`image_test.go`). For **this** part at 80 × 64 the payload is 5120 samples = **7680 bytes exactly**
+(`image_test.go`). For **this** part at 64 × 80 the payload is 5120 samples = **7680 bytes exactly**
 (`5120 / 4 * 6`); the decoder is verified in code but still unconfirmed against a real 5120 plaintext,
 which the live capture in Phase 5c will settle. See "How big is an image, really".
 
@@ -544,7 +544,7 @@ Counters: i8042 `irq1` 6429 → 6442, EC refreshes 0 → 30, sensor enumerated t
   `0x2504`, exactly the vendor value. Run 9 read `01 00 80 1b` from the same command **without** the reset;
   this run adds the reset and gets `0x2504`, confirming live that **the chip-ID register is populated by
   the `a2` reset**. The sensor part is now identified from the device itself, not only the driver log —
-  which independently backs the 80 × 64 geometry (see "How big is an image, really").
+  which independently backs the 5120-sample geometry (see "How big is an image, really").
 - **`0xa6` returned a 64-byte OTP.** It begins with the ASCII prefix `53 32 41 37 35 35 2e` = **"S2A755."**,
   matching the `sensorid` prefix already documented from the Windows log. **The rest of the OTP — the
   `sensorid` proper — is deliberately not reproduced here or anywhere in the repo**, the same rule applied
@@ -885,8 +885,18 @@ stayed alive throughout.** Phase 5c is done.
   The next log line (decryption finished) came 2 s later; that is the host side, not the EC.
 - **Plaintext: 7693 bytes.** That is 7680 packed samples inside upstream's 8-byte header and 5-byte
   trailer. **This settles the layout question from "How big is an image, really": the frame is wrapped,
-  not bare.** The 80 × 64 PGM was written to `captures/` (`0600`, gitignored). Neither the frame nor the
+  not bare.** The PGM was written to `captures/` (gitignored). Neither the frame nor the
   13 header and trailer bytes were logged, so what they contain is still unknown.
+- **The geometry is 64 columns × 80 rows, not 80 × 64.** Read 80 wide, the frame showed diagonal
+  streaks with a strong row-to-row pattern: mean |Δ| between vertical neighbours 30.2, horizontal 11.2.
+  Read 64 wide, the same bytes give 6.6 vertically and 11.0 horizontally, and show **a clear fingerprint**:
+  continuous ridges about 6 px apart, with a ridge ending visible. Column means are flat across each
+  4-sample packing group (107.0 / 107.5 / 107.5 / 108.5), so the 12-bit unpacking and sample order
+  are right; only the row width was wrong. Upstream's `write_pgm` swaps width and height in its header,
+  which is the same correction. The probe now decodes 64 × 80. The existing `frame-1.pgm` had its header
+  rewritten; the pixel bytes did not change.
+- **`0600` does not hold on this checkout:** `captures/` lies on an NTFS volume (`fuseblk`), which
+  ignores Unix modes, and the PGM shows as `775`.
 
 ### Recovering the EC (researched offline, 2026-09-30)
 
@@ -1076,7 +1086,7 @@ Sources:
   (see "Power"). Every pack and message checksum in both captures verifies. The driver doesn't zero the
   padding of its 64-byte OUT transfers (stack bytes leak into it), so ignore everything after the pack length.
 
-Device facts, from the log: **chip ID `0x2504`**, "ChicagoHS", sensor type 12, **80 × 64 pixels**
+Device facts, from the log: **chip ID `0x2504`**, "ChicagoHS", sensor type 12, **80 × 64 pixels** (*Run 20: stored as 64 samples per row, 80 rows*)
 (not upstream's 80 × 88). The OTP begins with ASCII `S2A755.`. The driver treats this as an
 "ITE EC project": it sends **no `nop`** ("not to send nop for ITE EC projects") and does **no firmware
 update** ("no firmware update for EC projects"). None of the 9 complete inits sends `0xe0`, `0xf0`, `0xf2`, `0xf4` or `0xf6`.
@@ -1151,11 +1161,11 @@ padding inside it:
     7744 − 16 IV      = 7728 ciphertext   (a whole number of AES blocks, as it must be)
     7728 − 32 MAC − padding(1..16) = 7680 .. 7695 bytes of plaintext
 
-80 × 64 = 5120 samples at 12 bits, packed four samples per six bytes, is **7680 bytes exactly** — the
+64 × 80 = 5120 samples at 12 bits (orientation from Run 20), packed four samples per six bytes, is **7680 bytes exactly** — the
 bottom of that range, reached with a full 16-byte padding block. Upstream's 8-byte header and 5-byte
 trailer would make 7693, also inside it.
 
-So the record length independently corroborates the 80 × 64 geometry with upstream's 12-bit packing,
+So the record length independently corroborates the 5120-sample geometry with upstream's 12-bit packing,
 which until now rested only on the chip ID and upstream's own tables. It cannot distinguish a bare
 frame from one with upstream's header and trailer: both fit. Nothing here is decoded — this is
 arithmetic over lengths observed on the wire, and it stays a hypothesis until a plaintext is measured.

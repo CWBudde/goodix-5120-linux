@@ -216,7 +216,7 @@ func TestTLSOpcodesAreCataloguedAndUnlocked(t *testing.T) {
 }
 
 // TestSyntheticFrameMatchesTheSensor keeps the rehearsal honest about geometry:
-// the stand-in's frame must be exactly what 80 x 64 packed 12-bit samples
+// the stand-in's frame must be exactly what 64 x 80 packed 12-bit samples
 // occupy, or the rehearsal would exercise TrimFrame's error path instead of its
 // success path.
 func TestSyntheticFrameMatchesTheSensor(t *testing.T) {

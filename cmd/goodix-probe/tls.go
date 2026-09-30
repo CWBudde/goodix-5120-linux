@@ -29,12 +29,15 @@ import (
 // The one question this answers is whether the EC accepts our PSK. Everything
 // else it prints (record counts, the plaintext length) is a bonus.
 
-// sensor geometry, for decoding a captured frame. CONFIRMED from the driver log
-// (chip ID 0x2504, "ChicagoHS", sensor type 12) and corroborated by the record
-// length; see docs/protocol.md.
+// sensor geometry, for decoding a captured frame: 64 samples per row, 80 rows.
+// The sample count (5120) comes from the driver log (chip ID 0x2504,
+// "ChicagoHS", sensor type 12) and the record length. The orientation comes
+// from the first real frame (Run 20): read 80 wide, neighbouring rows differ
+// about five times as much as read 64 wide, and only 64 wide shows continuous
+// ridges. Upstream's write_pgm swaps the header's fields for the same reason.
 const (
-	sensorWidth  = 80
-	sensorHeight = 64
+	sensorWidth  = 64
+	sensorHeight = 80
 )
 
 // tlsConfig is what the --tls flags add up to.
