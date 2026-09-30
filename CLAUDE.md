@@ -35,7 +35,6 @@ go test ./internal/transport -run TestReplayHappyPath   # single test
 go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-aware tests; cmd/goodix-probe safety tests intentionally fail under this tag
 
 ./goodix-probe --dry-run   # print the frames it would send; opens no USB device
-./goodix-probe --replay    # full decode path against the scripted fake
 ./goodix-probe --bisect --replay --assume-keys   # bisect flow offline (no root, no USB)
 
 # The TLS-PSK bridge, rehearsed offline: no device is opened, and the "EC" is an
@@ -45,6 +44,7 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
   --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s   # Phase 5d: capture on touch
+# add --touches 3 for three touch → frame → lift rounds in one TLS session
 ./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
   --allow-d0 --steps a8 --rehearse-rejection   # what a PSK the EC rejects looks like
 
@@ -97,8 +97,11 @@ The safety guarantee is structural, and changes must preserve it:
   flag admits its opcode only when the run actually sends it (a `--steps` entry, or one of the commands `--tls` sends
   itself); the ceiling stays `ClassSafe` and no flag can admit a destructive opcode. `--allow-e4` sends the vendor's
   8-byte payload; the empty frame that wedged the EC is refused by the payload rule. See `docs/bisect-runbook.md`.
-- **`cmd/goodix-probe`** runs a fixed `steps` sequence; `safety_test.go` fails if any step is not `ClassSafe` and checks
-  the ceiling end to end through the replay transport.
+- **`cmd/goodix-probe`** has one mode that sends anything, `--bisect`; without it the probe only does
+  `--dry-run`. It is the reference the C driver on `libfprint-driver` follows byte for byte, and the only
+  tool that can rehearse the whole path offline. The default `--steps` is `steps` (`a8` only);
+  `safety_test.go` fails if any step is not `ClassSafe` and checks the ceiling end to end through the
+  replay transport.
 - **`internal/tlspsk`, `internal/image`, `internal/session`** are the TLS-PSK image path. TLS-PSK goes through an
   `openssl s_server` subprocess because Go's `crypto/tls` has no PSK suites (socket = ciphertext side, stdio = plaintext).
   `internal/session` is the bridge between that and the device, **half duplex on purpose** so nothing writes to the
@@ -114,8 +117,8 @@ The safety guarantee is structural, and changes must preserve it:
   The check is live-only — a rehearsal has no EC, and the scripted replay would desynchronise.
   `--read-state` adds one `0xae` after a failed check, to say which state the EC is in, and sends nothing else.
 - **Each server record goes to the device in its own `0xb0` pack**, as the vendor driver sends them (its
-  log of a completed handshake: ServerHello and ServerHelloDone are two sends). `--tls-coalesce-flight`
-  keeps the one-pack framing for comparison, and `TestServerRecordsGoOutOnePackEach` pins the default.
+  log of a completed handshake: ServerHello and ServerHelloDone are two sends, and Run 18 completed that
+  way). `TestServerRecordsGoOutOnePackEach` pins it.
 - **The bridge keeps reading the EC until the EC's flight is finished.** Runs 11 and 17 stalled because the
   bridge waited 250 ms on openssl while the EC was sending its next record (it sends ClientKeyExchange,
   ChangeCipherSpec and Finished as three transfers). `TestBridgeKeepsReadingTheECMidFlight` pins both gaps

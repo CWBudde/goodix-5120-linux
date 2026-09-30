@@ -81,13 +81,6 @@ type Options struct {
 	HostIdle         time.Duration
 	HostBody         time.Duration
 	HandshakeTimeout time.Duration
-
-	// CoalesceFlight sends all records of a host flight in ONE TLS-data pack
-	// instead of one pack per record. The vendor driver sends one pack per record
-	// (its log, 2026-09-19 23:25:41: ServerHello 86 bytes, then ServerHelloDone
-	// 9 bytes, as two sends), so that is the default; this was the default
-	// between Run 11 and that finding, and stays as an option for comparison.
-	CoalesceFlight bool
 }
 
 func (o Options) withDefaults() Options {
@@ -304,7 +297,6 @@ const (
 func (b *Bridge) PumpHost() error {
 	var (
 		flight    [][]byte
-		total     int
 		finished  bool // change cipher spec then Finished, seen in this flight
 		helloDone bool // ServerHelloDone, which ends the server's first flight
 	)
@@ -331,7 +323,6 @@ func (b *Bridge) PumpHost() error {
 		}
 
 		flight = append(flight, rec)
-		total += len(rec)
 
 		switch {
 		case typ == proto.TLSChangeCipherSpec:
@@ -349,7 +340,7 @@ func (b *Bridge) PumpHost() error {
 	if len(flight) == 0 {
 		return nil
 	}
-	if err := b.sendFlight(flight, total); err != nil {
+	if err := b.sendFlight(flight); err != nil {
 		return err
 	}
 	b.toDevice += len(flight)
@@ -359,29 +350,16 @@ func (b *Bridge) PumpHost() error {
 	return nil
 }
 
-// sendFlight writes one flight to the device: one pack per record, or one pack
-// for the whole flight if Options.CoalesceFlight says so.
-func (b *Bridge) sendFlight(flight [][]byte, total int) error {
-	if !b.opts.CoalesceFlight {
-		for _, rec := range flight {
-			if err := b.dev.SendTLS(rec); err != nil {
-				return fmt.Errorf("session: sending a %s record to the device: %w",
-					proto.TLSTypeName(rec[0]), err)
-			}
-		}
-		return nil
-	}
-
-	pack := make([]byte, 0, total)
+// sendFlight writes one flight to the device, one pack per record. The vendor
+// driver does the same (its log, 2026-09-19 23:25:41: ServerHello 86 bytes,
+// then ServerHelloDone 9 bytes, as two sends), and Run 18's handshake completed
+// with it.
+func (b *Bridge) sendFlight(flight [][]byte) error {
 	for _, rec := range flight {
-		pack = append(pack, rec...)
-	}
-	if len(flight) > 1 {
-		b.opts.Logger.Printf("  TLS: host → device: %d records as one pack, %d bytes", len(flight), total)
-	}
-	if err := b.dev.SendTLS(pack); err != nil {
-		return fmt.Errorf("session: sending a %d-record flight (%d bytes) to the device: %w",
-			len(flight), total, err)
+		if err := b.dev.SendTLS(rec); err != nil {
+			return fmt.Errorf("session: sending a %s record to the device: %w",
+				proto.TLSTypeName(rec[0]), err)
+		}
 	}
 	return nil
 }

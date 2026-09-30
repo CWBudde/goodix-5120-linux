@@ -102,9 +102,9 @@ func TestSendTLSRefusesRecordsThatAreNotWhole(t *testing.T) {
 }
 
 // TestSendTLSAcceptsAWholeFlight allows several records in one pack. The vendor
-// sends one pack per record, but the bridge can still coalesce a flight for
-// comparison (--tls-coalesce-flight), so the gate refuses only what is certainly
-// wrong — a partial record — and leaves the grouping to the bridge.
+// sends one pack per record, and so does the bridge, but grouping is the
+// bridge's business: the gate refuses only what is certainly wrong — a partial
+// record.
 func TestSendTLSAcceptsAWholeFlight(t *testing.T) {
 	s, w := newStubTransport(Options{AllowTLSData: true})
 

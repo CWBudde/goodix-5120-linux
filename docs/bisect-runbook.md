@@ -266,14 +266,8 @@ and not reading the device. The vendor driver always keeps a read pending. The b
 the EC until its flight is finished, and sends the server's first flight as soon as ServerHelloDone is
 out. The framing is the vendor's: one `0xb0` pack per record, as the driver log shows.
 
-The one-pack-per-flight framing tried after Run 11 is still there for comparison, but only after the run
-above has stalled too:
-
-```sh
-sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --tls-coalesce-flight \
-  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 \
-  --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
-```
+The one-pack-per-flight framing tried after Run 11 (`--tls-coalesce-flight`) was removed once Run 18
+completed a handshake with one pack per record.
 
 Handshake records are now logged in **full hex**, both directions. That is deliberate and it is bounded by
 record type: a handshake, change-cipher-spec or alert record carries key agreement, a MAC or a reason code,
@@ -366,9 +360,37 @@ finger-down, both taken from `dump.pcapng`, so the re-arm path runs too:
   --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s
 ```
 
+## `--touches` — several prints in one session (PLAN.md Phase 6)
+
+Every run so far took one frame per TLS session and exited. A driver cannot: libfprint asks for about
+five prints to enrol a finger, all in one open session. `--touches N` runs the `--wait-finger` loop N
+times after one handshake. Each down arm after the first is derived from the previous lift's readings,
+as the vendor does, and frame N goes to `FILE-N.pgm`.
+
+```sh
+mkdir -p ~/goodix-captures
+sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --capture ~/goodix-captures/touch.pgm \
+  --wait-finger --touches 3 --finger-timeout 30s \
+  --allow-96 --allow-e4 --allow-a2 --allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --allow-20 \
+  --allow-32 --allow-34 --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90
+```
+
+Touch when the log says `>>> TOUCH THE SENSOR`, **keep the finger there** until it says `>>> LIFT THE
+FINGER` (about half a second later), and lift. Use a slightly different spot each time. What to write
+down:
+
+- whether the **second** `0x20` returns a frame at all — this is the question of the run;
+- whether any later down arm drew a base-invalid event;
+- for each touch, how long the lift event took after the up arm (Run 21's came 34 ms after, because the
+  finger was already off);
+- whether the frames differ as the touches did.
+
+If a touch gets no lift event in time, the run stops there — the next down arm cannot go out while the
+EC waits for a lift — and the frames taken so far are kept. Rehearse first with `just rehearse-touches`.
+
 ## Afterwards
 
-- Append the run to `docs/protocol.md` as the next "Run N" — Run 4 is the latest. Include the log and the
+- Append the run to `docs/protocol.md` as the next "Run N" — Run 21 is the latest. Include the log and the
   step that failed, or "all passed", and note whether the boot before it was cold or warm and whether
   attach produced the unsolicited `0x32`.
 - If step N failed, the next run can confirm it in isolation, e.g. `sudo ./goodix-probe --bisect --steps a8`

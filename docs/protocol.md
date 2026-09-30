@@ -1018,7 +1018,7 @@ What it settles:
 - **The vendor sends one pack per record**, in both directions: ServerHello and ServerHelloDone are two
   sends, each wrapped in its own 4-byte pack header (86 → 90, 9 → 13). That is **Run 11's framing**. The
   one-pack-per-flight change made after Run 11 moved *away* from the vendor, so it is reverted: the bridge
-  sends one pack per record by default, and `--tls-coalesce-flight` keeps the other framing for comparison.
+  sends one pack per record. (`--tls-coalesce-flight` kept the other framing for comparison until Run 18 settled it; it was removed on 2026-09-30.)
 - **The server flight's contents match openssl's.** mbedTLS's ServerHello is 81 bytes of body, exactly
   the length of openssl's (32-byte session id plus `renegotiation_info`, answering the EC's SCSV). There
   is no ServerKeyExchange in the vendor's flight either: ServerHello is followed directly by the 4-byte

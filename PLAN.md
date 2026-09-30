@@ -14,37 +14,21 @@ protocol and every run), [`FINDINGS.md`](FINDINGS.md), [`docs/acpi.md`](docs/acp
 
 ---
 
-## Where we stand (2026-09-20)
+## Where we stand (2026-09-30)
 
-The offline groundwork is complete. Everything open now is either an owner decision (publish) or
-live-hardware bring-up.
+**The sensor works on Linux, end to end, from the Go probe.** Runs 18–21 did the vendor init, completed
+the TLS-PSK handshake with the key unsealed from Windows, captured and decoded frames (64 × 80), and ran
+the finger-detect loop — all with the internal keyboard alive, and three init + handshake cycles in a row
+with no EC reset in between. Phase 5 is done; what is left is Phase 6 (the driver) and Phase 2 (publish).
 
-- **Protocol known end to end up to `d0`.** Framing, the `0xb0` ACK convention and two-transfers-per-command
-  are confirmed against hardware; the vendor's 14-frame init — including the 224-byte `0x90` config — is in
-  the repo, so every outbound byte the vendor sends up to `d0` is reproduced.
-- **Device identified:** an ITE EC (`GF_ITE_EC_20063`) in front of a Goodix sensor, chip ID `0x2504`,
-  64 × 80 (64 columns, 80 rows; Run 20). Treated as an "EC project": no `nop`, no firmware update, ever.
-- **The wedge is understood and defused:** `0xe4` sent without its 8-byte argument. The transport can no
-  longer build that frame, and all six safe init frames (`a8 ae e4 a2 82 a6`) run live with no ill effect.
-- **PSK recovered and wired in.** `goodix-dpapi -goodix` unseals the 32-byte device PSK from
-  `Goodix_Cache.bin` offline; `internal/tlspsk` consumes it via `LoadPSK` / `ParsePSKHex`.
-- **TLS-PSK path validated offline.** `PSK-AES128-CBC-SHA256` (`0x00ae`) is confirmed available in the
-  openssl the scaffold drives and negotiates at the default security level; `TestNegotiatesDeviceSuite`
-  pins it.
-- **Image decode verified in code.** `internal/image` implements upstream's irregular 6-byte / 4-sample
-  12-bit layout; 64 × 80 = 5120 samples = 7680 plaintext bytes exactly.
-
-**Since Run 11 (2026-09-20) the init is confirmed live all the way to `d0`**, including the 224-byte `0x90`
-config, and the EC's own ClientHello confirms cipher suite `0x00ae` from the device rather than from the
-driver log. **Three unknowns remain, all needing the device:** how the EC wants a server flight framed
-(what Run 11 stalled on), whether it accepts our recovered PSK (still untested — the stall came first), and
-the image plaintext length.
-
-**As of 2026-09-20 the code for those runs exists and is rehearsed offline.** `internal/session` bridges
-the device's TLS session to a local openssl endpoint, `goodix-probe --tls --psk …` drives it as the tail of
-a bisect run, and `--capture` decodes a frame to a PGM. The whole path — handshake, rejection, image
-decrypt, decode, PGM — runs against a stand-in that is a real `openssl s_client` in Goodix framing, so
-what is untested is the EC's behaviour and nothing else. See Phase 5 below for what each step still needs.
+- **Device:** an ITE EC (`GF_ITE_EC_20063`) in front of a Goodix sensor, chip ID `0x2504`, 64 columns ×
+  80 rows. Treated as an "EC project": no `nop`, no firmware update, ever.
+- **The wedge is understood and defused:** `0xe4` sent without its 8-byte argument. The transport cannot
+  build that frame. An unfinished TLS handshake leaves the EC stuck until an EC reset (charger plugged in,
+  40 s power-button hold), so every live run health-checks the EC first.
+- **Still open on hardware:** whether the EC serves several frames in one TLS session (Phase 6 needs it;
+  `--touches`), a base-invalid re-arm seen live, and what the 8-byte header and 5-byte trailer around each
+  frame hold.
 
 ## Completed phases (detail is in the docs, not here)
 
@@ -56,6 +40,7 @@ what is untested is the EC's behaviour and nothing else. See Phase 5 below for w
 | 3c — align code with the vendor sequence | done 2026-09-19 | `CLAUDE.md`, `cmd/goodix-probe/vendor.go` |
 | 4 — live plaintext runs, steps 1–4 (Runs 5–10) | done 2026-09-20 | `docs/protocol.md` |
 | 5 offline — PSK unseal + wire, TLS suite, image decode | done 2026-09-20 | `docs/dpapi-runbook.md`, `docs/protocol.md` |
+| 5 live — init, handshake, frame, finger detection (Runs 11–21) | done 2026-09-30 | Phase 5 below, `docs/protocol.md` |
 
 ---
 
@@ -163,6 +148,12 @@ keyboard checks. The runbook has the exact command lines.
    ceiling intact. This nails the protocol against hardware and stays the reference and test bed. It is
    *not* the shippable driver: matching, enrollment and PAM are libfprint's job, not something to
    re-implement in Go for biometrics.
+   **Status (2026-09-30):** the pipeline runs live once round (Run 21). The probe keeps `--bisect` as its
+   only mode that sends anything (the Run 1 mode and `--tls-coalesce-flight` are gone), and it stays
+   until the C driver has run on hardware.
+   - [ ] **Several prints in one session** — `--touches N` (docs/bisect-runbook.md). Enrolment needs about
+     five captures per open device, and no run has taken more than one frame per session.
+   - [ ] The 13 bytes around each frame: compare them across the `--touches` frames.
 2. **libfprint driver (C, upstream).** `fprintd` on top of libfprint is the only realistic path to
    enrollment, minutiae matching (libfprint's bundled NBIS) and PAM. Contribute a `goodix5120` driver
    modelled on the existing Goodix drivers and the community `goodixtls` work for the TLS 5xx parts. A
@@ -185,10 +176,10 @@ pipeline end to end, then the libfprint port — developed with upstream off the
 
 ## Recommended order
 
-1. **Phase 2** — owner posts the two drafts; this also opens the Phase 6 upstream collaboration.
-2. **Phase 5a → 5b** — reach `d0`, then test the recovered PSK against the device. 5b decides the project.
-3. **Phase 5c → 5d** — one real frame, then the FDT loop.
-4. **Phase 6** — Go reference pipeline, then the libfprint driver (PSK-provisioning decision alongside).
+1. **Phase 6, layer 1** — `--touches` live: several frames in one session.
+2. **Phase 6, layer 2** — the C driver's first live run (PR #2, `libfprint/goodix5120/README.md`).
+3. **Phase 2** — owner posts the two drafts; this also opens the upstream collaboration for layer 2.
+4. The PSK-provisioning decision, before the driver goes upstream.
 
 **Dropped as no longer useful:** the standalone "capture a real init on the wire" task (old Phase 3).
 USBPcap cannot follow the PnP re-enumeration a full init needs, the `0x90` config it was wanted for is

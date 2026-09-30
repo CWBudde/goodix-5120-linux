@@ -85,10 +85,6 @@ test-evtx:
 dry-run: probe
     ./goodix-probe --dry-run
 
-# The full decode path against the scripted fake.
-replay: probe
-    ./goodix-probe --replay
-
 # The bisect flow offline: no root, no USB.
 bisect-offline: probe
     ./goodix-probe --bisect --replay --assume-keys
@@ -114,8 +110,14 @@ rehearse-capture: probe
     ./goodix-probe --bisect --replay --assume-keys --tls --psk {{psk}} \
       --allow-d0 --allow-d4 --allow-20 --steps a8 --capture {{pgm}}
 
-# All three rehearsals. rehearse-rejection is expected to exit 1, hence the `-`.
-rehearse: rehearse-handshake rehearse-capture
+# Rehearse several touches in one TLS session (PLAN.md 5d/6). The stand-in plays a finger.
+rehearse-touches: probe
+    ./goodix-probe --bisect --replay --assume-keys --tls --psk {{psk}} \
+      --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
+      --capture {{pgm}} --wait-finger --touches 3 --finger-timeout 3s
+
+# All the rehearsals. rehearse-rejection is expected to exit 1, hence the `-`.
+rehearse: rehearse-handshake rehearse-capture rehearse-touches
     -@just rehearse-rejection
 
 # ---------------------------------------------------------------------------- live runs

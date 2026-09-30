@@ -51,16 +51,14 @@ type tlsConfig struct {
 	getImage bool
 
 	// waitFinger takes the frame when the EC reports a finger instead of at
-	// once (PLAN.md Phase 5d); fingerTimeout bounds each wait. armDown and
-	// armUp record whether the two arms it sends were unlocked.
+	// once (PLAN.md Phase 5d), touches times in one session; fingerTimeout
+	// bounds each wait. armDown and armUp record whether the two arms it sends
+	// were unlocked.
 	waitFinger    bool
+	touches       int
 	fingerTimeout time.Duration
 	armDown       bool
 	armUp         bool
-
-	// coalesceFlight sends a server flight as one b0 pack instead of one pack
-	// per record. See session.Options.CoalesceFlight.
-	coalesceFlight bool
 
 	// steps is what the bisect run sends before the bridge, so a stall can be
 	// read against the vendor's init (vendorBeforeTLS).
@@ -137,8 +135,8 @@ func (c tlsConfig) opcodes() []proto.Opcode {
 // costs a message rather than a live run.
 func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool) error {
 	if !c.enabled {
-		if c.pskPath != "" || c.capture != "" || c.coalesceFlight || c.waitFinger {
-			return errors.New("--psk, --capture, --wait-finger and --tls-coalesce-flight only mean something with --tls")
+		if c.pskPath != "" || c.capture != "" || c.waitFinger {
+			return errors.New("--psk, --capture and --wait-finger only mean something with --tls")
 		}
 		return nil
 	}
@@ -168,6 +166,12 @@ func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool)
 		case c.fingerTimeout <= 0:
 			return errors.New("--finger-timeout must be positive")
 		}
+	}
+	switch {
+	case c.touches > 1 && !c.waitFinger:
+		return errors.New("--touches repeats the --wait-finger loop; it needs --wait-finger")
+	case c.touches < 0 || c.touches > maxTouches:
+		return fmt.Errorf("--touches must be between 1 and %d", maxTouches)
 	}
 	return nil
 }
@@ -237,10 +241,7 @@ func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg
 	}
 	defer func() { _ = host.Close() }()
 
-	bridge := session.New(tr, host, session.Options{Logger: logger, CoalesceFlight: cfg.coalesceFlight})
-	if cfg.coalesceFlight {
-		logger.Printf("  --tls-coalesce-flight: a server flight goes out as ONE b0 pack (the vendor sends one per record)")
-	}
+	bridge := session.New(tr, host, session.Options{Logger: logger})
 	if missing := missingFromVendorInit(cfg.steps); rehearsal == nil && len(missing) > 0 {
 		logger.Printf("  WARNING: the steps left out %s, which the vendor sends before 0xd0 in every init", opList(missing))
 		logger.Printf("  (vendor: --steps %s). A stall now says nothing about the key or the framing.", opList(vendorBeforeTLS()))
@@ -427,10 +428,6 @@ func explainStall(logger *log.Logger, cfg tlsConfig, toHost, toDevice int) {
 		logger.Printf("  This run left out %s, which the vendor sends before 0xd0 in every init — and the", opList(missingFromVendorInit(cfg.steps)))
 		logger.Printf("  vendor's handshakes complete. Rule that out first: run the vendor's init in full")
 		logger.Printf("  (--steps %s) before changing anything about the TLS side.", opList(vendorBeforeTLS()))
-	case cfg.coalesceFlight:
-		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
-		logger.Printf("  This run used --tls-coalesce-flight. Try it WITHOUT that flag: the vendor sends one")
-		logger.Printf("  b0 pack per record, and that is the default.")
 	default:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert —")
 		logger.Printf("  so it did not fail to parse what it got. The init, the framing and the bridge's read")

@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"goodix5120/internal/proto"
 	"goodix5120/internal/transport"
@@ -16,26 +17,32 @@ type replayCounters interface {
 	Unread() int
 }
 
-// runReplay runs the probe against script and returns its log.
+// runReplay runs a bisect over script's commands, keyboard checks assumed, and
+// returns its log.
 func runReplay(t *testing.T, script []transport.Exchange) (string, replayCounters) {
 	t.Helper()
 	var buf bytes.Buffer
 	tr := transport.NewReplay(script, transport.Options{Ceiling: proto.ClassSafe})
 	t.Cleanup(func() { tr.Close() })
 
-	if err := run(log.New(&buf, "", 0), tr, 0); err != nil {
-		t.Fatalf("run: %v\n%s", err, buf.String())
+	var ops []proto.Opcode
+	for _, ex := range script {
+		ops = append(ops, ex.Cmd)
+	}
+	open := func() (transport.Transport, error) { return tr, nil }
+	if err := runBisect(log.New(&buf, "", 0), assumeKeysHost{}, open, ops, 50*time.Millisecond, 0, healthOff, nil); err != nil {
+		t.Fatalf("runBisect: %v\n%s", err, buf.String())
 	}
 	return buf.String(), tr.(replayCounters)
 }
 
-// section returns the log lines between the header for opcode name and the
+// section returns the log lines between the last header named name and the
 // next section header.
 func section(t *testing.T, out, name string) string {
 	t.Helper()
-	start := strings.Index(out, "--- "+name+" ")
+	start := strings.LastIndex(out, "--- "+name+" ")
 	if start < 0 {
-		start = strings.Index(out, "--- "+name+"\n")
+		start = strings.LastIndex(out, "--- "+name+"\n")
 	}
 	if start < 0 {
 		t.Fatalf("no section for %s in:\n%s", name, out)
@@ -62,7 +69,7 @@ func TestRun1CaptureDecodes(t *testing.T) {
 	// leads the firmware_version section — the order it was seen on the wire.
 	// It must still be reported as unsolicited and must not be mistaken for a
 	// reply, which is the mistake Run 1's one-read-per-command loop made.
-	fw := section(t, out, "firmware_version")
+	fw := section(t, out, "step 1 firmware_version")
 	for _, want := range []string{
 		"unsolicited message cmd=0x32",
 		"ACK for firmware_version (0xa8), status 0x01",

@@ -91,22 +91,19 @@ So the guarantee here is structural, not a promise to be careful:
 
 ## Usage
 
-Offline only. Both of these are safe — neither opens the device:
+These are safe — none of them opens the device:
 
 ```sh
 go build -buildvcs=false ./cmd/goodix-probe
 
-./goodix-probe --dry-run     # decode and print the frames it would send; opens no USB device
-./goodix-probe --replay      # exercise the full decode path against a scripted fake
+./goodix-probe --dry-run                          # print the frames a run can send
+./goodix-probe --bisect --replay --assume-keys    # the step loop against the Run 1 capture
+just rehearse                                     # the TLS path against a local openssl stand-in
 ```
 
-The live mode (`sudo ./goodix-probe -v`) is what wedged the embedded controller. It still exists, and
-is still read-only in the sense the safety model means, but read [`FINDINGS.md`](FINDINGS.md) before
-using it — and expect to need a cold power cycle.
-
-Note also that the probe reads **one transfer per command**, while the device sends two (ACK, then
-data), so its output runs one behind. That is deliberately left unfixed; fixing it would invite
-another run.
+Every live run goes through `--bisect`, with an external keyboard attached, following
+[`docs/bisect-runbook.md`](docs/bisect-runbook.md). The probe has no other live mode: the one it used
+to have (`sudo ./goodix-probe -v`, Run 1) is what wedged the embedded controller.
 
 ## Findings
 

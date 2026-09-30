@@ -203,6 +203,26 @@ func TestTLSConfigValidate(t *testing.T) {
 			cfg:     tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true},
 			allowed: allowD0And20,
 		},
+		{
+			name: "several touches",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, touches: 5, armDown: true, armUp: true, fingerTimeout: time.Second},
+			allowed: allowD0And20,
+		},
+		{
+			name: "--touches without --wait-finger",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				touches: 3},
+			allowed: allowD0And20,
+			wantErr: "needs --wait-finger",
+		},
+		{
+			name: "--touches beyond the bound",
+			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, touches: maxTouches + 1, armDown: true, armUp: true, fingerTimeout: time.Second},
+			allowed: allowD0And20,
+			wantErr: "--touches must be",
+		},
 	}
 
 	for _, tc := range cases {

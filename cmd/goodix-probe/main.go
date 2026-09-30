@@ -1,14 +1,16 @@
-// Command goodix-probe performs read-only interrogation of a Goodix 27c6:5120
-// fingerprint sensor over USB bulk transfers.
+// Command goodix-probe talks to the Goodix 27c6:5120 fingerprint sensor behind
+// the ITE EC in a Huawei MateBook HVY-WXX9, one keyboard-checked step at a time.
 //
-// It exists to answer one question: does this USB-attached 5120 speak the same
-// command set as the 51x0 (MILAN_ST411SEC) family that upstream reverse
-// engineered for the 5110? A plausible firmware version string means yes.
+// It began as a read-only probe and is now the reference implementation of the
+// whole path: the vendor init, the TLS-PSK handshake, image capture and finger
+// detection, each confirmed on hardware (docs/protocol.md, Runs 11-21). The C
+// libfprint driver follows its wire sequence byte for byte.
 //
-// The probe is read-only by construction. It sends only opcodes classified
-// ClassSafe, and the transport refuses anything above that ceiling before a
-// byte reaches the device. Firmware-write opcodes are not compiled into this
-// binary at all. See the README for the full safety model.
+// Every live run goes through --bisect (docs/bisect-runbook.md), which checks
+// the internal keyboard after each step, because a wrong frame can wedge the EC
+// that drives it. --dry-run and --bisect --replay run offline. Every frame
+// passes the transport's safety gate; firmware-write opcodes are not compiled
+// into this binary at all.
 package main
 
 import (
@@ -40,25 +42,24 @@ const maxDrainReads = 8
 
 func main() {
 	var (
-		dryRun  = flag.Bool("dry-run", false, "decode and print the frames that would be sent, then exit without opening any USB device")
-		replay  = flag.Bool("replay", false, "run against the built-in replay fake instead of real hardware")
-		verbose = flag.Bool("v", false, "log every transfer as hex")
+		dryRun  = flag.Bool("dry-run", false, "print the frames a run can send, then exit; opens no USB device")
 		timeout = flag.Duration("timeout", 5*time.Second, "per-transfer timeout")
 
-		bisect     = flag.Bool("bisect", false, "attach, then one command per step, checking the internal keyboard after each (see docs/bisect-runbook.md)")
-		stepList   = flag.String("steps", defaultBisectSteps(), "bisect: comma-separated hex opcodes to send after attach, in order")
-		logPath    = flag.String("log", "", "bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
-		keyWait    = flag.Duration("key-wait", 30*time.Second, "bisect: how long to wait for a key press on the internal keyboard")
-		assumeKeys = flag.Bool("assume-keys", false, "bisect with --replay: skip the keyboard checks (no root needed)")
-		readState  = flag.Bool("read-state", false, "bisect: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to find out why, then stop. Live only: 0xae is the one command the stuck EC answered in Run 12, and its status and counter tell a failed cold power cycle from a new fault")
+		bisect     = flag.Bool("bisect", false, "attach, then one command per step, checking the internal keyboard after each. The only mode that sends anything (docs/bisect-runbook.md)")
+		replay     = flag.Bool("replay", false, "--bisect: run against the replay fake (or, with --tls, a local openssl stand-in) instead of the device")
+		stepList   = flag.String("steps", defaultBisectSteps(), "--bisect: comma-separated hex opcodes to send after attach, in order")
+		logPath    = flag.String("log", "", "--bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
+		keyWait    = flag.Duration("key-wait", 30*time.Second, "--bisect: how long to wait for a key press on the internal keyboard")
+		assumeKeys = flag.Bool("assume-keys", false, "--bisect --replay: skip the keyboard checks (no root needed)")
+		readState  = flag.Bool("read-state", false, "--bisect, live: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to learn which state it is in, then stop")
 
-		useTLS        = flag.Bool("tls", false, "bisect: after the steps, request a TLS session and bridge the handshake to a local openssl endpoint (PLAN.md Phase 5b). Needs --psk and --allow-d0; sends 0xd0 itself")
-		pskPath       = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out`. A path, not the key: a key on the command line would land in the shell history and in ps output")
-		capture       = flag.String("capture", "", "--tls: after the handshake, ask for one frame and write it here as a PGM (PLAN.md Phase 5c). Needs --allow-20. The file is BIOMETRIC data — put it in gitignored captures/")
-		waitFinger    = flag.Bool("wait-finger", false, "--tls --capture: arm finger detection and take the frame when the EC reports a touch, then wait for the lift (PLAN.md Phase 5d). Needs --allow-32 and --allow-34")
-		fingerTimeout = flag.Duration("finger-timeout", 30*time.Second, "--wait-finger: how long to wait for the touch, and again for the lift")
-		wrongPSK      = flag.Bool("rehearse-rejection", false, "--tls --replay only: give the stand-in a different key, so the rehearsal shows what a PSK the EC does not accept looks like")
-		coalesce      = flag.Bool("tls-coalesce-flight", false, "--tls: send all records of a server flight in ONE b0 pack, the way openssl writes them. The default is one pack per record, which is what the vendor driver sends; this is kept for comparison only")
+		useTLS        = flag.Bool("tls", false, "--bisect: after the steps, send 0xd0 and bridge the TLS-PSK handshake to a local openssl endpoint. Needs --psk and --allow-d0")
+		pskPath       = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out` (a path, so the key stays out of shell history)")
+		capture       = flag.String("capture", "", "--tls: ask for a frame (0x20) and write it here as a PGM. Needs --allow-20. BIOMETRIC data: keep it in gitignored captures/")
+		waitFinger    = flag.Bool("wait-finger", false, "--capture: take the frame when the EC reports a touch, then wait for the lift. Needs --allow-32 and --allow-34")
+		touches       = flag.Int("touches", 1, "--wait-finger: how many touch → frame → lift rounds to run in one TLS session. With more than one, frame N is written to FILE-N.pgm")
+		fingerTimeout = flag.Duration("finger-timeout", 30*time.Second, "--wait-finger: how long to wait for each touch and each lift")
+		wrongPSK      = flag.Bool("rehearse-rejection", false, "--tls --replay: give the stand-in a different key, to rehearse what a rejected PSK looks like")
 	)
 
 	// One --allow-<opcode> flag per above-ceiling opcode, registered from the
@@ -72,20 +73,16 @@ func main() {
 
 	logger := log.New(os.Stdout, "", 0)
 
-	if !*bisect {
-		for _, u := range unlockable {
-			if *allowFlags[u.op] {
-				logger.Printf("--%s only works with --bisect", u.flag)
-				os.Exit(1)
-			}
-		}
-		if *useTLS || *pskPath != "" || *capture != "" || *coalesce || *waitFinger {
-			logger.Print("--tls, --psk and --capture only work with --bisect: the bridge runs as the tail of a " +
-				"bisect run so it inherits the keyboard checks (see docs/bisect-runbook.md)")
-			os.Exit(1)
-		}
+	if *dryRun {
+		dryRunFrames(logger)
+		return
 	}
-	if *readState && (!*bisect || *replay) {
+	if !*bisect {
+		logger.Print("nothing to do: live and replayed runs go through --bisect (docs/bisect-runbook.md).\n" +
+			"Offline: --dry-run, or --bisect --replay --assume-keys")
+		os.Exit(2)
+	}
+	if *readState && *replay {
 		logger.Print("--read-state only works with a live --bisect: it asks a real EC why it ignored the health " +
 			"check, and a rehearsal has no EC and runs no health check (TestReadStateOnAStuckEC covers it offline)")
 		os.Exit(1)
@@ -96,62 +93,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *dryRun {
-		dryRunFrames(logger)
-		return
-	}
-
-	if *bisect {
-		allowed := make(map[proto.Opcode]bool, len(allowFlags))
-		var allow []proto.Opcode
-		for op, set := range allowFlags {
-			if *set {
-				allowed[op] = true
-				allow = append(allow, op)
-			}
+	allowed := make(map[proto.Opcode]bool, len(allowFlags))
+	var allow []proto.Opcode
+	for op, set := range allowFlags {
+		if *set {
+			allowed[op] = true
+			allow = append(allow, op)
 		}
-		tls := tlsConfig{
-			enabled:  *useTLS,
-			pskPath:  *pskPath,
-			capture:  *capture,
-			sendD4:   allowed[opTLSEstablished],
-			getImage: allowed[opGetImage],
-
-			waitFinger:    *waitFinger,
-			fingerTimeout: *fingerTimeout,
-			armDown:       allowed[opFDTDown],
-			armUp:         allowed[opFDTUp],
-
-			coalesceFlight: *coalesce,
-		}
-		os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, *readState, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
 	}
+	tls := tlsConfig{
+		enabled:  *useTLS,
+		pskPath:  *pskPath,
+		capture:  *capture,
+		sendD4:   allowed[opTLSEstablished],
+		getImage: allowed[opGetImage],
 
-	opts := transport.Options{
-		Ceiling: proto.ClassSafe, // never raised by this binary
-		Timeout: *timeout,
-		Verbose: *verbose,
-		Logger:  logger,
+		waitFinger:    *waitFinger,
+		touches:       *touches,
+		fingerTimeout: *fingerTimeout,
+		armDown:       allowed[opFDTDown],
+		armUp:         allowed[opFDTUp],
 	}
-
-	var tr transport.Transport
-	if *replay {
-		tr = transport.NewReplay(run1Script(), opts)
-	} else {
-		opened, err := transport.OpenUSB(opts)
-		if err != nil {
-			logger.Printf("cannot open device: %v", err)
-			explainOpenError(logger, err)
-			os.Exit(1)
-		}
-		tr = opened
-	}
-	defer tr.Close()
-
-	if err := run(logger, tr, *timeout); err != nil {
-		logger.Printf("probe failed: %v", err)
-		os.Exit(1)
-	}
+	os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, *readState, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
 }
 
 // mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
@@ -300,30 +263,6 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 		}
 		return 1
 	}
-}
-
-func run(logger *log.Logger, tr transport.Transport, timeout time.Duration) error {
-	logger.Printf("probing Goodix 27c6:5120 — read-only, ceiling=%s\n", proto.ClassSafe)
-
-	for _, step := range steps {
-		name := step.cmd.Name()
-		if name == "" {
-			name = "<unregistered>"
-		}
-		logger.Printf("\n--- %s (0x%02x) — %s", name, byte(step.cmd), step.purpose)
-
-		if err := tr.Send(step.cmd, step.payload); err != nil {
-			return fmt.Errorf("send %s: %w", name, err)
-		}
-		if err := collect(logger, tr, step.cmd, timeout); err != nil {
-			return fmt.Errorf("recv after %s: %w", name, err)
-		}
-	}
-
-	drain(logger, tr, timeout)
-
-	logger.Printf("\ndone. Record anything notable in docs/protocol.md under \"Observed exchanges\".")
-	return nil
 }
 
 // collect reads the responses to one command. The device answers with an ACK
@@ -490,17 +429,17 @@ func tlsRecordSummary(b []byte) string {
 func dryRunFrames(logger *log.Logger) {
 	logger.Printf("dry run — no USB device is opened, nothing is transmitted\n")
 
-	logger.Printf("\n=== what the probe would send ===")
+	logger.Printf("\n=== the default --steps ===")
 	for _, st := range steps {
 		printFrame(logger, "", st)
 	}
-	logger.Printf("\n%d frame(s). Verify the framing by hand against docs/protocol.md before running live.", len(steps))
+	logger.Printf("\n%d frame(s). --steps may also name frames from the vendor sequence below; state-changing ones need their --allow-XX flag.", len(steps))
 
 	// The vendor sequence is reference material, not a plan. Printing it is how
 	// the PLAN.md Phase 4 gate — "each planned command matches the vendor
 	// sequence byte for byte" — actually gets checked by a human.
 	logger.Printf("\n\n=== the Windows driver's init sequence, for reference ===")
-	logger.Printf("transcribed from the vendor ETW log (docs/protocol.md). The probe sends NONE of this.")
+	logger.Printf("transcribed from the vendor ETW log (docs/protocol.md). --steps may name these, each behind its --allow-XX flag.")
 	for i, st := range vendorInit {
 		printFrame(logger, fmt.Sprintf("#%d ", i+1), st)
 	}

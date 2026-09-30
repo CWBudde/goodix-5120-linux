@@ -330,13 +330,19 @@ func TestAlertClassification(t *testing.T) {
 	}
 }
 
-// TestServerRecordsGoOutOnePackEach pins the vendor's framing as the default:
-// its log of a successful handshake shows ServerHello and ServerHelloDone
-// leaving as two sends, one record each. A rehearsal that quietly went back to
-// coalescing them would change the variable the next live run holds fixed.
+// TestServerRecordsGoOutOnePackEach pins the vendor's framing: its log of a
+// successful handshake shows ServerHello and ServerHelloDone leaving as two
+// sends, one record each, and Run 18 completed a handshake that way. Every
+// SendTLS must carry exactly one record.
 func TestServerRecordsGoOutOnePackEach(t *testing.T) {
 	psk := testPSK(0x5a)
 	r := newRig(t, psk, psk)
+	packs := &packCounter{Transport: r.tr}
+	r.bridge = New(packs, r.sess, Options{
+		Logger:           log.New(r.log, "", 0),
+		DeviceTimeout:    200 * time.Millisecond,
+		HandshakeTimeout: 20 * time.Second,
+	})
 	r.requestTLS(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -344,27 +350,27 @@ func TestServerRecordsGoOutOnePackEach(t *testing.T) {
 	if err := r.bridge.Handshake(ctx); err != nil {
 		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
 	}
-	if strings.Contains(r.log.String(), "as one pack") {
-		t.Errorf("a flight was coalesced by default; the vendor sends one pack per record\nlog:\n%s", r.log)
+	if packs.packs == 0 {
+		t.Fatal("the bridge sent no TLS-data pack at all")
+	}
+	if packs.records != packs.packs {
+		t.Errorf("%d records went out in %d packs; the vendor sends one pack per record", packs.records, packs.packs)
 	}
 }
 
-// TestCoalesceFlightSendsOnePack checks the comparison option still works.
-// openssl accepts either framing, which is why only hardware can compare them.
-func TestCoalesceFlightSendsOnePack(t *testing.T) {
-	psk := testPSK(0x5a)
-	r := newRigWith(t, psk, psk, Options{CoalesceFlight: true})
-	r.requestTLS(t)
+// packCounter counts TLS-data packs and the records inside them.
+type packCounter struct {
+	transport.Transport
+	packs, records int
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := r.bridge.Handshake(ctx); err != nil {
-		t.Fatalf("Handshake with CoalesceFlight = %v\nlog:\n%s", err, r.log)
+func (c *packCounter) SendTLS(records []byte) error {
+	recs, err := proto.SplitTLSRecords(records)
+	if err == nil {
+		c.packs++
+		c.records += len(recs)
 	}
-	if n := strings.Count(r.log.String(), "as one pack"); n == 0 {
-		t.Errorf("no multi-record flight was coalesced; ServerHello and ServerHelloDone "+
-			"arrive together, so at least one flight should have been\nlog:\n%s", r.log)
-	}
+	return c.Transport.SendTLS(records)
 }
 
 // TestHandshakeRecordsAreLoggedInFull pins the diagnostic that Run 11 showed the
