@@ -3,8 +3,9 @@
 This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerprint reader in the Huawei MateBook
 `HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its wire sequence byte for byte.
 
-**Status: the driver compiles inside a libfprint tree and its pure parts pass unit tests. It has never run against
-the device.** Every fact it relies on comes from the Go reference, from Runs 18 and 20–22 in
+**Status: the driver compiles inside a libfprint tree, its helpers pass unit tests, and the actual driver runs in an
+offline lifecycle harness. It has never run against the device.** Every fact it relies on comes from the Go reference,
+from Runs 18 and 20–22 in
 [`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The Go probe has run this
 driver's whole wire sequence live, including the capture loop three times in one TLS session (Run 22), and
 `/goodix5120/fdt/run22-session` checks that this driver derives the same arms from the same events. The first live
@@ -49,7 +50,8 @@ driver is built around that:
 | `goodix5120_tls.c/.h` | TLS 1.2 PSK server on OpenSSL memory BIOs: no socket, no thread, no subprocess. GLib and OpenSSL only |
 | `tests/test-goodix5120-proto.c` | Unit tests. The vectors come from the Go tests or from bytes observed on the wire |
 | `tests/test-goodix5120-tls.c` | Offline rehearsal. An in-process OpenSSL PSK client stands in for the EC |
-| `meson.build` | Standalone build of the pure parts and the tests, without libfprint |
+| `tests/test-goodix5120-driver.c`, `tests/fake-libfprint/` | Actual driver compiled against a test-only libfprint/USB adapter; synthetic lifecycle and failure scenarios |
+| `meson.build` | Standalone helper and driver tests, without linking libfprint or USB |
 | `libfprint-register.patch` | Registers the driver in a libfprint tree |
 
 ## Dropping it into a libfprint tree
@@ -171,7 +173,7 @@ meson test -C build-c -v
 meson setup build-c-asan libfprint/goodix5120 -Db_sanitize=address,undefined && meson test -C build-c-asan
 ```
 
-Needs the GLib and OpenSSL development headers. These tests cover:
+Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 
 - **framing:** the golden frames from `internal/proto/packet_test.go`, the checksum wrap cases, round trips with USB
   padding, and four replies **observed from this device** whose checksums must verify (the `0xa8` version reply, two
@@ -191,6 +193,12 @@ Needs the GLib and OpenSSL development headers. These tests cover:
   7744-byte record body and 7753-byte pack seen in the vendor capture, and decrypt intact when fed in two pieces.
   Also covered: a wrong PSK is reported as a key mismatch with no alert left queued for the EC, an alert from the EC
   is reported, and the PSK file rules.
+- **actual driver:** open, activation, five synthetic enrollment stages in one TLS session, processing before/after
+  lift, final-stage deactivation during lift, cancellation in every FDT/capture state and USB yield, unplug at every
+  open transfer, read/write failures, short writes, timeouts, wrong ACKs, stale/unexpected messages, base-invalid
+  rearming/exhaustion, and close/reopen. The adapter preserves synchronous state-machine callbacks and asynchronous
+  USB completion; no device discovery or USB library is linked. See [the harness guide](tests/README.md) for its
+  boundaries. These tests do not establish timing on hardware, matching quality, or real libfprint/GUsb integration.
 
 ## What is not done, or stubbed
 

@@ -244,10 +244,21 @@ remaining 6a acceptance check. Phase 6b / 6c gates still apply.
 
 ### 6b — Exercise and harden the actual libfprint driver
 
-- [ ] **Add an offline fake USB / libfprint lifecycle harness for `goodix5120.c`.** The standalone
-      Meson tests compile only the protocol and TLS helpers. Exercise open, activation, touch → image →
+- [x] **Add an offline fake USB / libfprint lifecycle harness for `goodix5120.c`.** Previously, standalone
+      Meson tests compiled only the protocol and TLS helpers. Exercise open, activation, touch → image →
       lift, multiple enrollment stages, cancellation in every state, unplug, timeouts, wrong ACKs,
       unexpected messages, and reopen. Use synthetic images and keys; no private capture is required.
+      **Done 2026-09-30:** the actual driver compiles as a separate translation unit against a
+      test-only GLib/GObject adapter; real protocol/TLS/image helpers and an OpenSSL client exercise
+      synthetic open and enrollment. Transfer sweeps cover unplug at every open boundary and
+      cancellation / I/O failure through capture and lift; state hooks cover all FDT/capture states.
+      See [`libfprint/goodix5120/tests/README.md`](libfprint/goodix5120/tests/README.md) for the adapter
+      contract and exclusions. Real libfprint/GUsb integration and hardware remain unverified.
+      **Verified:** all 39 lifecycle and 43 helper subtests pass, also under ASan/UBSan with leak
+      detection disabled under ptrace; `just check` and Go race tests pass. Independent review caught
+      two adapter ordering/cancellation gaps, now covered by regressions. Mutation checks confirm
+      tests reject negative-ACK acceptance, missing session cleanup and post-cancellation rearming.
+      The remaining 6b items below and the owner-only sudo check in 6a stay open.
 - [ ] **Validate init reply contents before continuing.** `xchg_recv_cb` currently accepts any
       correctly framed data payload with the expected command after its ACK. Validate known response
       lengths and status fields, including chip ID. `OPEN_LOG_MCU_STATE` must refuse a truncated state
