@@ -903,8 +903,8 @@ dev_close (FpImageDevice *dev)
 
   /* Nothing is sent: no command that ends a session is known. The EC keeps
    * the TLS session and whatever FDT arm it last had, as Windows leaves it;
-   * a later open repeats the full init and handshake, which Run 20 showed
-   * works after a completed handshake. */
+   * a later open repeats the full init and handshake, which Runs 20-22 showed
+   * works after a completed handshake, four times with no EC reset. */
   g_clear_pointer (&self->tls, g5120_tls_free);
   g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (dev)),
                                   G5120_INTERFACE, 0, &error);

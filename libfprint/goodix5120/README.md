@@ -4,9 +4,11 @@ This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerpr
 `HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its wire sequence byte for byte.
 
 **Status: the driver compiles inside a libfprint tree and its pure parts pass unit tests. It has never run against
-the device.** Every fact it relies on comes from the Go reference, from Runs 18 and 20 in
-[`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The first live run is the
-owner's to make, following the procedure below.
+the device.** Every fact it relies on comes from the Go reference, from Runs 18 and 20–22 in
+[`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The Go probe has run this
+driver's whole wire sequence live, including the capture loop three times in one TLS session (Run 22), and
+`/goodix5120/fdt/run22-session` checks that this driver derives the same arms from the same events. The first live
+run of the driver itself is the owner's to make, following the procedure below.
 
 ## Read this first: the hardware can be wedged
 
@@ -174,7 +176,10 @@ Needs the GLib and OpenSSL development headers. These tests cover:
 - **gate:** no `0xe0`, `0xf0`, `0xb0` or `nop`; empty `0xe4` refused; the vendor init order and payloads; the
   `0x90` config's `sum & 0xff == 0xaa`; a TLS pack holds exactly one whole record;
 - **FDT:** the arm vectors from `internal/proto/fdt_test.go`, every event header counted in `dump.pcapng`, zone
-  decoding, and the down/up threshold rules including clamping;
+  decoding, and the down/up threshold rules including clamping. `run22-session` replays Run 22's three touches:
+  from the baseline arm and each logged event it must derive every up arm the probe sent (`ba198e9884ac`,
+  `bf19839a969c`, `9ea8a0a491a0`, a zone without its touch flag getting `0x19`) and each next down arm
+  (`b9c6acbaabba`, `b8c5abb9aab9`), all of which the EC accepted;
 - **image:** the 12-bit vectors from `internal/image/image_test.go`, a 64 × 80 round trip, and the frame-layout rules
   from `frame_test.go`;
 - **TLS:** a full handshake against an OpenSSL PSK client configured like the EC (no EMS, no ETM, no tickets). The
@@ -186,8 +191,8 @@ Needs the GLib and OpenSSL development headers. These tests cover:
 
 ## What is not done, or stubbed
 
-- **Never run on hardware.** Nothing has checked timing, the `libusb`/GUsb transfer behaviour against this EC, or
-  the FDT loop live.
+- **Never run on hardware.** Nothing has checked this driver's timing or its `libusb`/GUsb transfer behaviour
+  against this EC. The FDT loop it implements has run live only through the Go probe (Runs 21 and 22).
 - `0x98` (set DAC) sends **this unit's** OTP-derived values, and `fdt_delta` is **this unit's**. Both have to be
   derived from the `0xa6` OTP reply before the driver can serve a second machine, and the derivation is not known.
   PLAN.md also lists the OTP-derived DAC values as something never to publish. That makes them a blocker for
@@ -206,7 +211,8 @@ Needs the GLib and OpenSSL development headers. These tests cover:
    after ×3 enlargement. The community `goodixtls` fork (80 × 88 parts) moved to the SIGFM matcher for this reason.
    `G5120_ENLARGE_FACTOR`, `G5120_BZ3_THRESHOLD` (24) and the default 5 enrol stages are unvalidated guesses.
 2. **Ridge polarity and contrast.** Unknown whether ridges are dark. If they are not, set
-   `FPI_IMAGE_COLORS_INVERTED`. `>> 4` may waste the range: Run 20's column means were about 107.
+   `FPI_IMAGE_COLORS_INVERTED`. `>> 4` uses half the range: Run 22's three frames span 52–179 after it, with a
+   standard deviation of about 23.
 3. **Timing.** The live Go runs waited seconds between steps. The vendor waits for nothing. This driver waits for
    each reply plus 200 ms of quiet. The handshake itself has no host-side waits, which is the part that mattered
    (Runs 11 and 17).
@@ -214,7 +220,7 @@ Needs the GLib and OpenSSL development headers. These tests cover:
    between that drain and the first arm is dropped as stale before the arm's ACK.
 5. **Base invalid with zeros.** Tonight's reading is that a base-invalid event carries current readings. The older
    note in `internal/proto/fdt.go` says zeroes. If it is zeroes, the driver keeps its previous thresholds, and gives
-   up after 8 in a row.
+   up after 8 in a row. No live run has seen the event yet: Runs 21 and 22 armed down four times without one.
 6. **ACK status.** Only `0x01` has ever been seen, and anything else stops the driver. That may be too strict.
 7. **What the EC is left in after a failure.** A handshake failure (wrong PSK, timeout) probably leaves the EC stuck.
    The driver says so and sends nothing more; the next open's health check then refuses. Sending a TLS fatal alert
@@ -223,8 +229,10 @@ Needs the GLib and OpenSSL development headers. These tests cover:
    Whether USB autosuspend between sessions upsets the EC is unknown.
 9. **Kernel driver.** `cdc_acm` is not bound on this machine. If it binds elsewhere, the claim detaches it
    (`G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`), which is untested.
-10. **Re-init after a completed session.** Each open repeats the full init and handshake. Run 20 showed that works
-    once after a completed handshake. Many opens per boot (fprintd opens per request) have not been tried.
+10. **Re-init after a completed session.** Each open repeats the full init and handshake. Runs 18, 20, 21 and 22
+    did that four times with no EC reset in between (the `0xae` counter rose by 2 each time), each run a separate
+    process that exited without closing TLS. Those opens were minutes to hours apart. Many opens in quick
+    succession, as fprintd makes them, have not been tried.
 
 ## First live run (owner only, keyboard-safe procedure)
 
@@ -234,5 +242,7 @@ in, 40 s power-button hold if the previous session ended badly):
 1. Check the EC answers with `goodix-probe --bisect --read-state` first, per `docs/bisect-runbook.md`.
 2. Build libfprint with only this driver. Run a single capture with libfprint's `examples/img-capture` (not fprintd),
    with `G_MESSAGES_DEBUG=all` and `GOODIX5120_PSK_FILE` pointing at the key in `captures/`.
-3. Compare the debug log against Run 20 step by step. Stop at the first difference.
-4. Only then try enrolment through fprintd.
+3. Compare the debug log against Runs 20–22 step by step (arm thresholds, event headers, the 7753-byte image
+   pack, the lift). Stop at the first difference.
+4. Only then try enrolment through fprintd. Its stages repeat the touch, frame and lift loop in one TLS session,
+   which Run 22 showed the EC serves.

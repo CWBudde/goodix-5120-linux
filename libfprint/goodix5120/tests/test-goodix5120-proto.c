@@ -490,6 +490,86 @@ test_fdt_thresholds (void)
   g_assert_cmphex (thr[1], ==, 0xff);   /* 0xe4 + 27 clamps */
 }
 
+/* Run 22 (docs/protocol.md): three touches in one TLS session, driven by the
+ * Go probe. The capture loop here must send the same arms from the same
+ * events: the first down arm is the baseline, each up arm comes from the
+ * down event before it, and each later down arm from the lift before it.
+ * The events are rebuilt from the logged flags and readings (header, then
+ * six little-endian readings); the arms are the thresholds the EC accepted. */
+static GByteArray *
+fdt_event_bytes (guint8 b0, guint8 b1, guint8 flags, const guint16 *readings)
+{
+  GByteArray *p = g_byte_array_new ();
+  const guint8 header[4] = { b0, b1, flags, 0x00 };
+
+  g_byte_array_append (p, header, sizeof (header));
+  for (guint i = 0; i < G5120_FDT_ZONES; i++)
+    {
+      const guint8 le[2] = { readings[i] & 0xff, readings[i] >> 8 };
+
+      g_byte_array_append (p, le, sizeof (le));
+    }
+  return p;
+}
+
+static void
+test_fdt_run22_session (void)
+{
+  struct
+  {
+    guint8      flags;
+    guint16     down[6];
+    const char *up_arm;
+    guint16     up[6];
+    const char *next_down;
+  } touches[] = {
+    { 0x3d, { 318, 361, 231, 251, 210, 291 }, "0e0180ba8019808e8098808480ac",
+      { 370, 396, 344, 373, 343, 373 }, "b9c6acbaabba" },
+    { 0x3d, { 328, 363, 209, 254, 247, 259 }, "0e0180bf80198083809a8096809c",
+      { 368, 395, 342, 371, 340, 371 }, "b8c5abb9aab9" },
+    { 0x3f, { 262, 283, 267, 275, 236, 267 }, "0e01809e80a880a080a4809180a0",
+      { 369, 396, 344, 373, 341, 372 }, NULL },
+  };
+  guint8 down_thr[6], up_thr[6];
+
+  memcpy (down_thr, g5120_fdt_initial_down_thresholds, sizeof (down_thr));
+  g_assert_cmpmem (down_thr, 6, ((const guint8[]) { 0xb8, 0xc5, 0xab, 0xb9, 0xaa, 0xb9 }), 6);
+
+  for (guint i = 0; i < G_N_ELEMENTS (touches); i++)
+    {
+      g_autoptr(GByteArray) down_ev = fdt_event_bytes (0x02, 0x00, touches[i].flags, touches[i].down);
+      g_autoptr(GByteArray) up_ev = fdt_event_bytes (0x00, 0x02, 0x00, touches[i].up);
+      g_autoptr(GByteArray) want_up = hex (touches[i].up_arm);
+      guint8 arm[16];
+      G5120FdtEvent ev;
+      gsize n;
+
+      /* The down arm goes out; the EC answers with a finger-down event. */
+      n = g5120_fdt_encode_arm (G5120_CMD_FDT_DOWN, down_thr, 0, arm);
+      g_assert_true (g5120_check_send (G5120_CMD_FDT_DOWN, n, NULL));
+      g_assert_true (g5120_fdt_decode_event (G5120_CMD_FDT_DOWN, down_ev->data, down_ev->len, &ev, NULL));
+      g_assert_cmpint (ev.kind, ==, G5120_FDT_EVENT_DOWN);
+      g_assert_cmphex (ev.touchflags, ==, touches[i].flags);
+
+      /* The up arm: reading >> 1 + 27 where flagged, 0x19 where not. */
+      g5120_fdt_up_thresholds (ev.zones, ev.touchflags, G5120_FDT_DELTA_THIS_DEVICE, up_thr);
+      n = g5120_fdt_encode_arm (G5120_CMD_FDT_UP, up_thr, 0, arm);
+      g_assert_cmpmem (arm, n, want_up->data, want_up->len);
+      g_assert_true (g5120_check_send (G5120_CMD_FDT_UP, n, NULL));
+
+      /* The lift; the next down arm is its readings >> 1. */
+      g_assert_true (g5120_fdt_decode_event (G5120_CMD_FDT_UP, up_ev->data, up_ev->len, &ev, NULL));
+      g_assert_cmpint (ev.kind, ==, G5120_FDT_EVENT_UP);
+      g5120_fdt_down_thresholds (ev.zones, down_thr);
+      if (touches[i].next_down)
+        {
+          g_autoptr(GByteArray) want_down = hex (touches[i].next_down);
+
+          g_assert_cmpmem (down_thr, 6, want_down->data, want_down->len);
+        }
+    }
+}
+
 /* ---- Image: image_test.go / frame_test.go vectors ----------------------- */
 
 static void
@@ -610,6 +690,7 @@ main (int argc, char **argv)
   g_test_add_func ("/goodix5120/fdt/event-headers", test_fdt_event_headers);
   g_test_add_func ("/goodix5120/fdt/event-zones", test_fdt_event_zones);
   g_test_add_func ("/goodix5120/fdt/thresholds", test_fdt_thresholds);
+  g_test_add_func ("/goodix5120/fdt/run22-session", test_fdt_run22_session);
   g_test_add_func ("/goodix5120/image/12bit-vector", test_decode_12bit_vector);
   g_test_add_func ("/goodix5120/image/12bit-full-range", test_decode_12bit_full_range);
   g_test_add_func ("/goodix5120/image/12bit-errors", test_decode_12bit_errors);
