@@ -314,10 +314,10 @@ Payloads are message payloads, checksum omitted. "ACK" means a `b0` message `[cm
 
 Notes:
 
-- **`0xe4`'s argument is `data_type = 0xbb020003` little-endian, then a `uint32` length of 0.** The
-  41-byte reply is that type, a length `0x20`, and a 32-byte hash of the device's PSK (that accounts
-  for 40 of the 41; the last byte is unexplained). The hash is device-specific and is not reproduced
-  here.
+- **`0xe4`'s argument is `data_type = 0xbb020003` little-endian, then a `uint32` length of 0.**
+  Run 8 records a different reply prefix: `00 03 00 01 bb 20 00 00 00`, followed by a
+  32-byte hash of the device's PSK (41 bytes total). The prefix's leading byte and type semantics
+  remain uninterpreted. The hash is device-specific and is not reproduced here.
 - **`0x50` appears in the driver log only.** It shows up zero times in either USB capture. Treat it as
   unconfirmed on the wire.
 - **`0xd2` does not appear anywhere** — not in the log, not in either capture.

@@ -984,6 +984,31 @@ frame per session.
   `SUDO_UID`/`SUDO_GID`. It now also logs each frame's 8-byte header and 5-byte trailer, so the next
   multi-touch run shows which of those bytes change from frame to frame.
 
+### Run 23 — 2026-09-30 19:31, first C-driver open (observed)
+
+The owner ran the prepared `c1aee77` driver with pinned libfprint
+`6f9479c3d55f847c1b3769f28ceb99227f9858cf`. The preceding Go health check at 19:25
+returned `GF_ITE_EC_20063` and passed every internal-keyboard check.
+
+- C open passed its own firmware health check, `0x96`, the init firmware read and `0xae`.
+- `0xe4` returned ACK status `01`, then a 41-byte payload. Its contents were redacted.
+  The C validator rejected the header and stopped open before any reset, TLS request or image request.
+- The owner confirmed **both internal and external keyboards still worked** after exit.
+- The existing PSK was 32 bytes. Its mode warning was expected: the repository's local
+  `fuseblk` mount reported `775` even after `chmod 600`. A synthetic offline check also
+  found that this mount could not enforce file `600` or directory `700`; future capture
+  images/logs use the owner's ext4 home directory instead.
+- There was **no capture or TLS handshake**. libusb printed device-reference warnings on exit;
+  those warnings alone do not establish another driver defect or successful interface cleanup.
+
+Offline investigation found that the C validator and Go/C replay fixtures had incorrectly
+echoed the request's type into an eight-byte reply header, adding an unexplained trailing byte.
+**Run 8 already records the actual nine-byte reply prefix:** `00 03 00 01 bb 20 00 00 00`,
+followed by 32 withheld hash bytes. That totals 41 bytes without a trailing byte. Run 23's
+redacted log does not independently reveal its prefix; the correction follows Run 8's evidence.
+The request remains `03 00 02 bb 00 00 00 00`. The prefix's first byte and reply-type semantics
+remain uninterpreted; validate the observed envelope without publishing the hash.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
@@ -1192,7 +1217,7 @@ is **known in full** from `gfusb.dll` — see "The 224-byte `0x90` config — re
 | 1 | `96` enable_chip | `01 02` | none; the driver doesn't wait for one |
 | 2 | `a8` firmware_version | `00 00` | ACK, `GF_ITE_EC_20063` |
 | 3 | `ae` get MCU state | `55` + `uint32` LE timestamp (ms, low bits) | **no ACK**, 20-byte state (below) |
-| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes: type `0xbb020003`, len `0x20`, 32-byte PSK hash (that is 40; the 41st byte is unaccounted for) |
+| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes: Run 8's nine-byte prefix `00 03 00 01 bb 20 00 00 00`, then a 32-byte PSK hash |
 | 5 | `a2` reset | `01 14` | ACK, `01 00 08` |
 | 6 | `82` read register | `00 00 00 04 00` | ACK, `a2 04 25 00` (driver: chip ID `0x2504`) |
 | 7 | `a6` read_otp | `00 00` | ACK, 64-byte OTP (~35 ms) |

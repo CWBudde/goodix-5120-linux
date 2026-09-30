@@ -4,14 +4,17 @@ Phase 6b's offline gate is complete. This run checks one open → touch → imag
 against the real libfprint integration. Agents must not run it. Use this prototype only on the
 original tested machine/profile; firmware identity alone does not establish calibration compatibility.
 Enrollment, matching, repeated lifecycle tests, and PAM remain Phase 6c work.
+The first owner attempt (Run 23) stopped at the `0xe4` reply before TLS or capture, with both
+keyboards working. The corrected build below checks the reply prefix already recorded in Run 8;
+a successful C capture remains pending.
 
 ## Prepare the build offline
 
-The prepared local capture bundle for driver commit `c1aee77` is
-`dist/goodix-owner-c-c1aee77/` in this repository (ignored by Git, retained across reboot).
+The prepared local capture bundle for driver commit `a8a29a3` is
+`dist/goodix-owner-c-e4-fix/` in this repository (ignored by Git, retained across reboot).
 It contains only `goodix5120`, uses the bundled libfprint through its executable RUNPATH,
 and was not installed system-wide. Build logs, `provenance.txt`, and binary `SHA256SUMS` are
-included. The full source/build is in `/tmp/goodix-owner-c-c1aee77/`; that temporary copy
+included. The full source/build is in `/tmp/goodix-owner-c-e4-fix/`; that temporary copy
 may be cleared on reboot. The bundle is local, not distributed with the repository.
 
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
@@ -23,7 +26,7 @@ git clone https://gitlab.freedesktop.org/libfprint/libfprint.git /tmp/goodix-own
 cd /tmp/goodix-owner-libfprint
 git checkout --detach 6f9479c3d55f847c1b3769f28ceb99227f9858cf
 driver_source=$(mktemp -d /tmp/goodix-owner-driver-XXXXXX)
-git -C "$repo" archive c1aee7747de00b711b5706288fabd6b1569ac8d3 libfprint/goodix5120 \
+git -C "$repo" archive a8a29a3f30c137548404ccc38cfae996e1be47f1 libfprint/goodix5120 \
   | tar -x -C "$driver_source"
 mkdir -p libfprint/drivers/goodix5120
 cp "$driver_source"/libfprint/goodix5120/goodix5120*.[ch] libfprint/drivers/goodix5120/
@@ -34,7 +37,7 @@ meson compile -C build
 build="$PWD/build"
 ```
 
-For the prepared bundle, set `build="$repo/dist/goodix-owner-c-c1aee77"` instead.
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-e4-fix"` instead.
 Do not install the library or change fprintd/PAM configuration for this run. The following tool
 reads compiled driver ID tables without opening USB:
 
@@ -71,10 +74,9 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build="$repo/dist/goodix-owner-c-c1aee77"
+build="$repo/dist/goodix-owner-c-e4-fix"
 umask 077
-mkdir -p "$repo/captures"
-run=$(mktemp -d "$repo/captures/c-first-XXXXXX")
+run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
   FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
   sh -c 'umask 077; exec "$@"' sh \
@@ -82,13 +84,17 @@ sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
 ```
 
 Use your existing **raw 32-byte** PSK file; adjust its path if needed. Never print its contents.
-The fresh directory and log are private; the root shell explicitly sets `umask 077` so the
-example writes a root-owned `0600` image. Leave `FP_DEBUG_TRANSFER` unset: raw transfer tracing
-can reveal secrets and images.
+Use a filesystem that enforces Unix permissions for the capture directory: this machine's home
+directory is ext4, while the repository's `fuseblk` mount reports `775` despite `chmod` and `umask`.
+On ext4 the fresh directory and log are private; the root shell explicitly sets `umask 077` so
+the example writes a root-owned `0600` image. A known PSK-permission warning may appear when using
+the existing key on `fuseblk`; the driver accepts it, but other local users may be able to read it.
+Leave `FP_DEBUG_TRANSFER` unset: raw transfer tracing can reveal secrets and images.
 
 Watch the log. When `arming 0x32` appears, place one finger. When `arming 0x34` appears, lift it.
 Check that the internal keyboard still types during the wait and after exit. Stop at the first
-unexpected exchange, warning/error, or keyboard failure; use Ctrl-C on the external keyboard.
+unexpected exchange, warning/error other than that known PSK-permission warning, or keyboard
+failure; use Ctrl-C on the external keyboard.
 Preserve the log and recover as described above before any further hardware attempt.
 
 ## Judge and record the result

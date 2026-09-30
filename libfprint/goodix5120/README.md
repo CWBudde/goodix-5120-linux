@@ -3,13 +3,14 @@
 This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerprint reader in the Huawei MateBook
 `HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its wire sequence byte for byte.
 
-**Status: the driver compiles inside a libfprint tree, its helpers pass unit tests, and the actual driver runs in an
-offline lifecycle harness. It has never run against the device.** Every fact it relies on comes from the Go reference,
-from Runs 18 and 20–22 in
+**Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. The first owner-run open
+(Run 23) stopped at a mis-transcribed `0xe4` reply header, with both keyboards working. That check is corrected;
+a successful hardware capture is still pending.** Its protocol evidence comes from the Go reference,
+from Runs 8, 18 and 20–22 in
 [`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The Go probe has run this
 driver's whole wire sequence live, including the capture loop three times in one TLS session (Run 22), and
-`/goodix5120/fdt/run22-session` checks that this driver derives the same arms from the same events. The first live
-run of the driver itself is the owner's to make, following the procedure below.
+`/goodix5120/fdt/run22-session` checks that this driver derives the same arms from the same events. The corrected
+capture attempt is the owner's to make, following the procedure below.
 
 ## Read this first: the hardware can be wedged
 
@@ -267,7 +268,8 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 The [first-capture runbook](../../docs/c-driver-first-capture.md) provides the pinned build,
 exact owner commands, expected log milestones, private output handling, and result checks.
 The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf`
-with only `goodix5120` enabled after completing Phase 6b; this is compile evidence, not a hardware run.
+with only `goodix5120` enabled after correcting Run 23's `0xe4` envelope check. The corrected build
+in `dist/goodix-owner-c-e4-fix/` has compile/offline evidence; it has not run on hardware.
 
 As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
 in, 40 s power-button hold if the previous session ended badly):

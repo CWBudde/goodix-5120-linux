@@ -162,7 +162,8 @@ keyboard checks. The runbook has the exact command lines.
    *Started (2026-09-30):* [`libfprint/goodix5120/`](libfprint/goodix5120/README.md) is a first
    `goodix5120` image driver. It compiles in a libfprint tree, and its framing, send gate, FDT
    thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
-   vectors. **It has not run on hardware.** It reads the PSK from a file and does not provision one.
+   vectors. **Run 23's first hardware open stopped at `0xe4`; the corrected driver awaits a capture.**
+   It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
    the first C-driver hardware run. Passing the pure helper tests does not exercise the driver itself.
@@ -268,8 +269,10 @@ sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply
       **Done 2026-09-30:** both firmware replies require the exact supported name with an optional
       trailing NUL; all init data replies require their documented lengths. Reset / DAC / config
       status bytes, chip ID `0x2504`, and the PSK-hash type/length header are checked before advancing
-      the exchange. The final 20-byte MCU state must report TLS connected. Hash, OTP, MCU counters,
-      and the unexplained PSK trailing byte remain opaque; no new device commands were introduced.
+      the exchange. The final 20-byte MCU state must report TLS connected. Hash, OTP and MCU counters
+      remain opaque; no new device commands were introduced. **Run 23 correction:** the PSK reply's
+      observed nine-byte prefix is recorded in Run 8; the prior eight-byte request-echo header and
+      supposed trailing byte were a transcription error (see the owner-run follow-up below).
       **Verified:** 68 added lifecycle cases cover empty / short / oversized replies, every known
       status/header byte, hidden firmware suffixes, and valid opaque-field variation. Rejection
       asserts no later USB write, one failed open, and no pending transfer. Before the fix, 57 cases
@@ -358,6 +361,19 @@ hardware access occurred. The ignored local bundle in `dist/goodix-owner-c-c1aee
 See [the concrete owner capture runbook](docs/c-driver-first-capture.md)
 for commands and acceptance evidence, including the upstream example's misleading failure exit
 status. The owner capture is still pending; no Phase 6c hardware criterion is closed.
+
+**Owner attempt 2026-09-30 (Run 23):** the Go health check passed. C open received ACK + 41 bytes
+for `0xe4` but rejected its header before TLS or capture; both keyboards still worked after exit.
+Offline investigation found that the validator and shared Go/C fixtures had misread the reply as
+the request's type. They now use Run 8's literal nine-byte prefix `00 03 00 01 bb 20 00 00 00`
+plus a synthetic 32-byte hash; all nine prefix bytes and the exact 41-byte length are checked.
+The former request-echo shape is rejected, hash bytes remain opaque, and secret redaction is unchanged.
+The new Run 8 regression failed with the same open error before the fix. All 214 offline C subtests
+pass normally and under ASan/UBSan (leak detection disabled under ptrace); `just check` passes with
+the existing formatting listings. A corrected owner capture remains pending. The local `fuseblk`
+mount does not enforce private modes, so capture images/logs use the owner's Linux home filesystem.
+Corrected driver `a8a29a3` also compiles against pinned real libfprint without compiler warnings;
+the ready bundle is `dist/goodix-owner-c-e4-fix/`, with exact revisions and binary checksums.
 
 ### 6c — Portability, authentication quality, and repeatable checks
 
