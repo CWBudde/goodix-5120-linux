@@ -16,15 +16,33 @@ glib_dep = dependency('glib-2.0', version: '>= 2.68')
 openssl_dep = dependency('openssl', version: '>= 3.0')
 gio_dep = dependency('gio-2.0', version: '>= 2.68')
 
+fixture_dir = join_paths(meson.current_source_dir(), '..', '..', 'internal', 'testfixtures', 'testdata')
+fixture_args = ['-DG5120_SHARED_FIXTURE_DIR="' + fixture_dir + '"']
+fixture_lib = static_library('g5120fixtures', 'tests/shared-fixtures.c',
+  include_directories: include_directories('.'),
+  c_args: fixture_args, dependencies: glib_dep)
+
+test('goodix5120-fixtures',
+  executable('test-shared-fixtures', 'tests/test-shared-fixtures.c',
+    include_directories: include_directories('.'),
+    dependencies: glib_dep, link_with: fixture_lib),
+  protocol: 'tap', args: ['--tap'])
+
 proto_lib = static_library('g5120proto', 'goodix5120_proto.c',
   dependencies: glib_dep)
 tls_lib = static_library('g5120tls', 'goodix5120_tls.c',
   dependencies: [glib_dep, openssl_dep], link_with: proto_lib)
 
+test('goodix5120-shared-protocol',
+  executable('test-shared-protocol', 'tests/test-shared-protocol.c',
+    include_directories: include_directories('.'),
+    dependencies: glib_dep, link_with: [proto_lib, fixture_lib]),
+  protocol: 'tap', args: ['--tap'])
+
 test('goodix5120-proto',
   executable('test-goodix5120-proto', 'tests/test-goodix5120-proto.c',
     include_directories: include_directories('.'),
-    dependencies: glib_dep, link_with: proto_lib),
+    dependencies: glib_dep, link_with: [proto_lib, fixture_lib]),
   protocol: 'tap', args: ['--tap'])
 
 test('goodix5120-tls',
@@ -40,5 +58,5 @@ test('goodix5120-driver',
      'tests/fake-libfprint/fake-libfprint.c'],
     include_directories: [include_directories('tests/fake-libfprint'), include_directories('.')],
     c_args: ['-Wno-unused-parameter'],
-    dependencies: [gio_dep, openssl_dep], link_with: [tls_lib, proto_lib]),
+    dependencies: [gio_dep, openssl_dep], link_with: [tls_lib, proto_lib, fixture_lib]),
   protocol: 'tap', args: ['--tap'])

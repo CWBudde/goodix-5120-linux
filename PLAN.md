@@ -243,7 +243,7 @@ capture and mismatched-key rejection pass. Private-capture / Windows fixtures we
 actual USB driver and hardware remained untested at that point. The owner has now passed the real
 sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply.
 
-### 6b — Exercise and harden the actual libfprint driver
+### 6b — Exercise and harden the actual libfprint driver (complete)
 
 - [x] **Add an offline fake USB / libfprint lifecycle harness for `goodix5120.c`.** Previously, standalone
       Meson tests compiled only the protocol and TLS helpers. Exercise open, activation, touch → image →
@@ -323,10 +323,33 @@ sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply
       review found no actionable issues and confirmed the real libfprint completion contracts.
       **API limitation:** GUsb can detach before an unsuccessful claim with no rollback or public separate
       attach API. Tests verify successful-claim release symmetry; real restoration remains unverified.
-      The shared-fixture task below still gates the first C-driver hardware run.
-- [ ] **Use independent shared protocol fixtures.** Compare every init payload byte, reply expectation,
+      At that point the shared-fixture task below still gated the first C-driver hardware run.
+- [x] **Use independent shared protocol fixtures.** Compare every init payload byte, reply expectation,
       FDT vector, and image layout between Go and C. Selected payload assertions and a config checksum
       cannot establish full byte-for-byte parity.
+      **Done 2026-09-30:** Go and C consume an independent committed INI corpus. All 14 ordered init
+      requests, every config byte, reply modes/data/secret classifications, the health check and capture
+      catalogue are pinned. A real-driver lifecycle scenario checks all 15 open command payloads and
+      receives corpus replies through its existing synthetic OpenSSL peer. Malformed-init regressions
+      retain the no-later-write requirement, now starting from shared valid reply data.
+      FDT references include three arm vectors, ten events and 21 event-to-arm pairs, including Run 22,
+      both deltas, uncovered zones, saturation and timestamps. Synthetic image references check all 5120
+      samples and grayscale pixels, 64-column × 80-row geometry, bare/wrapped layouts, offsets and six
+      invalid lengths. Loaders reject missing/duplicate/incomplete records and malformed values.
+      **Verified:** all 211 C subtests pass normally and under ASan/UBSan (LeakSanitizer disabled under
+      ptrace). `just check`, Go race tests and the shared FDT tests under both opcode tags pass; existing
+      formatting differences remain. Fourteen mutation checks catch seven drift classes in both languages:
+      checksum-preserving config changes, init order, reply modes, thresholds, timestamp endianness,
+      image offsets and sample packing. Independent review found no critical/important issues.
+      Shared Go FDT integration tests live in `internal/testfixtures` to preserve the protocol package's
+      standard-library-only import rule. Runtime reply handling and safety gates are unchanged.
+      **Optional follow-up:** pin the Go capture-loop replay's ACK/TLS reply shapes directly to the extra
+      `loop.image` reference; all 14 init reply expectations are already compared.
+
+**Phase 6b offline gate complete.** The next step is one owner-run C-driver capture using the
+[driver's first-live-run procedure](libfprint/goodix5120/README.md#first-live-run-owner-only-keyboard-safe-procedure)
+and the external-keyboard runbook. Agents must not run hardware. Driver timing, EC recovery,
+calibration portability and authentication quality remain unverified; Phase 6c precedes PAM use.
 
 ### 6c — Portability, authentication quality, and repeatable checks
 

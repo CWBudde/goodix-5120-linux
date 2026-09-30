@@ -10,6 +10,9 @@
 #include "goodix5120.h"
 #include "goodix5120_proto.h"
 #include "goodix5120_tls.h"
+#include "shared-fixtures.h"
+
+static GKeyFile *corpus;
 
 typedef struct {
   FakeUsb usb;
@@ -19,6 +22,8 @@ typedef struct {
   SSL *client;
   guint8 key[32];
   guint frames, handshakes;
+  gboolean check_init;
+  guint corpus_position;
   gboolean auto_events;
   gboolean no_hello, corrupt_image;
   gboolean wrong_key;
@@ -195,7 +200,6 @@ peer_write (const guint8 *buf, gsize len, gpointer data)
   gsize payload_len, mp_len;
   guint8 flags, cmd;
   GError *error = NULL;
-  guint8 reply[64] = { 0 };
 
   g_assert_cmpuint (len % 64, ==, 0);
   g_assert_true (g5120_pack_decode (buf, len, &flags, &payload, &payload_len, &error));
@@ -210,52 +214,53 @@ peer_write (const guint8 *buf, gsize len, gpointer data)
   g_assert_cmphex (flags, ==, 0xa0);
   g_assert_true (g5120_message_decode (payload, payload_len, &cmd, &mp, &mp_len, &error));
   g_assert_no_error (error);
+  /* A strict lifecycle scenario checks every submitted init byte, including
+   * the health check, before replying from the independent corpus. */
+  const char *section = NULL;
+  g_autofree gchar *ordered = NULL;
+  if (f->check_init && f->corpus_position < 15)
+    {
+      ordered = f->corpus_position == 0 ? g_strdup ("health") :
+                g_strdup_printf ("init.%02u", f->corpus_position - 1);
+      section = ordered;
+      g_autoptr(GByteArray) expected = fixture_hex (corpus, section, "payload");
+      g_assert_cmphex (cmd, ==, fixture_cmd (corpus, section, "cmd"));
+      g_assert_cmpmem (mp, mp_len, expected->data, expected->len);
+      f->corpus_position++;
+    }
+  else
+    switch (cmd)
+      {
+      case 0x96: section = "init.00"; break;
+      case 0xa8: section = "health"; break;
+      case 0xae: section = f->client && SSL_is_init_finished (f->client) ? "init.13" : "init.02"; break;
+      case 0xe4: section = "init.03"; break;
+      case 0xa2: section = "init.04"; break;
+      case 0x82: section = "init.05"; break;
+      case 0xa6: section = "init.06"; break;
+      case 0x70: section = "init.08"; break;
+      case 0x98: section = "init.09"; break;
+      case 0x90: section = "init.10"; break;
+      case 0xd0: section = "init.11"; break;
+      case 0xd4: section = "init.12"; break;
+      }
+  if (section)
+    {
+      G5120Reply mode = fixture_reply (corpus, section);
+      if (mode & G5120_REPLY_ACK)
+        queue_ack (f, cmd, 1);
+      if (mode & G5120_REPLY_DATA)
+        {
+          g_autoptr(GByteArray) data_bytes = fixture_hex (corpus, section, "data");
+          queue_message (f, cmd, data_bytes->data, data_bytes->len);
+        }
+      if ((mode & G5120_REPLY_TLS) && !f->no_hello)
+        start_client (f);
+      return;
+    }
   /* The fake speaks only the documented exchanges, never generic success. */
   switch (cmd)
     {
-    case 0x96:
-      return; /* deliberately no reply */
-    case 0xa8:
-      queue_ack (f, cmd, 1);
-      queue_message (f, cmd, (guint8 *) "GF_ITE_EC_20063", strlen ("GF_ITE_EC_20063"));
-      return;
-    case 0xae:
-      reply[1] = f->client && SSL_is_init_finished (f->client) ? 2 : 0;
-      queue_message (f, cmd, reply, 20);
-      return;
-    case 0xe4:
-      reply[0] = 3; reply[2] = 2; reply[3] = 0xbb; reply[4] = 0x20;
-      queue_ack (f, cmd, 1);
-      queue_message (f, cmd, reply, 41);
-      return;
-    case 0xa2:
-      reply[0] = 1; reply[2] = 8;
-      queue_ack (f, cmd, 1);
-      queue_message (f, cmd, reply, 3);
-      return;
-    case 0x82:
-      reply[0] = 0xa2; reply[1] = 4; reply[2] = 0x25;
-      queue_ack (f, cmd, 1);
-      queue_message (f, cmd, reply, 4);
-      return;
-    case 0xa6:
-      queue_ack (f, cmd, 1);
-      queue_message (f, cmd, reply, 64);
-      return;
-    case 0x98:
-    case 0x90:
-      reply[0] = reply[1] = 1;
-      queue_ack (f, cmd, 1);
-      queue_message (f, cmd, reply, 2);
-      return;
-    case 0x70:
-    case 0xd4:
-      queue_ack (f, cmd, 1);
-      return;
-    case 0xd0:
-      if (!f->no_hello)
-        start_client (f);
-      return;
     case 0x32:
     case 0x34:
       queue_ack (f, cmd, 1);
@@ -1159,25 +1164,40 @@ test_late_processing_after_cancel (Fixture *f, gconstpointer data)
  * The hash and OTP bytes are synthetic; MCU fields other than TLS are opaque. */
 typedef struct {
   const char *name;
-  guint8 cmd;
+  const char *section;
   guint occurrence;
+  guint8 cmd;
   gsize len;
   guint8 bytes[65];
 } InitReply;
 
-static const InitReply init_replies[] = {
-  { "health-firmware", 0xa8, 1, 15, "GF_ITE_EC_20063" },
-  { "init-firmware",   0xa8, 2, 15, "GF_ITE_EC_20063" },
-  { "initial-state",   0xae, 1, 20, { 0 } },
-  { "psk-hash",        0xe4, 1, 41, { 3, 0, 2, 0xbb, 0x20, 0, 0, 0 } },
-  { "first-reset",     0xa2, 1,  3, { 1, 0, 8 } },
-  { "chip-id",         0x82, 1,  4, { 0xa2, 4, 0x25, 0 } },
-  { "otp",             0xa6, 1, 64, { 0 } },
-  { "second-reset",    0xa2, 2,  3, { 1, 0, 8 } },
-  { "dac",             0x98, 1,  2, { 1, 1 } },
-  { "config",          0x90, 1,  2, { 1, 1 } },
-  { "final-state",     0xae, 2, 20, { 0, 2 } },
+/* Ordering is retained for the existing malformed-field regressions; valid
+ * bytes, commands and lengths are loaded from the independent reference. */
+static InitReply init_replies[] = {
+  { .name = "health-firmware", .section = "health", .occurrence = 1 },
+  { .name = "init-firmware", .section = "init.01", .occurrence = 2 },
+  { .name = "initial-state", .section = "init.02", .occurrence = 1 },
+  { .name = "psk-hash", .section = "init.03", .occurrence = 1 },
+  { .name = "first-reset", .section = "init.04", .occurrence = 1 },
+  { .name = "chip-id", .section = "init.05", .occurrence = 1 },
+  { .name = "otp", .section = "init.06", .occurrence = 1 },
+  { .name = "second-reset", .section = "init.07", .occurrence = 2 },
+  { .name = "dac", .section = "init.09", .occurrence = 1 },
+  { .name = "config", .section = "init.10", .occurrence = 1 },
+  { .name = "final-state", .section = "init.13", .occurrence = 2 },
 };
+
+static void
+test_shared_init (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  f->check_init = TRUE;
+  open_driver (f);
+  g_assert_cmpuint (f->corpus_position, ==, 15);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+  g_assert_cmpuint (f->usb.replies.length, ==, 0);
+  g_assert_null (f->usb.pending);
+}
 
 static void
 replace_init_reply (Fixture *f, const InitReply *reply, const guint8 *bytes, gsize len)
@@ -1319,6 +1339,18 @@ int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
+  g_autoptr(GKeyFile) owned = fixture_load ();
+  corpus = owned;
+  for (guint i = 0; i < G_N_ELEMENTS (init_replies); i++)
+    {
+      InitReply *r = &init_replies[i];
+      g_autoptr(GByteArray) bytes = fixture_hex (corpus, r->section, "data");
+      r->cmd = fixture_cmd (corpus, r->section, "cmd");
+      r->len = bytes->len;
+      g_assert_cmpuint (r->len, <, sizeof (r->bytes));
+      memcpy (r->bytes, bytes->data, r->len);
+    }
+  g_test_add ("/goodix5120/driver/shared-init", Fixture, NULL, setup, test_shared_init, teardown);
   g_test_add ("/goodix5120/driver/enrollment", Fixture, NULL, setup, test_enrollment, teardown);
   g_test_add ("/goodix5120/driver/processing-after-lift", Fixture, NULL, setup,
               test_processing_after_lift, teardown);

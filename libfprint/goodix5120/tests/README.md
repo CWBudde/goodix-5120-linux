@@ -58,7 +58,26 @@ ordering, based on [GUsb 0.4.9](https://github.com/hughsie/libgusb/blob/0.4.9/gu
 Tests require matching binding flags on close and rollback, and no release before successful claim. Injected
 release and attachment failures preserve errors and block reopening that device object without new USB work.
 These checks exercise the driver's GUsb calls; they do not run actual detach/attach operations.
-The driver suite contains 126 subtests; the helper suites add 43.
+The driver suite contains 127 subtests; the original helpers add 43. Shared protocol checks add 39,
+and corpus-reader checks add two (211 total).
+
+## Shared independent fixtures
+
+[The protocol corpus](../../../internal/testfixtures/testdata/README.md) pins every byte of all 14 init requests,
+including the entire 224-byte config, reply expectations and secret classifications. The additional health check
+and Go capture catalogue are covered too. A lifecycle scenario checks all 15 submitted open commands and answers
+from the corpus, while the synthetic OpenSSL client performs the real handshake. Existing malformed-reply cases
+use corpus data as their valid starting point and still require no later OUT submission after rejection.
+
+Both languages consume the same literal FDT arms, events and event-to-arm pairs, including Run 22, saturation,
+uncovered zones and both deltas. Synthetic image vectors check every 12-bit sample and grayscale pixel in bare
+and wrapped layouts, geometry, trimming offsets and adjacent invalid lengths. Expected values never come from
+production builders. Go FDT integration tests live in `internal/testfixtures` to preserve the protocol package's
+standard-library-only import rule.
+
+Readers fail on missing/duplicate/incomplete records and malformed values. The C fixture path is configured by
+Meson, so the standalone test build requires the full repository checkout. Go embeds the same file only in test
+utilities; it is absent from shipped command dependencies.
 
 ## Limits and next regression targets
 
@@ -66,8 +85,8 @@ This adapter does not run libfprint's action framework, GUsb, libusb, Pixman or 
 and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. It cannot validate
 enrollment quality, matching, timing, suspend or EC recovery.
 
-The remaining Phase 6b task requires shared independent protocol fixtures. Failed sessions require close/reopen;
+Phase 6b offline coverage includes shared independent fixtures. Failed sessions require close/reopen;
 the fake EC does not establish that reopening recovers real hardware. GUsb may detach a kernel driver before an
 unsuccessful claim, and its public API does not expose a separate attachment operation to undo that case.
 An ambiguous release failure requires recreating the device object; that alone does not guarantee kernel-driver
-restoration. Keep the first hardware-run gate in `PLAN.md`.
+restoration. Follow the owner-only first-capture procedure in `PLAN.md`; hardware evidence is still required.

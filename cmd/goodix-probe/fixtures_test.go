@@ -102,7 +102,7 @@ func vendorInitScript() []transport.Exchange {
 
 	return []transport.Exchange{
 		ex(0), // 96 enable_chip: the driver does not wait for a reply
-		ex(1, ackFor(0xa8), dataFor(0xa8, []byte("GF_ITE_EC_20063\x00"))),
+		ex(1, ackFor(0xa8), dataFor(0xa8, []byte("GF_ITE_EC_20063"))),
 		ex(2, mcuState(0x11)), // ae: no ACK, and TLS is down on a cold init
 		ex(3, ackFor(0xe4), dataFor(0xe4, pskReply)),
 		ex(4, ackFor(0xa2), dataFor(0xa2, []byte{0x01, 0x00, 0x08})),

@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "goodix5120_proto.h"
+#include "shared-fixtures.h"
 
 static GByteArray *
 hex (const char *s)
@@ -409,203 +410,107 @@ test_tls_frame_validation (void)
 static void
 test_fdt_arm_vectors (void)
 {
-  struct
-  {
-    guint8      cmd;
-    const char *want;
-    guint8      thr[6];
-    guint16     ts;
-  } cases[] = {
-    { 0x32, "0c0180b880c580ab80b980aa80b9ec5f", { 0xb8, 0xc5, 0xab, 0xb9, 0xaa, 0xb9 }, 0x5fec },
-    { 0x34, "0e0180b480aa80808092808a8092", { 0xb4, 0xaa, 0x80, 0x92, 0x8a, 0x92 }, 0 },
-    { 0x36, "0d0180b480c380a780b780a680b7", { 0xb4, 0xc3, 0xa7, 0xb7, 0xa6, 0xb7 }, 0 },
-  };
-
-  for (guint i = 0; i < G_N_ELEMENTS (cases); i++)
+  g_autoptr(GKeyFile) c = fixture_load ();
+  const char *names[] = { "arm.down", "arm.up", "arm.manual" };
+  for (guint i = 0; i < G_N_ELEMENTS (names); i++)
     {
-      g_autoptr(GByteArray) want = hex (cases[i].want);
-      guint8 out[16];
-      gsize n = g5120_fdt_encode_arm (cases[i].cmd, cases[i].thr, cases[i].ts, out);
-
+      g_autoptr(GByteArray) thr = fixture_hex (c, names[i], "thresholds");
+      g_autoptr(GByteArray) want = fixture_hex (c, names[i], "payload");
+      guint8 out[16], cmd = fixture_cmd (c, names[i], "cmd");
+      gsize n = g5120_fdt_encode_arm (cmd, thr->data, fixture_uint (c, names[i], "timestamp"), out);
       g_assert_cmpmem (out, n, want->data, want->len);
-      g_assert_true (g5120_check_send (cases[i].cmd, n, NULL));
+      g_assert_true (g5120_check_send (cmd, n, NULL));
     }
-
-  g_assert_cmpuint (g5120_fdt_encode_arm (0xa8, cases[0].thr, 0, (guint8[16]) { 0 }), ==, 0);
-
-  /* The initial down arm is this device's observed baseline, which is the
-   * 0x32 vector above. */
-  g_assert_cmpmem (g5120_fdt_initial_down_thresholds, 6, cases[0].thr, 6);
+  g_autoptr(GByteArray) initial = fixture_hex (c, "arm.down", "thresholds");
+  g_assert_cmpmem (g5120_fdt_initial_down_thresholds, 6, initial->data, initial->len);
+  g_assert_cmpuint (g5120_fdt_encode_arm (0xa8, initial->data, 0, (guint8[16]) { 0 }), ==, 0);
 }
 
 static void
 test_fdt_event_headers (void)
 {
-  struct
-  {
-    guint8            cmd;
-    const char       *header;
-    G5120FdtEventKind want;
-  } cases[] = {
-    { 0x32, "02003f00", G5120_FDT_EVENT_DOWN },
-    { 0x32, "02002f00", G5120_FDT_EVENT_DOWN },
-    { 0x32, "02003d00", G5120_FDT_EVENT_DOWN },
-    { 0x32, "02003700", G5120_FDT_EVENT_DOWN },
-    { 0x32, "80000000", G5120_FDT_EVENT_BASE_INVALID },
-    { 0x34, "00020000", G5120_FDT_EVENT_UP },
-    { 0x36, "00013f00", G5120_FDT_EVENT_MANUAL },
-    { 0x36, "00012f00", G5120_FDT_EVENT_MANUAL },
-    { 0x32, "7f7f7f7f", G5120_FDT_EVENT_UNKNOWN },
-  };
-
-  for (guint i = 0; i < G_N_ELEMENTS (cases); i++)
-    {
-      g_autoptr(GByteArray) p = hex (cases[i].header);
-      g_autoptr(GError) error = NULL;
-      G5120FdtEvent ev;
-
-      g_byte_array_set_size (p, 16);
-      memset (p->data + 4, 0, 12);
-      g_assert_true (g5120_fdt_decode_event (cases[i].cmd, p->data, p->len, &ev, &error));
-      g_assert_no_error (error);
-      g_assert_cmpint (ev.kind, ==, cases[i].want);
-      g_assert_cmphex (ev.touchflags, ==, p->data[2]);
-    }
-
+  g_autoptr(GKeyFile) c = fixture_load ();
+  g_auto(GStrv) groups = g_key_file_get_groups (c, NULL);
+  for (guint i = 0; groups[i]; i++)
+    if (g_str_has_prefix (groups[i], "event."))
+      {
+        g_autoptr(GByteArray) p = fixture_hex (c, groups[i], "payload");
+        G5120FdtEvent ev;
+        g_assert_true (g5120_fdt_decode_event (fixture_cmd (c, groups[i], "cmd"), p->data, p->len, &ev, NULL));
+        g_assert_cmpuint (ev.kind, ==, fixture_uint (c, groups[i], "kind"));
+        g_assert_cmpuint (ev.touchflags, ==, p->data[2]);
+      }
   for (gsize n = 0; n <= 17; n++)
     if (n != 16)
       {
         G5120FdtEvent ev;
-        g_autofree guint8 *z = g_malloc0 (17);
-
-        g_assert_false (g5120_fdt_decode_event (0x32, z, n, &ev, NULL));
+        guint8 zero[17] = { 0 };
+        g_assert_false (g5120_fdt_decode_event (0x32, zero, n, &ev, NULL));
       }
 }
 
 static void
 test_fdt_event_zones (void)
 {
-  g_autoptr(GByteArray) p = hex ("02003f00" "1e01" "3801" "ff00" "f700" "3f01" "3401");
-  const guint16 want[6] = { 0x011e, 0x0138, 0x00ff, 0x00f7, 0x013f, 0x0134 };
+  g_autoptr(GKeyFile) c = fixture_load ();
+  g_autoptr(GByteArray) p = fixture_hex (c, "event.down-3f", "payload");
+  gsize n;
+  g_autofree gint *want = fixture_ints (c, "event.down-3f", "zones", &n);
   G5120FdtEvent ev;
-
   g_assert_true (g5120_fdt_decode_event (0x32, p->data, p->len, &ev, NULL));
-  g_assert_cmpmem (ev.zones, sizeof (ev.zones), want, sizeof (want));
+  for (guint i = 0; i < n; i++)
+    g_assert_cmpuint (ev.zones[i], ==, want[i]);
 }
 
-/* Threshold derivation. The rules are Phase 5d facts (dump.pcapng + vendor
- * log); the expected values are computed by hand from those rules for the
- * unsolicited down event this device sent on attach:
- *   32 11 00 | 02 00 2f 00 1e 01 38 01 ff 00 f7 00 3f 01 34 01 | 73
- * touchflags 0x2f = zones 0,1,2,3,5 touched, zone 4 not. */
 static void
 test_fdt_thresholds (void)
 {
-  const guint16 down[6] = { 0x011e, 0x0138, 0x00ff, 0x00f7, 0x013f, 0x0134 };
-  /* reading >> 1, plus 27 when touched, 0x19 when not */
-  const guint8 want_up[6] = { 0x8f + 27, 0x9c + 27, 0x7f + 27, 0x7b + 27, 0x19, 0x9a + 27 };
-  const guint8 want_up_default[6] = { 0x8f + 21, 0x9c + 21, 0x7f + 21, 0x7b + 21, 0x19, 0x9a + 21 };
-  /* Down thresholds are no-finger readings >> 1. Readings of exactly twice
-   * the observed baseline give the baseline back. */
-  const guint16 nofinger[6] = { 0xb8 * 2, 0xc5 * 2 + 1, 0xab * 2, 0xb9 * 2 + 1, 0xaa * 2, 0xb9 * 2 };
-  const guint16 huge[6] = { 0xffff, 0x200, 0x1ff, 0, 1, 2 };
-  const guint16 huge_up[6] = { 0x1ff, 0x1c8, 0, 0, 0, 0 };
-  guint8 thr[6];
-
-  g5120_fdt_up_thresholds (down, 0x2f, G5120_FDT_DELTA_THIS_DEVICE, thr);
-  g_assert_cmpmem (thr, 6, want_up, 6);
-  g5120_fdt_up_thresholds (down, 0x2f, G5120_FDT_DELTA_DEFAULT, thr);
-  g_assert_cmpmem (thr, 6, want_up_default, 6);
-  g5120_fdt_up_thresholds (down, 0x00, G5120_FDT_DELTA_THIS_DEVICE, thr);
-  for (guint i = 0; i < 6; i++)
-    g_assert_cmphex (thr[i], ==, 0x19);
-
-  g5120_fdt_down_thresholds (nofinger, thr);
-  g_assert_cmpmem (thr, 6, g5120_fdt_initial_down_thresholds, 6);
-
-  /* Clamping: a threshold is one byte on the wire. */
-  g5120_fdt_down_thresholds (huge, thr);
-  g_assert_cmpmem (thr, 6, ((const guint8[]) { 0xff, 0xff, 0xff, 0, 0, 1 }), 6);
-  g5120_fdt_up_thresholds (huge_up, 0x03, 27, thr);
-  g_assert_cmphex (thr[0], ==, 0xff);   /* 0xff + 27 clamps */
-  g_assert_cmphex (thr[1], ==, 0xff);   /* 0xe4 + 27 clamps */
-}
-
-/* Run 22 (docs/protocol.md): three touches in one TLS session, driven by the
- * Go probe. The capture loop here must send the same arms from the same
- * events: the first down arm is the baseline, each up arm comes from the
- * down event before it, and each later down arm from the lift before it.
- * The events are rebuilt from the logged flags and readings (header, then
- * six little-endian readings); the arms are the thresholds the EC accepted. */
-static GByteArray *
-fdt_event_bytes (guint8 b0, guint8 b1, guint8 flags, const guint16 *readings)
-{
-  GByteArray *p = g_byte_array_new ();
-  const guint8 header[4] = { b0, b1, flags, 0x00 };
-
-  g_byte_array_append (p, header, sizeof (header));
-  for (guint i = 0; i < G5120_FDT_ZONES; i++)
+  g_autoptr(GKeyFile) c = fixture_load ();
+  const char *names[] = { "pair.attach-delta27", "pair.attach-delta21" };
+  const guint8 deltas[] = { G5120_FDT_DELTA_THIS_DEVICE, G5120_FDT_DELTA_DEFAULT };
+  for (guint i = 0; i < G_N_ELEMENTS (names); i++)
     {
-      const guint8 le[2] = { readings[i] & 0xff, readings[i] >> 8 };
-
-      g_byte_array_append (p, le, sizeof (le));
+      g_autoptr(GByteArray) p = fixture_hex (c, names[i], "event");
+      g_autoptr(GByteArray) want = fixture_hex (c, names[i], "thresholds");
+      guint8 thr[6];
+      G5120FdtEvent ev;
+      g_assert_true (g5120_fdt_decode_event (0x32, p->data, p->len, &ev, NULL));
+      g5120_fdt_up_thresholds (ev.zones, ev.touchflags, deltas[i], thr);
+      g_assert_cmpmem (thr, 6, want->data, want->len);
     }
-  return p;
 }
 
+/* Preserve the three-touch derivation chain, with shared literal inputs and
+ * independently recorded expected arms instead of a second table in C. */
 static void
 test_fdt_run22_session (void)
 {
-  struct
-  {
-    guint8      flags;
-    guint16     down[6];
-    const char *up_arm;
-    guint16     up[6];
-    const char *next_down;
-  } touches[] = {
-    { 0x3d, { 318, 361, 231, 251, 210, 291 }, "0e0180ba8019808e8098808480ac",
-      { 370, 396, 344, 373, 343, 373 }, "b9c6acbaabba" },
-    { 0x3d, { 328, 363, 209, 254, 247, 259 }, "0e0180bf80198083809a8096809c",
-      { 368, 395, 342, 371, 340, 371 }, "b8c5abb9aab9" },
-    { 0x3f, { 262, 283, 267, 275, 236, 267 }, "0e01809e80a880a080a4809180a0",
-      { 369, 396, 344, 373, 341, 372 }, NULL },
-  };
-  guint8 down_thr[6], up_thr[6];
-
-  memcpy (down_thr, g5120_fdt_initial_down_thresholds, sizeof (down_thr));
-  g_assert_cmpmem (down_thr, 6, ((const guint8[]) { 0xb8, 0xc5, 0xab, 0xb9, 0xaa, 0xb9 }), 6);
-
-  for (guint i = 0; i < G_N_ELEMENTS (touches); i++)
+  g_autoptr(GKeyFile) c = fixture_load ();
+  g_autoptr(GByteArray) baseline = fixture_hex (c, "arm.down", "thresholds");
+  guint8 down_thr[6], up_thr[6], arm[16];
+  memcpy (down_thr, baseline->data, 6);
+  for (guint i = 0; i < 3; i++)
     {
-      g_autoptr(GByteArray) down_ev = fdt_event_bytes (0x02, 0x00, touches[i].flags, touches[i].down);
-      g_autoptr(GByteArray) up_ev = fdt_event_bytes (0x00, 0x02, 0x00, touches[i].up);
-      g_autoptr(GByteArray) want_up = hex (touches[i].up_arm);
-      guint8 arm[16];
+      g_autofree gchar *down_name = g_strdup_printf ("pair.run22-down-%u", i);
+      g_autofree gchar *up_name = i < 2 ? g_strdup_printf ("pair.run22-up-%u", i) : g_strdup ("event.run22-final-up");
+      g_autoptr(GByteArray) down_ev = fixture_hex (c, down_name, "event");
+      g_autoptr(GByteArray) up_ev = fixture_hex (c, up_name, i < 2 ? "event" : "payload");
+      g_autoptr(GByteArray) want_up = fixture_hex (c, down_name, "payload");
       G5120FdtEvent ev;
-      gsize n;
-
-      /* The down arm goes out; the EC answers with a finger-down event. */
-      n = g5120_fdt_encode_arm (G5120_CMD_FDT_DOWN, down_thr, 0, arm);
-      g_assert_true (g5120_check_send (G5120_CMD_FDT_DOWN, n, NULL));
-      g_assert_true (g5120_fdt_decode_event (G5120_CMD_FDT_DOWN, down_ev->data, down_ev->len, &ev, NULL));
-      g_assert_cmpint (ev.kind, ==, G5120_FDT_EVENT_DOWN);
-      g_assert_cmphex (ev.touchflags, ==, touches[i].flags);
-
-      /* The up arm: reading >> 1 + 27 where flagged, 0x19 where not. */
+      gsize n = g5120_fdt_encode_arm (0x32, down_thr, 0, arm);
+      g_assert_true (g5120_check_send (0x32, n, NULL));
+      g_assert_true (g5120_fdt_decode_event (0x32, down_ev->data, down_ev->len, &ev, NULL));
+      g_assert_cmpuint (ev.kind, ==, G5120_FDT_EVENT_DOWN);
       g5120_fdt_up_thresholds (ev.zones, ev.touchflags, G5120_FDT_DELTA_THIS_DEVICE, up_thr);
-      n = g5120_fdt_encode_arm (G5120_CMD_FDT_UP, up_thr, 0, arm);
+      n = g5120_fdt_encode_arm (0x34, up_thr, 0, arm);
       g_assert_cmpmem (arm, n, want_up->data, want_up->len);
-      g_assert_true (g5120_check_send (G5120_CMD_FDT_UP, n, NULL));
-
-      /* The lift; the next down arm is its readings >> 1. */
-      g_assert_true (g5120_fdt_decode_event (G5120_CMD_FDT_UP, up_ev->data, up_ev->len, &ev, NULL));
-      g_assert_cmpint (ev.kind, ==, G5120_FDT_EVENT_UP);
+      g_assert_true (g5120_check_send (0x34, n, NULL));
+      g_assert_true (g5120_fdt_decode_event (0x34, up_ev->data, up_ev->len, &ev, NULL));
+      g_assert_cmpuint (ev.kind, ==, G5120_FDT_EVENT_UP);
       g5120_fdt_down_thresholds (ev.zones, down_thr);
-      if (touches[i].next_down)
+      if (i < 2)
         {
-          g_autoptr(GByteArray) want_down = hex (touches[i].next_down);
-
+          g_autoptr(GByteArray) want_down = fixture_hex (c, up_name, "thresholds");
           g_assert_cmpmem (down_thr, 6, want_down->data, want_down->len);
         }
     }

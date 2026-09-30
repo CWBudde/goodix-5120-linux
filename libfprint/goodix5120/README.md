@@ -180,7 +180,7 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
   ACKs, the unsolicited `0x32` event);
 - **gate:** no `0xe0`, `0xf0`, `0xb0` or `nop`; empty `0xe4` refused; the vendor init order and payloads; the
   `0x90` config's `sum & 0xff == 0xaa`; a TLS pack holds exactly one whole record;
-- **FDT:** the arm vectors from `internal/proto/fdt_test.go`, every event header counted in `dump.pcapng`, zone
+- **FDT:** the shared arm vectors in `internal/testfixtures/testdata/protocol.ini`, every event header counted in `dump.pcapng`, zone
   decoding, and the down/up threshold rules including clamping. `run22-session` replays Run 22's three touches:
   from the baseline arm and each logged event it must derive every up arm the probe sent (`ba198e9884ac`,
   `bf19839a969c`, `9ea8a0a491a0`, a zone without its touch flag getting `0x19`) and each next down arm
@@ -193,6 +193,9 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
   7744-byte record body and 7753-byte pack seen in the vendor capture, and decrypt intact when fed in two pieces.
   Also covered: a wrong PSK is reported as a key mismatch with no alert left queued for the EC, an alert from the EC
   is reported, and the PSK file rules.
+- **shared reference:** Go and C independently check all 14 init payloads, every config byte, reply expectations,
+  FDT vectors and complete synthetic images against [one committed corpus](../../internal/testfixtures/testdata/README.md).
+  The actual driver's additional health check and all init writes are checked during a real synthetic TLS session.
 - **actual driver:** open, activation, five synthetic enrollment stages in one TLS session, processing before/after
   lift, final-stage deactivation during lift, cancellation in every FDT/capture state and USB yield, unplug at every
   open transfer, read/write failures, short writes, timeouts, wrong ACKs, stale/unexpected messages, base-invalid
@@ -204,8 +207,9 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 
 ## What is not done, or stubbed
 
-- **Never run on hardware.** Nothing has checked this driver's timing or its `libusb`/GUsb transfer behaviour
-  against this EC. The FDT loop it implements has run live only through the Go probe (Runs 21 and 22).
+- **Agents never run hardware.** The Phase 6a/6b offline gate is complete; only the owner may perform the
+  first capture under the procedure below. Nothing has checked this driver's timing or its `libusb`/GUsb
+  transfer behaviour against this EC. The FDT loop has run live only through the Go probe (Runs 21 and 22).
 - `0x98` (set DAC) sends **this unit's** OTP-derived values, and `fdt_delta` is **this unit's**. Both have to be
   derived from the `0xa6` OTP reply before the driver can serve a second machine, and the derivation is not known.
   PLAN.md also lists the OTP-derived DAC values as something never to publish. That makes them a blocker for
