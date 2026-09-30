@@ -1,0 +1,41 @@
+Register the goodix5120 driver in a libfprint tree.
+
+Apply from the libfprint source root after copying this directory's
+goodix5120*.c / goodix5120*.h to libfprint/drivers/goodix5120/:
+
+    patch -p1 < libfprint-register.patch
+
+The driver is marked optional, so it is only built when named explicitly
+(-Ddrivers=...,goodix5120). 27c6:5120 deliberately stays in libfprint's
+"known unsupported" allowlist (libfprint/fprint-list-udev-hwdb.c and
+data/autosuspend.hwdb) until the driver is part of the default set; the
+hwdb tool prints a warning about the overlap, which is expected.
+
+Written against libfprint master 6f9479c ("synaptics: Add new PID 0x10b").
+
+--- a/meson.build
++++ b/meson.build
+@@ -141,6 +141,9 @@
+     'upeksonly': {},
+     'upekts': {},
+     'goodixmoc': {},
++    # Goodix 27c6:5120 behind an ITE EC (Huawei MateBook). Optional: it needs
++    # the device's TLS PSK from a file and has not been run on hardware yet.
++    'goodix5120': { 'helper': ['openssl', 'pixman'], 'optional': true },
+     'nb1010': {},
+     'fpcmoc': {},
+     'realtek': {},
+--- a/libfprint/meson.build
++++ b/libfprint/meson.build
+@@ -134,6 +134,11 @@
+         'drivers/goodixmoc/goodix.c',
+         'drivers/goodixmoc/goodix_proto.c',
+     ),
++    'goodix5120' : files(
++        'drivers/goodix5120/goodix5120.c',
++        'drivers/goodix5120/goodix5120_proto.c',
++        'drivers/goodix5120/goodix5120_tls.c',
++    ),
+     'fpcmoc' : files('drivers/fpcmoc/fpc.c'),
+     'realtek' : files('drivers/realtek/realtek.c'),
+     'focaltech_moc' : files('drivers/focaltech_moc/focaltech_moc.c'),
