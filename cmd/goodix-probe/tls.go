@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -340,6 +341,13 @@ func captureFrame(ctx context.Context, logger *log.Logger, tr transport.Transpor
 		return fmt.Errorf("the plaintext does not match a known frame layout: %w", err)
 	}
 	logger.Printf("  layout: %s", layout)
+	if layout == image.LayoutWrapped {
+		// The 13 bytes around the samples are not image data, and what they
+		// hold is open (PLAN.md Phase 6). Frames from one session side by side
+		// are the cheapest way to see which bytes count, which stay put and
+		// which follow the finger.
+		logger.Printf("  frame header %x, trailer %x", plain[:image.FrameHeaderLen], plain[len(plain)-image.FrameTrailerLen:])
+	}
 
 	img, err := image.Decode12BitPacked(samples, sensorWidth, sensorHeight)
 	if err != nil {
@@ -353,12 +361,30 @@ func captureFrame(ctx context.Context, logger *log.Logger, tr transport.Transpor
 		return fmt.Errorf("creating %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
+	giveToSudoUser(logger, f)
 	if err := image.WritePGM(f, img); err != nil {
 		return err
 	}
 	logger.Printf("  wrote %dx%d PGM to %s — biometric data: keep it out of git and out of any issue report",
 		img.Width, img.Height, path)
 	return nil
+}
+
+// giveToSudoUser hands a file the probe created under sudo to the user who ran
+// sudo, keeping its mode. A live run is root, so without this every capture
+// and log is root-owned 0600 and the user who took it cannot open it.
+func giveToSudoUser(logger *log.Logger, f *os.File) {
+	if os.Geteuid() != 0 {
+		return
+	}
+	uid, err1 := strconv.Atoi(os.Getenv("SUDO_UID"))
+	gid, err2 := strconv.Atoi(os.Getenv("SUDO_GID"))
+	if err1 != nil || err2 != nil {
+		return
+	}
+	if err := f.Chown(uid, gid); err != nil {
+		logger.Printf("  could not hand %s to uid %d: %v", f.Name(), uid, err)
+	}
 }
 
 // syntheticFrame builds a bare frame of packed 12-bit samples that ramps across

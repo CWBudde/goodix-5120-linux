@@ -385,6 +385,10 @@ down:
   finger was already off);
 - whether the frames differ as the touches did.
 
+Run 22 ran this command live and worked: three frames, three lifts, keyboard alive
+(`docs/protocol.md`). The frames and the log are now handed to the user who ran `sudo`; before that fix
+they were root-owned `0600` (`sudo chown $USER ~/goodix-captures/*` fixes older ones).
+
 If a touch gets no lift event in time, the run stops there — the next down arm cannot go out while the
 EC waits for a lift — and the frames taken so far are kept. Rehearse first with `just rehearse-touches`.
 

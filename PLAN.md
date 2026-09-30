@@ -26,9 +26,9 @@ with no EC reset in between. Phase 5 is done; what is left is Phase 6 (the drive
 - **The wedge is understood and defused:** `0xe4` sent without its 8-byte argument. The transport cannot
   build that frame. An unfinished TLS handshake leaves the EC stuck until an EC reset (charger plugged in,
   40 s power-button hold), so every live run health-checks the EC first.
-- **Still open on hardware:** whether the EC serves several frames in one TLS session (Phase 6 needs it;
-  `--touches`), a base-invalid re-arm seen live, and what the 8-byte header and 5-byte trailer around each
-  frame hold.
+- **Several frames in one TLS session work** (Run 22, `--touches 3`), which is what enrolment needs.
+- **Still open on hardware:** a base-invalid re-arm seen live, and what the 8-byte header and 5-byte
+  trailer around each frame hold.
 
 ## Completed phases (detail is in the docs, not here)
 
@@ -117,9 +117,9 @@ keyboard checks. The runbook has the exact command lines.
       against openssl rather than only calculated. *To do:* the live run, and **write the plaintext length
       down** — it is the measurement that settles the layout.
 - [x] **5d — Finger-detection (FDT) loop.** **Run 21 (2026-09-30) ran it live:** touch → frame → lift,
-      with the derived up thresholds matching the rule in all six zones, and the keyboard alive. Still
-      unseen live: a base-invalid re-arm, and an up arm waiting for a finger that is still down (Run 21's
-      finger was already off, because decryption took 2 s; that delay is now fixed).
+      with the derived up thresholds matching the rule in all six zones, and the keyboard alive. Run 22
+      then showed the up arm waiting for a finger that is still down. Still unseen live: a base-invalid
+      re-arm.
       The threshold rules turned out to be recoverable from `dump.pcapng` and the driver log (68 of 68
       arms reproduced; `docs/protocol.md`, "Finger detection: where the thresholds come from"), so real
       FDT events were not needed first. `goodix-probe --wait-finger` (behind `--allow-32 --allow-34`)
@@ -151,9 +151,10 @@ keyboard checks. The runbook has the exact command lines.
    **Status (2026-09-30):** the pipeline runs live once round (Run 21). The probe keeps `--bisect` as its
    only mode that sends anything (the Run 1 mode and `--tls-coalesce-flight` are gone), and it stays
    until the C driver has run on hardware.
-   - [ ] **Several prints in one session** — `--touches N` (docs/bisect-runbook.md). Enrolment needs about
-     five captures per open device, and no run has taken more than one frame per session.
-   - [ ] The 13 bytes around each frame: compare them across the `--touches` frames.
+   - [x] **Several prints in one session.** Done 2026-09-30 (Run 22): `--touches 3` took three frames
+     after one handshake, with the up arm waiting for a real lift each time.
+   - [ ] The 13 bytes around each frame: the probe now logs them, so the next `--touches` run can
+     compare them across frames.
 2. **libfprint driver (C, upstream).** `fprintd` on top of libfprint is the only realistic path to
    enrollment, minutiae matching (libfprint's bundled NBIS) and PAM. Contribute a `goodix5120` driver
    modelled on the existing Goodix drivers and the community `goodixtls` work for the TLS 5xx parts. A
@@ -176,7 +177,7 @@ pipeline end to end, then the libfprint port — developed with upstream off the
 
 ## Recommended order
 
-1. **Phase 6, layer 1** — `--touches` live: several frames in one session.
+1. ~~**Phase 6, layer 1** — `--touches` live: several frames in one session.~~ Done (Run 22).
 2. **Phase 6, layer 2** — the C driver's first live run (PR #2, `libfprint/goodix5120/README.md`).
 3. **Phase 2** — owner posts the two drafts; this also opens the upstream collaboration for layer 2.
 4. The PSK-provisioning decision, before the driver goes upstream.

@@ -151,6 +151,7 @@ func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []prot
 	}
 	defer f.Close()
 	logger := log.New(io.MultiWriter(os.Stdout, syncWriter{f}), "", log.Ltime|log.Lmicroseconds)
+	giveToSudoUser(stderr, f)
 
 	var host bisectHost = assumeKeysHost{}
 	if !assumeKeys {

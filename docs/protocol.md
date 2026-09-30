@@ -941,6 +941,45 @@ rebooted.
   `goodix-pcap`. The probe and all three transports log only the pack header, the command byte and a
   byte count for those replies. This run's log file still holds them, so do not paste it anywhere.
 
+### Run 22 — 2026-09-30 10:45, Run 21's command plus `--touches 3` (observed)
+
+The full init, the handshake, then the capture loop three times in **one TLS session**: arm down,
+capture on touch, arm up, wait for the lift, and again. **Result: the EC serves several frames in one
+session. All three touches produced a 7693-byte frame, each lift was reported, and the internal keyboard
+stayed alive throughout.** This is what an enrolling driver needs; no run before had taken more than one
+frame per session.
+
+- **`0xae` before the handshake:** the trailing counter moved from Run 21's `06 06` to `08 08`, one `+2`
+  for Run 21's `0xd0`. **A fourth init and handshake without an EC reset** (Runs 18, 20, 21, 22).
+- **The handshake repeated Run 18's:** 4 records each way, 108 ms from `0xd0` to complete, `0xd4` got
+  only an ACK.
+- **No base-invalid event on any of the three down arms**, so the re-arm path is still untested live.
+  The first arm used the catalogue's thresholds `b8c5abb9aab9`; the second and third were derived from
+  the previous lift's readings (`b9c6acbaabba`, `b8c5abb9aab9`), and the EC accepted both.
+- **The three touches:**
+
+  | Touch | Down arm → event | Flags | Down readings | `0x20` → record | Record → plaintext | Up arm → event | Up readings |
+  |---|---|---|---|---|---|---|---|
+  | 1 | 2.28 s | `0x3d` | `[318 361 231 251 210 291]` | 89 ms | 407 ms | 1.23 s | `[370 396 344 373 343 373]` |
+  | 2 | 1.35 s | `0x3d` | `[328 363 209 254 247 259]` | 88 ms | 407 ms | 0.83 s | `[368 395 342 371 340 371]` |
+  | 3 | 1.31 s | `0x3f` | `[262 283 267 275 236 267]` | 88 ms | 407 ms | 0.59 s | `[369 396 344 373 341 372]` |
+
+- **The up arm waits for a finger that is still down.** Each lift came 0.6–1.2 s after its arm, not
+  34 ms as in Run 21, because the finger was still on the sensor. This was the other thing Run 21 left
+  open. The 2 s decrypt delay fix is confirmed live: the plaintext arrives 407 ms after the record, which
+  is the bridge's plaintext idle window.
+- **Every up arm matches the rule**, and flags `0x3d` show how a zone without the flag gets `0x19`: for
+  touch 1 the arm was `ba198e9884ac`. Zone 1 (bit 1 clear, reading 361) got `0x19`, and every other
+  zone got reading >> 1 + 27, for example 318 >> 1 + 27 = 186 = `0xba`. Touches 2 (`bf19839a969c`) and
+  3 (`9ea8a0a491a0`) check out the same way.
+- **The untouched readings are stable to 2 counts** across the three lifts, and within 3 of Run 21's.
+- **Every image record was 7744 bytes and decrypted to 7693**, as in Runs 20 and 21. Touch to frame on
+  disk took about 530 ms, 400 of them the idle window.
+- **The frames were written root-owned with mode `0600`,** because the run is under sudo, so the user
+  who took them could not open them. **Fixed:** the probe now hands its capture and log files to
+  `SUDO_UID`/`SUDO_GID`. It now also logs each frame's 8-byte header and 5-byte trailer, so the next
+  multi-touch run shows which of those bytes change from frame to frame.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
