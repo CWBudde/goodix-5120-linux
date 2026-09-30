@@ -217,6 +217,43 @@ func TestBridgeDecryptsApplicationData(t *testing.T) {
 	}
 }
 
+// TestPlaintextDoesNotWaitOnTheDevice is Run 21: the frame was decrypted within
+// milliseconds but handed back 2 s later, after one more device read ran out,
+// and by the time the up arm went out the finger had been lifted. The rig's
+// short device timeout hides that, so the live default is restored here once
+// the handshake is done.
+func TestPlaintextDoesNotWaitOnTheDevice(t *testing.T) {
+	psk := testPSK(0x4b)
+	r := newRig(t, psk, psk)
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake: %v\nlog:\n%s", err, r.log)
+	}
+	r.bridge.opts.DeviceTimeout = DefaultDeviceTimeout
+
+	frame := bytes.Repeat([]byte{0x5a}, 7693)
+	if err := r.ec.SendPlaintext(frame); err != nil {
+		t.Fatalf("the stand-in could not send the frame: %v", err)
+	}
+
+	const idle = DefaultPlaintextIdle
+	start := time.Now()
+	got, err := r.bridge.ReadApplicationData(ctx, idle, 2*len(frame))
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("ReadApplicationData: %v\nlog:\n%s", err, r.log)
+	}
+	if !bytes.Equal(got, frame) {
+		t.Fatalf("got %d plaintext bytes, sent %d", len(got), len(frame))
+	}
+	if took >= DefaultDeviceTimeout {
+		t.Errorf("ReadApplicationData took %s: the plaintext waited behind a %s device read", took, DefaultDeviceTimeout)
+	}
+}
+
 // TestRehearsalRefusesWhatALiveRunRefuses is the reason LoopbackEC implements
 // transport.Peer instead of being handed to the bridge directly. A rehearsal that
 // could send frames the live path refuses would be worse than no rehearsal.

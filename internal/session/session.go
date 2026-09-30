@@ -432,6 +432,12 @@ func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, ma
 	}
 	b.startPlaintextReader()
 
+	// Until a record has gone to openssl, wait for the device the usual time:
+	// the image takes tens of milliseconds to arrive, and a read cancelled
+	// mid-transfer would split it. After that the plaintext is what matters,
+	// and a full-length device read would hold it back — in Run 21 the frame
+	// sat decrypted for 2 s behind one. So the device is then only polled.
+	wait := b.opts.DeviceTimeout
 	for {
 		if err := ctx.Err(); err != nil {
 			if got, _, _ := b.plain.status(); got > 0 {
@@ -444,14 +450,18 @@ func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, ma
 		}
 
 		// Device → host.
-		raw, err := b.dev.Recv(b.opts.DeviceTimeout)
+		raw, err := b.dev.Recv(wait)
 		switch {
 		case errors.Is(err, transport.ErrTimeout):
 		case err != nil:
 			return nil, fmt.Errorf("session: reading from the device: %w", err)
 		default:
-			if _, err := b.Deliver(raw); err != nil {
+			forwarded, err := b.Deliver(raw)
+			if err != nil {
 				return nil, err
+			}
+			if forwarded {
+				wait = min(b.opts.DeviceTimeout, idle/4)
 			}
 		}
 
