@@ -264,6 +264,11 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 
 ## First live run (owner only, keyboard-safe procedure)
 
+The [first-capture runbook](../../docs/c-driver-first-capture.md) provides the pinned build,
+exact owner commands, expected log milestones, private output handling, and result checks.
+The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf`
+with only `goodix5120` enabled after completing Phase 6b; this is compile evidence, not a hardware run.
+
 As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
 in, 40 s power-button hold if the previous session ended badly):
 
@@ -273,5 +278,5 @@ in, 40 s power-button hold if the previous session ended badly):
    Ensure `FP_DEBUG_TRANSFER` is unset (`env -u FP_DEBUG_TRANSFER ...`); do not enable raw transfer dumps.
 3. Compare the debug log against Runs 20–22 step by step (arm thresholds, event headers, the 7753-byte image
    pack, the lift). Stop at the first difference.
-4. Only then try enrolment through fprintd. Its stages repeat the touch, frame and lift loop in one TLS session,
-   which Run 22 showed the EC serves.
+4. Record the capture, lift, close, and keyboard outcome before proceeding to Phase 6c's lifecycle and
+   enrollment / matching tests. fprintd integration and PAM remain separate validation steps.

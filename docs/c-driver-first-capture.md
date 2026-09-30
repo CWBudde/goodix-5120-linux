@@ -1,0 +1,126 @@
+# First C-driver capture (owner only)
+
+Phase 6b's offline gate is complete. This run checks one open → touch → image → lift → close
+against the real libfprint integration. Agents must not run it. Use this prototype only on the
+original tested machine/profile; firmware identity alone does not establish calibration compatibility.
+Enrollment, matching, repeated lifecycle tests, and PAM remain Phase 6c work.
+
+## Prepare the build offline
+
+The prepared local capture bundle for driver commit `c1aee77` is
+`dist/goodix-owner-c-c1aee77/` in this repository (ignored by Git, retained across reboot).
+It contains only `goodix5120`, uses the bundled libfprint through its executable RUNPATH,
+and was not installed system-wide. Build logs, `provenance.txt`, and binary `SHA256SUMS` are
+included. The full source/build is in `/tmp/goodix-owner-c-c1aee77/`; that temporary copy
+may be cleared on reboot. The bundle is local, not distributed with the repository.
+
+To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
+and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
+
+```sh
+repo=/mnt/Projekte/Code/systems/goodix-5120-linux
+git clone https://gitlab.freedesktop.org/libfprint/libfprint.git /tmp/goodix-owner-libfprint
+cd /tmp/goodix-owner-libfprint
+git checkout --detach 6f9479c3d55f847c1b3769f28ceb99227f9858cf
+driver_source=$(mktemp -d /tmp/goodix-owner-driver-XXXXXX)
+git -C "$repo" archive c1aee7747de00b711b5706288fabd6b1569ac8d3 libfprint/goodix5120 \
+  | tar -x -C "$driver_source"
+mkdir -p libfprint/drivers/goodix5120
+cp "$driver_source"/libfprint/goodix5120/goodix5120*.[ch] libfprint/drivers/goodix5120/
+patch --batch -p1 < "$driver_source/libfprint/goodix5120/libfprint-register.patch"
+meson setup build -Ddrivers=goodix5120 -Dintrospection=false -Ddoc=false \
+  -Dudev_rules=disabled -Dudev_hwdb=disabled -Dinstalled-tests=false -Dgtk-examples=false
+meson compile -C build
+build="$PWD/build"
+```
+
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-c1aee77"` instead.
+Do not install the library or change fprintd/PAM configuration for this run. The following tool
+reads compiled driver ID tables without opening USB:
+
+```sh
+"$build/libfprint/fprint-list-supported-devices"
+ldd "$build/examples/img-capture"
+```
+
+Expect just `27c6:5120` in the USB table, no missing libraries, and `libfprint-2.so.2` resolved
+inside this build. Do not invoke `img-capture` as an offline smoke test: it opens hardware.
+
+## Check the EC and keyboard
+
+Attach and test an **external keyboard**, save other work, and follow the
+[bisect runbook](bisect-runbook.md#before). If the preceding session failed, recover first:
+shutdown, charger **plugged in**, power button held **40 seconds**, then boot. There is no
+automatic reset or retry. Ensure no other probe or fingerprint client is using the device.
+
+From the repository root:
+
+```sh
+go build -buildvcs=false ./cmd/goodix-probe
+sudo ./goodix-probe --bisect --read-state
+```
+
+Press Shift on the **internal** keyboard at each prompt. Continue only if the health check
+and every keyboard check pass. A failed health check, keyboard check, or new MCU state means
+stop and follow the runbook's recovery procedure; do not start the C capture.
+
+## Run exactly one capture
+
+In the same terminal, set `build` to the prepared path below, or substitute your reproduced build's
+absolute path:
+
+```sh
+repo=/mnt/Projekte/Code/systems/goodix-5120-linux
+build="$repo/dist/goodix-owner-c-c1aee77"
+umask 077
+mkdir -p "$repo/captures"
+run=$(mktemp -d "$repo/captures/c-first-XXXXXX")
+sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
+  FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+  sh -c 'umask 077; exec "$@"' sh \
+  "$build/examples/img-capture" "$run/frame.pgm" 2>&1 | tee "$run/capture.log"
+```
+
+Use your existing **raw 32-byte** PSK file; adjust its path if needed. Never print its contents.
+The fresh directory and log are private; the root shell explicitly sets `umask 077` so the
+example writes a root-owned `0600` image. Leave `FP_DEBUG_TRANSFER` unset: raw transfer tracing
+can reveal secrets and images.
+
+Watch the log. When `arming 0x32` appears, place one finger. When `arming 0x34` appears, lift it.
+Check that the internal keyboard still types during the wait and after exit. Stop at the first
+unexpected exchange, warning/error, or keyboard failure; use Ctrl-C on the external keyboard.
+Preserve the log and recover as described above before any further hardware attempt.
+
+## Judge and record the result
+
+Compare the log with Runs 20–22 in [the protocol evidence](protocol.md):
+
+- Firmware is `GF_ITE_EC_20063`; init completes without rejected replies.
+- TLS handshake completes, `0xd4` is acknowledged, and the MCU state passes the TLS-bit check.
+- Initial down thresholds are `b8 c5 ab b9 aa b9`; a down event leads to one image request.
+- The observed image pack was 7753 bytes, containing a TLS record with a 7744-byte body; the driver's image
+  log should report `7693 plaintext bytes, 8-byte header + samples + 5-byte trailer`.
+- An up arm/event follows, the image is saved, and close completes without an error.
+  Event readings and derived up thresholds vary with finger placement; compare their rule, not
+  exact Run 22 values. Unexpected base-invalid events are new hardware evidence to record.
+
+The pinned upstream `img-capture` always returns `EXIT_FAILURE`, including after saving an image.
+Depending on `pipefail`, the pipeline reports `tee`'s result or the example's failure. Neither proves
+capture success. Inspect the log for save/close errors and check the image header without displaying
+biometric pixels:
+
+```sh
+sudo head -n 1 -- "$run/frame.pgm"
+sudo stat -c '%a %s bytes' -- "$run/frame.pgm"
+```
+
+Expect `P5 192 240 255` and 46095 bytes: the driver's 64 × 80 image is enlarged threefold.
+After successful close, transfer ownership to view the private image locally:
+
+```sh
+sudo chown -- "$(id -u):$(id -g)" "$run/frame.pgm"
+```
+
+Report the last successful milestone, any error, keyboard behavior, and header/size. Keep the
+PSK and image local; review logs before sharing. A saved frame alone does not validate enrollment
+or authentication. Record the outcome in `docs/protocol.md` and `PLAN.md` before proceeding.

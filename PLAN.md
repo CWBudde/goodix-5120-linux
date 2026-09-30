@@ -351,6 +351,14 @@ sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply
 and the external-keyboard runbook. Agents must not run hardware. Driver timing, EC recovery,
 calibration portability and authentication quality remain unverified; Phase 6c precedes PAM use.
 
+**Prepared 2026-09-30:** current driver `c1aee77` compiles against pinned real libfprint
+`6f9479c3d55f847c1b3769f28ceb99227f9858cf` with only `goodix5120` enabled. The device-table tool
+lists only `27c6:5120`; the capture executable resolves the build's own library. No installation or
+hardware access occurred. The ignored local bundle in `dist/goodix-owner-c-c1aee77/` survives reboot.
+See [the concrete owner capture runbook](docs/c-driver-first-capture.md)
+for commands and acceptance evidence, including the upstream example's misleading failure exit
+status. The owner capture is still pending; no Phase 6c hardware criterion is closed.
+
 ### 6c — Portability, authentication quality, and repeatable checks
 
 - [ ] Derive DAC settings and FDT delta from OTP, or explicitly restrict this prototype to a supported
