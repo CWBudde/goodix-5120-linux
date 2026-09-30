@@ -253,18 +253,18 @@ Read the result off the last lines:
   key), the host never answered, or **the EC started one and went quiet after the server flight**, which is
   what Run 11 did.
 
-### What Run 11 found, and what the vendor log says about it
+### What Runs 11 and 17 found
 
 Run 11 (2026-09-20) got the init through live and the EC opened a handshake, then stalled after the
-host's ServerHello and ServerHelloDone: a zero-length transfer, then nothing, and no alert either way.
+host's ServerHello and ServerHelloDone. Run 17 (2026-09-30) sent the vendor's full init, `0xe4` included,
+and got one message further: the EC sent its ClientKeyExchange, then stalled. Both times a zero-length
+transfer came 256 ms after the EC's last chance to speak, and no alert either way.
 
-The Windows driver log settles what that was **not** (`docs/protocol.md`, "The vendor's handshake, read
-from the driver log"). In a handshake that completed, the vendor sends **one `0xb0` pack per record**, as
-Run 11 did, and its ServerHello has the same length and shape as openssl's. What Run 11 did differently
-is the init: it left out **`0xe4`**, which the vendor sends before `0xd0` in every init. Run 8 showed
-`0xe4` with its vendor payload is safe. So the command above now sends the vendor's init in full, and the
-bridge keeps the vendor's framing. If the steps leave part of that init out, the run logs a warning, and
-a stall names what was missing first.
+The cause was the bridge (`docs/protocol.md`, Run 17). At exactly the moment the EC sends its next record,
+1 ms after ServerHelloDone and 22 ms after its ClientKeyExchange, the bridge was waiting 250 ms on openssl
+and not reading the device. The vendor driver always keeps a read pending. The bridge now keeps reading
+the EC until its flight is finished, and sends the server's first flight as soon as ServerHelloDone is
+out. The framing is the vendor's: one `0xb0` pack per record, as the driver log shows.
 
 The one-pack-per-flight framing tried after Run 11 is still there for comparison, but only after the run
 above has stalled too:
@@ -291,7 +291,7 @@ answering nothing but `0xae`, and the next run's health check will refuse to sta
 is the single most expensive lesson of 2026-09-20: see Run 12 in `docs/protocol.md`.
 
 Two things the rehearsal cannot tell you, because it is openssl and not an embedded controller: whether
-the EC accepts the key, and whether its TLS stack needs `0xe4` first.
+the EC accepts the key, and how long it holds a record the host has not read yet.
 What it does check is our side — the framing, the sequencing, the PSK file, and the refusals.
 
 Note the PSK is passed as a **path**, never as hex on the command line: an argument lands in the shell

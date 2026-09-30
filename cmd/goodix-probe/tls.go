@@ -387,7 +387,7 @@ func explainStall(logger *log.Logger, cfg tlsConfig, toHost, toDevice int) {
 	case len(missingFromVendorInit(cfg.steps)) > 0:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
 		logger.Printf("  This run left out %s, which the vendor sends before 0xd0 in every init — and the", opList(missingFromVendorInit(cfg.steps)))
-		logger.Printf("  vendor's handshakes complete. That is the first suspect: run the vendor's init in full")
+		logger.Printf("  vendor's handshakes complete. Rule that out first: run the vendor's init in full")
 		logger.Printf("  (--steps %s) before changing anything about the TLS side.", opList(vendorBeforeTLS()))
 	case cfg.coalesceFlight:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert.")
@@ -395,13 +395,15 @@ func explainStall(logger *log.Logger, cfg tlsConfig, toHost, toDevice int) {
 		logger.Printf("  b0 pack per record, and that is the default.")
 	default:
 		logger.Printf("\n  The EC opened a handshake, went quiet after the server flight, and sent no alert —")
-		logger.Printf("  so it did not fail to parse what it got, it is waiting for something. The init and")
-		logger.Printf("  the framing were the vendor's, so the remaining suspects are the flight's contents")
-		logger.Printf("  and its timing. In order of cheapness:")
+		logger.Printf("  so it did not fail to parse what it got. The init, the framing and the bridge's read")
+		logger.Printf("  timing were the vendor's (Run 17's fix: the device is read throughout the EC's flight).")
+		logger.Printf("  Look first at the timestamps above: a zero-length transfer where the EC's next record")
+		logger.Printf("  should be means it was not read in time. Otherwise the suspects are the flight's")
+		logger.Printf("  contents, in order of cheapness:")
 		logger.Printf("    1. The ServerHello carries a 32-byte session id and a renegotiation_info")
 		logger.Printf("       extension; the EC's own ClientHello carries no extensions field at all.")
 		logger.Printf("    2. There is no ServerKeyExchange, because the host sets no PSK identity hint.")
-		logger.Printf("       RFC 4279 makes it optional, but a minimal client may wait for one.")
+		logger.Printf("  The vendor's flight has the same shape (docs/protocol.md), so neither is likely.")
 		logger.Printf("  Both are openssl's output, and a record cannot be edited on the way past: the")
 		logger.Printf("  Finished MACs cover the transcript, so rewriting a byte here breaks the handshake")
 		logger.Printf("  it is meant to fix. Changing either means an openssl option or our own TLS-PSK")

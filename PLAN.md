@@ -107,9 +107,10 @@ keyboard checks. The runbook has the exact command lines.
       **Revised 2026-09-30 from the driver log** (`docs/protocol.md`, "The vendor's handshake"):
       the vendor sends one pack per record, as Run 11 did, and its server flight has the same contents as
       openssl's, ServerKeyExchange absent too. So the one-pack change is reverted, and the contents are
-      no longer suspects. What Run 11 did differently is the init: it left out `0xe4`, which the vendor
-      sends before `0xd0` every time. The next run sends the vendor's init in full
-      (`--steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90 --allow-e4 …`), with the vendor's framing. **The PSK wall is still ahead**: if
+      no longer suspects. **Run 17 (2026-09-30)** ran the vendor's full init, `0xe4` included: the EC sent
+      its ClientKeyExchange and then stalled, because the bridge stopped reading the device for 250 ms
+      while it waited on openssl. Run 11 stalled on the same blind window one message earlier. Fixed: the
+      bridge reads the EC throughout its flight. *Next:* EC reset, then the same command again. **The PSK wall is still ahead**: if
       the EC eventually rejects the key, the probe prints the fallbacks below and they come first.
       **Run 12 adds a procedural rule: cold power cycle after every stalled handshake.** The EC comes out of
       `0xd0` unable to answer plaintext commands — `0xae` only — and a reset does not clear it; Run 12 sent

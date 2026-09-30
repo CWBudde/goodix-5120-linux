@@ -111,11 +111,13 @@ The safety guarantee is structural, and changes must preserve it:
   The check is live-only — a rehearsal has no EC, and the scripted replay would desynchronise.
   `--read-state` adds one `0xae` after a failed check, to say which state the EC is in, and sends nothing else.
 - **Each server record goes to the device in its own `0xb0` pack**, as the vendor driver sends them (its
-  log of a completed handshake: ServerHello and ServerHelloDone are two sends). Run 11 used that framing
-  too and stalled, but its init left out `0xe4`, which the vendor sends before `0xd0` every time; that is
-  the leading suspect (`docs/protocol.md`, "The vendor's handshake"). `--tls-coalesce-flight` keeps the
-  one-pack framing for comparison, `TestServerRecordsGoOutOnePackEach` pins the default, and a live `--tls`
-  run whose steps leave out part of the vendor's pre-`0xd0` init logs a warning (`missingFromVendorInit`).
+  log of a completed handshake: ServerHello and ServerHelloDone are two sends). `--tls-coalesce-flight`
+  keeps the one-pack framing for comparison, and `TestServerRecordsGoOutOnePackEach` pins the default.
+- **The bridge keeps reading the EC until the EC's flight is finished.** Runs 11 and 17 stalled because the
+  bridge waited 250 ms on openssl while the EC was sending its next record (it sends ClientKeyExchange,
+  ChangeCipherSpec and Finished as three transfers). `TestBridgeKeepsReadingTheECMidFlight` pins both gaps
+  (`docs/protocol.md`, Run 17). A live `--tls` run whose steps leave out part of the vendor's
+  pre-`0xd0` init (which includes `0xe4`) logs a warning (`missingFromVendorInit`).
   Records must be forwarded **verbatim**: the Finished MACs cover the handshake transcript, so a bridge that
   edits a record on the way past breaks the handshake it is trying to fix.
 - **Handshake, change-cipher-spec and alert records are logged in full hex; application data never is.**

@@ -351,3 +351,91 @@ func TestHandshakeRecordsAreLoggedInFull(t *testing.T) {
 			"nothing to reproduce offline\nlog:\n%s", r.log)
 	}
 }
+
+// timedDevice wraps the rehearsal device and measures the two gaps the EC is
+// sensitive to: how long the device goes unread after it has sent a
+// ClientKeyExchange (the rest of its flight follows within milliseconds), and
+// how long the host takes to answer its ClientHello.
+type timedDevice struct {
+	Device
+
+	sawClientHello, sawCKE time.Time
+	firstServerFlight      time.Duration // ClientHello → ServerHelloDone sent
+	afterCKE               time.Duration // ClientKeyExchange returned → next read
+}
+
+func (d *timedDevice) Recv(timeout time.Duration) ([]byte, error) {
+	if !d.sawCKE.IsZero() && d.afterCKE == 0 {
+		d.afterCKE = time.Since(d.sawCKE)
+	}
+	raw, err := d.Device.Recv(timeout)
+	if err == nil {
+		if msgType, ok := firstHandshakeType(raw); ok {
+			switch msgType {
+			case hsClientHello:
+				d.sawClientHello = time.Now()
+			case 0x10: // ClientKeyExchange
+				d.sawCKE = time.Now()
+			}
+		}
+	}
+	return raw, err
+}
+
+func (d *timedDevice) SendTLS(records []byte) error {
+	if len(records) > proto.TLSRecordHeaderLen && records[0] == proto.TLSHandshake &&
+		records[proto.TLSRecordHeaderLen] == hsServerHelloDone && !d.sawClientHello.IsZero() {
+		d.firstServerFlight = time.Since(d.sawClientHello)
+	}
+	return d.Device.SendTLS(records)
+}
+
+// firstHandshakeType returns the handshake type of the first record in a TLS
+// data pack, if the pack holds a handshake record.
+func firstHandshakeType(raw []byte) (byte, bool) {
+	flags, payload, err := proto.DecodePack(raw)
+	if err != nil || (flags != proto.FlagTLSData && flags != proto.FlagTLSAlt) {
+		return 0, false
+	}
+	if len(payload) <= proto.TLSRecordHeaderLen || payload[0] != proto.TLSHandshake {
+		return 0, false
+	}
+	return payload[proto.TLSRecordHeaderLen], true
+}
+
+// TestBridgeKeepsReadingTheECMidFlight pins the fix for Runs 11 and 17. Both
+// stalled where the bridge stopped reading the EC for DefaultHostIdle (250 ms):
+// after the server flight in Run 11, after the EC's ClientKeyExchange in Run 17.
+// The vendor reads continuously and the EC sends its next record within 1–22 ms,
+// so the bridge must not look away for anything like HostIdle at either point.
+func TestBridgeKeepsReadingTheECMidFlight(t *testing.T) {
+	psk := testPSK(0x5a)
+	r := newRig(t, psk, psk)
+	dev := &timedDevice{Device: r.tr}
+	r.bridge = New(dev, r.sess, Options{
+		Logger:           log.New(r.log, "", 0),
+		DeviceTimeout:    200 * time.Millisecond,
+		HandshakeTimeout: 20 * time.Second,
+	})
+	r.requestTLS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := r.bridge.Handshake(ctx); err != nil {
+		t.Fatalf("Handshake = %v\nlog:\n%s", err, r.log)
+	}
+
+	const limit = 100 * time.Millisecond // well under DefaultHostIdle
+	if dev.sawCKE.IsZero() {
+		t.Fatalf("the stand-in sent no ClientKeyExchange as its own pack; the test measures nothing\nlog:\n%s", r.log)
+	}
+	if dev.afterCKE > limit {
+		t.Errorf("the device went unread for %s after the ClientKeyExchange; the EC's "+
+			"ChangeCipherSpec follows within ~22 ms (limit %s)", dev.afterCKE, limit)
+	}
+	if dev.firstServerFlight == 0 || dev.firstServerFlight > limit {
+		t.Errorf("ServerHelloDone went out %s after the ClientHello; the vendor answers within "+
+			"~1 ms and the flight ends at ServerHelloDone, so HostIdle must not be waited out (limit %s)",
+			dev.firstServerFlight, limit)
+	}
+}

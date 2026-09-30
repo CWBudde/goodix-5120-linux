@@ -224,7 +224,7 @@ kept, struck, because knowing a question *is* settled is worth as much as the an
 | ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
 | PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
 | What the 224-byte `0x90` config actually *does* | **Open**, but it is *accepted*: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
-| ~~How the EC wants a server flight framed~~ | **Resolved — one pack per record**, from the driver log of a completed handshake (see "The vendor's handshake, read from the driver log"). That is Run 11's framing, so the framing did not cause Run 11's stall; the missing `0xe4` in its init is the leading suspect. The bridge sends one pack per record; `--tls-coalesce-flight` keeps the other |
+| ~~How the EC wants a server flight framed~~ | **Resolved — one pack per record**, from the driver log of a completed handshake (see "The vendor's handshake, read from the driver log"). That is Run 11's framing, so the framing did not cause Run 11's stall; Run 17 found the cause in the bridge's read timing. The bridge sends one pack per record; `--tls-coalesce-flight` keeps the other |
 
 ## Image sample packing (transcribed, `tool.py::decode_image`)
 
@@ -763,6 +763,49 @@ health  0xa8    a8 03 00 00 00 …      ACK a8/01, then "GF_ITE_EC_20063"       
   transfer, so an unsolicited `0x32` finger-detect event would have let a stuck EC through. It now passes
   only on the ACK or data for `0xa8` (`TestHealthCheckIgnoresUnsolicitedEvents`).
 
+### Run 17 — 2026-09-30 03:41, `sudo ./goodix-probe --bisect --tls --psk … --allow-e4 … --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90` (observed)
+
+The vendor's full init, `0xe4` included, then the bridge with one pack per record. Run by the user with an
+external keyboard attached, after Run 16's EC reset. **Result: every step answered exactly as in the
+vendor log, the keyboard stayed alive throughout, and the handshake got one message further than Run 11
+before stalling — on our side.**
+
+- **The EC was fresh:** `0xae` answered `02 00 31 03 00 00 01 00 00 63 00 … 02 02`. The counter is back
+  at `02 02`, the value of the one EC reset in the Windows log, so Run 16's hold really reset the EC. Byte 1
+  is `0x00` (TLS down) where the vendor's cold init saw `0x11`.
+- **`0xe4` answered ACK + 41 bytes** (the PSK hash; withheld). **`0x82` returned `a2 04 25 00`**, the chip ID
+  `0x2504`, now that the `a2` reset precedes it as in the vendor order.
+- **TLS:** ClientHello (47-byte body, same shape as Run 11) → ServerHello (81) and ServerHelloDone (4) as two
+  packs → **the EC answered with its ClientKeyExchange**, identity `Client_identity`, 4 ms later: the
+  vendor's exact message, and further than Run 11 ever got. Then a zero-length transfer 256 ms later, and
+  nothing for the rest of the 20 s. No alert.
+
+**Why it stalled: the bridge stopped reading the EC.** After forwarding the ClientKeyExchange, the bridge
+turned to openssl and waited out `DefaultHostIdle` (250 ms) for a reply that could not come — openssl
+needs the EC's ChangeCipherSpec and Finished first — and read nothing from the device meanwhile. The
+vendor's EC sends those two records 22 ms and 27 ms after its ClientKeyExchange, and the vendor driver
+keeps a read pending at all times ("start readpipe!!!"). The first read after the blind window returned
+a zero-length transfer, 256 ms after the ClientKeyExchange.
+
+**Run 11 was the same fault**, one message earlier: the bridge sent ServerHelloDone and then waited out
+HostIdle for more host records, exactly when the vendor's EC sends its ClientKeyExchange (1 ms later),
+and the zero-length transfer came 256 ms after ServerHelloDone. Run 17 got the ClientKeyExchange only
+because the default path now sends the flight *after* gathering it and reads the device straight after.
+**So the `0xe4` explanation written earlier today is not supported:** the missing `0xe4` may or may not
+have mattered, and the blind window explains both stalls on its own. `0xe4` stays in the init because
+the vendor sends it.
+
+**Hypothesis, not observed:** the EC does not hold a record in its IN endpoint indefinitely; when the
+host does not read it within some bound below 250 ms, the EC gives up on it (the zero-length transfer)
+and its TLS stack stalls, having "sent" a record the host never received.
+
+**Fixed in the bridge:** it keeps reading the device while the EC is mid-flight (after a
+ClientKeyExchange, until its Finished), and ends the server's first flight at ServerHelloDone instead of
+waiting out HostIdle. `TestBridgeKeepsReadingTheECMidFlight` measures both gaps against the rehearsal
+stand-in; with either half of the fix removed it reproduces the live 251 ms gap and fails.
+
+The EC is presumably stuck again after this run and needs the EC reset before the next one.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
@@ -849,6 +892,9 @@ What it settles:
   identity `Client_identity`, and the EC sends its three records as three packs.
 - **Padding matches too.** The vendor's OUT transfers are padded to 64 bytes (see "Read back from the
   captures"), and so are ours.
+
+*Corrected by Run 17: the paragraph below overstates `0xe4`. Both stalls are explained by the bridge not
+reading the EC for 250 ms at the moment the EC sends its next record; see Run 17.*
 
 **So what differed in Run 11 is the init, not the TLS.** The vendor's init before `0xd0` is
 `96, a8, ae, e4, a2, 82, a6, a2, 70, 98, 90` in every one of the nine logged inits. Run 11 sent all of
