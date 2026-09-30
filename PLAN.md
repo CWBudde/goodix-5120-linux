@@ -131,7 +131,10 @@ keyboard checks. The runbook has the exact command lines.
       reproduced exactly from a synthetic 7680-byte frame, so the padding arithmetic is now verified
       against openssl rather than only calculated. *To do:* the live run, and **write the plaintext length
       down** — it is the measurement that settles the layout.
-- [ ] **5d — Finger-detection (FDT) loop.** Implemented offline (2026-09-30), **awaiting a live run**.
+- [x] **5d — Finger-detection (FDT) loop.** **Run 21 (2026-09-30) ran it live:** touch → frame → lift,
+      with the derived up thresholds matching the rule in all six zones, and the keyboard alive. Still
+      unseen live: a base-invalid re-arm, and an up arm waiting for a finger that is still down (Run 21's
+      finger was already off, because decryption took 2 s; that delay is now fixed).
       The threshold rules turned out to be recoverable from `dump.pcapng` and the driver log (68 of 68
       arms reproduced; `docs/protocol.md`, "Finger detection: where the thresholds come from"), so real
       FDT events were not needed first. `goodix-probe --wait-finger` (behind `--allow-32 --allow-34`)

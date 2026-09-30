@@ -898,6 +898,49 @@ stayed alive throughout.** Phase 5c is done.
 - **`0600` does not hold on this checkout:** `captures/` lies on an NTFS volume (`fuseblk`), which
   ignores Unix modes, and the PGM shows as `775`.
 
+### Run 21 — 2026-09-30 10:02, Run 20's command plus `--wait-finger --allow-32 --allow-34` (observed)
+
+The full init, the handshake, then PLAN.md Phase 5d's loop once round: arm finger-down, capture on touch,
+arm finger-up. **Result: the vendor's capture loop works on this machine. The EC reported the touch, the
+frame was captured on it, the EC reported the finger gone, and the internal keyboard stayed alive
+throughout.** Nothing reset the EC between Run 20 and this run. Nobody knows whether the laptop was
+rebooted.
+
+- **`0xae` before the handshake:** `02 02 31 03 00 00 01 00 90 63 00 … 06 06`, Run 20's reply with the
+  trailing counter moved from `04 04` to `06 06`. That fits `+2` per `0xd0`: Run 20 sent one. So the EC
+  was not reset in the six hours between, and **a third full init and handshake worked without an EC
+  reset** (Runs 18, 20 and 21). Every earlier session ended with the process exiting, with no TLS
+  close.
+- **The init and handshake repeated Run 18 exactly**, down to 4 records each way and a `0xd4` that got
+  only an ACK.
+- **`0x32` down arm, the catalogue's thresholds `b8c5abb9aab9`:** ACK after 5 ms. **No base-invalid
+  event.** The vendor's thresholds from `dump.pcapng` still fit this EC, so the re-arm path is still
+  untested live.
+- **Finger-down event 10.0 s after the arm**, when the user found the sensor: header `02 00 3f 00`,
+  flags `0x3f` (all six zones), readings `[297 271 244 281 229 272]`.
+- **`0x20`:** ACK after 3.6 ms, then the 7753-byte image transfer 88 ms after the command, as in Run 20.
+  It decrypted to **7693 bytes again**, and the frame shows clear diagonal ridges read as 64 × 80. The
+  mean |Δ| between neighbours is 8.8 vertically and 7.4 horizontally.
+- **`0x34` up arm `afa295a78da3`:** this is the down reading >> 1 + 27 in all six zones, for example
+  297 >> 1 = 148, and 148 + 27 = 175 = `0xaf`. ACK after 5 ms. **Finger-up event 34 ms after the arm**:
+  header `00 02 00 00`, readings `[372 399 346 374 343 373]`. These are no-finger readings, so the
+  finger was already off when the arm went out. The run therefore shows that the up arm fires on
+  untouched readings. It does not show that the arm waits for a finger that is still down.
+- **Why the finger was already off:** the plaintext came back 2 s after the image record, as in Run 20.
+  `Bridge.ReadApplicationData` forwarded the record to openssl and then blocked in one more device read
+  for the whole `DeviceTimeout` (2 s) before it looked for plaintext. **Fixed:** after the first record
+  the device is only polled, `min(DeviceTimeout, idle/4)`. `TestPlaintextDoesNotWaitOnTheDevice`
+  reproduces the 2.00 s wait without the fix. In the rehearsal, record to plaintext is now 400 ms, which
+  is the plaintext idle window.
+- **The untouched readings drift only a little.** Halving them gives `bac7adbbabba`, within 1–2 of the
+  vendor's arm from 2026-09-19. The readings are 3–4 counts above `dump.pcapng`'s base-invalid readings
+  (frame 131).
+- **The probe printed the `0xe4` reply (PSK hash) and the `0xa6` reply (OTP) in full.** Both appeared
+  in the `transport: RX` line, the `raw` line and the `payload` line. PLAN.md forbids publishing either.
+  **Fixed:** `proto.SecretPack` / `proto.SecretReply` is now the one deny list, shared with
+  `goodix-pcap`. The probe and all three transports log only the pack header, the command byte and a
+  byte count for those replies. This run's log file still holds them, so do not paste it anywhere.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

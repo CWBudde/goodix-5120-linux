@@ -347,6 +347,9 @@ Keep the finger **off** the sensor until the log says `>>> TOUCH THE SENSOR`, an
   capacitance per zone, not an image, and fine to record;
 - whether the frame looks like Run 20's.
 
+Run 21 ran this command live and worked (`docs/protocol.md`). To test what it left open, **rest the
+finger for a few seconds** before you lift it, so that the up arm has a finger to wait for.
+
 If no finger-up event arrives in time the run still succeeds — the frame is already written — and the EC
 is left armed for the lift, which is also where the vendor leaves it. The drain picks the event up if it
 comes late.
