@@ -82,7 +82,7 @@ func checkECResponsive(logger *log.Logger, tr transport.Transport, timeout time.
 		case replyAck:
 			// The version string follows the ACK as a second transfer. Read it
 			// here, so the drain below does not report it as unsolicited.
-			if err := collect(logger, tr, opFirmwareVer, timeout); err != nil {
+			if err := collectFrom(logger, tr, opFirmwareVer, timeout, true); err != nil {
 				return fmt.Errorf("health check: %w", err)
 			}
 		case replyData:

@@ -378,6 +378,11 @@ func TestHealthCheckPassesOnAnAnsweringEC(t *testing.T) {
 	if got := buf.String(); strings.Contains(got, "unsolicited message cmd=0xa8") {
 		t.Errorf("the health check left its own reply for the drain:\n%s", got)
 	}
+	// Run 18: the health check read the ACK itself, then logged the version
+	// string as "data arrived with no ACK".
+	if got := buf.String(); strings.Contains(got, "no ACK") {
+		t.Errorf("the health check forgot the ACK it read:\n%s", got)
+	}
 }
 
 // run12State is the 0xae reply Run 12 received from the EC Run 11 left inside

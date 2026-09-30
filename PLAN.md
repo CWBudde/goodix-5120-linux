@@ -85,8 +85,8 @@ Gated on the keyboard-safe procedure in [`docs/bisect-runbook.md`](docs/bisect-r
 per run, `--bisect`, external keyboard attached, owner runs it.
 
 **5a is done on hardware (Run 11, 2026-09-20): the full vendor init runs live with the keyboard alive
-throughout, and `0xd0` makes the EC open a TLS handshake.** 5b is attempted and unresolved — the handshake
-stalls after the server's first flight, before any key material is used, so the PSK question is untouched.
+throughout, and `0xd0` makes the EC open a TLS handshake.** **5b is done on hardware (Run 18, 2026-09-30):
+the TLS-PSK handshake completes with the PSK unsealed from Windows, and the EC acknowledges `0xd4`.**
 Every state-changing frame is behind its own `--allow-XX` flag
 whose help text says what it does, and `--tls` runs as the tail of a bisect run so the bridge inherits the
 keyboard checks. The runbook has the exact command lines.
@@ -96,7 +96,10 @@ keyboard checks. The runbook has the exact command lines.
       all; `0x70` answers with an ACK only; `0x98` and `0x90` answer `01 01`, so the 224-byte config
       recovered from Windows is accepted by the EC. `0xd0` makes the EC open a TLS 1.2 handshake. Details
       and the ClientHello bytes are in [`docs/protocol.md`](docs/protocol.md), Run 11.
-- [ ] **5b — TLS-PSK handshake against the device. (The decision point for the whole project.)**
+- [x] **5b — TLS-PSK handshake against the device. (The decision point for the whole project.) Done
+      2026-09-30 (Run 18): the handshake completed in 76 ms, 4 records each way, and `0xd4` was ACKed, with
+      the keyboard alive throughout. The recovered PSK is the device's key, so the fallbacks below are
+      not needed on this machine.** The history that got here:
       **Attempted 2026-09-20 (Run 11): the EC opened a handshake and it stalled before the PSK was used, so
       the question is still open.** The EC's ClientHello confirms `0x00ae` from the device itself and shows a
       minimal stack: empty session id, two cipher suites, **no extensions field at all**. The host's
@@ -110,8 +113,8 @@ keyboard checks. The runbook has the exact command lines.
       no longer suspects. **Run 17 (2026-09-30)** ran the vendor's full init, `0xe4` included: the EC sent
       its ClientKeyExchange and then stalled, because the bridge stopped reading the device for 250 ms
       while it waited on openssl. Run 11 stalled on the same blind window one message earlier. Fixed: the
-      bridge reads the EC throughout its flight. *Next:* EC reset, then the same command again. **The PSK wall is still ahead**: if
-      the EC eventually rejects the key, the probe prints the fallbacks below and they come first.
+      bridge reads the EC throughout its flight. **Run 18 confirmed the fix.** *Open:* the state the EC is left
+      in after a *completed* handshake that the host drops without a TLS close. Check it with `--read-state` before the 5c run.
       **Run 12 adds a procedural rule: cold power cycle after every stalled handshake.** The EC comes out of
       `0xd0` unable to answer plaintext commands — `0xae` only — and a reset does not clear it; Run 12 sent
       the init into that state and lost the keyboard. A bisect run now health-checks the EC with `0xa8` after

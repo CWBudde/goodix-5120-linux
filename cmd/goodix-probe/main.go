@@ -324,7 +324,12 @@ func run(logger *log.Logger, tr transport.Transport, timeout time.Duration) erro
 // arrives, the device goes quiet, or maxReadsPerStep is reached. Run 1 read
 // once per command and so ran one transfer behind.
 func collect(logger *log.Logger, tr transport.Transport, sent proto.Opcode, timeout time.Duration) error {
-	acked := false
+	return collectFrom(logger, tr, sent, timeout, false)
+}
+
+// collectFrom is collect for a caller that may already have read the ACK
+// itself, so the data message that follows is not reported as unacknowledged.
+func collectFrom(logger *log.Logger, tr transport.Transport, sent proto.Opcode, timeout time.Duration, acked bool) error {
 	for range maxReadsPerStep {
 		raw, err := tr.Recv(timeout)
 		if errors.Is(err, transport.ErrTimeout) {

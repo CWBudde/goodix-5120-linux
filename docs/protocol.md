@@ -806,6 +806,48 @@ stand-in; with either half of the fix removed it reproduces the live 251 ms gap 
 
 The EC is presumably stuck again after this run and needs the EC reset before the next one.
 
+### Run 18 — 2026-09-30 04:01, Run 17's command again, with the mid-flight fix (observed)
+
+`sudo ./goodix-probe --bisect --tls --psk captures/goodix-psk.bin --allow-96 --allow-e4 --allow-a2
+--allow-70 --allow-98 --allow-90 --allow-d0 --allow-d4 --steps 96,a8,ae,e4,a2,82,a6,a2,70,98,90`, run by
+the user with an external keyboard attached, after an EC reset (log `goodix-bisect-20260930-040117.log`).
+**Result: the TLS-PSK handshake completed. The EC and the host share the PSK unsealed from Windows,
+`0xd4` was acknowledged, and the internal keyboard stayed alive after every step.** This is the first
+completed handshake on Linux, and it settles Phase 5b: the recovered key is the device's key.
+
+- **The EC was fresh:** the health check's `0xa8` answered ACK + `GF_ITE_EC_20063`, and `0xae` answered
+  `02 00 31 03 00 00 01 00 00 63 00 … 02 02`, byte for byte Run 17's reply, so the reset before this run
+  worked like Run 16's did.
+- **The init matched Run 17 step for step:** `0x96` no reply; `0xe4` ACK + 41 bytes (withheld); `0xa2` ACK +
+  `01 00 08` both times; `0x82` → `a2 04 25 00` (chip ID `0x2504`); `0xa6` ACK + 64 bytes of OTP (withheld); `0x70` ACK only; `0x98` and `0x90` ACK + `01 01`.
+- **The handshake, timed from the host log** (`0xd0` sent at .884, so +0 ms):
+
+  | +ms | direction | record |
+  |---|---|---|
+  | 17 | EC → host | ClientHello, 47-byte body (same shape as Runs 11 and 17) |
+  | 27–30 | host → EC | ServerHello (81), ServerHelloDone (4), one `0xb0` pack each |
+  | 34 | EC → host | ClientKeyExchange, identity `Client_identity` |
+  | 56 | EC → host | ChangeCipherSpec |
+  | 62 | EC → host | Finished (80-byte encrypted body) |
+  | 71–74 | host → EC | ChangeCipherSpec, Finished (80), one pack each |
+  | 76 | — | openssl reports the handshake complete: 4 records each way |
+  | 81 / 88 | host ↔ EC | `0xd4` sent, ACK status `0x01`; no data message follows (5 s timeout) |
+
+  The EC's ChangeCipherSpec came 22 ms after its ClientKeyExchange and its Finished 6 ms after that: the
+  vendor log's 22 ms and 27 ms. This is the gap the bridge used to spend waiting on openssl (Runs 11 and
+  17). Reading the EC through its flight was the whole fix. The handshake took 76 ms against the vendor's
+  1100 ms budget.
+- **So the Run 17 hypothesis stands, and nothing else was wrong:** the records, their framing (one pack
+  per record) and their contents all passed unchanged, and so did the PSK. An encrypted Finished that
+  openssl accepts is only possible with the same key on both ends.
+- **`0xd4` answers with an ACK only**, like `0x70`. No capture was requested (`--capture` not given), so
+  no application data crossed the session.
+
+**Open after this run:** what state the EC is in now. The handshake finished, but the host dropped the
+session without a TLS close. `isTlsConnected` may now be set, and a plaintext command may or may not be
+answered. The next run should be `sudo ./goodix-probe --bisect --read-state` on its own, with its replies
+compared against Runs 15 and 16, before any step is sent.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
