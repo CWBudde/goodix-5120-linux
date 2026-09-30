@@ -159,6 +159,11 @@ keyboard checks. The runbook has the exact command lines.
    enrollment, minutiae matching (libfprint's bundled NBIS) and PAM. Contribute a `goodix5120` driver
    modelled on the existing Goodix drivers and the community `goodixtls` work for the TLS 5xx parts. A
    libfprint out-of-tree **TOD** module is the fallback only if upstream declines the driver.
+   *Started (2026-09-30):* [`libfprint/goodix5120/`](libfprint/goodix5120/README.md) is a first
+   `goodix5120` image driver. It compiles in a libfprint tree, and its framing, send gate, FDT
+   thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
+   vectors. **It has not run on hardware.** It reads the PSK from a file and does not provision one.
+   Its README lists what is stubbed and the open questions for the first live run.
 
 **Decide early — the PSK-provisioning problem.** A shipped driver needs the device's TLS PSK, and there is
 no portable way to get it:
