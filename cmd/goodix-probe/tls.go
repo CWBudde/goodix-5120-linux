@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -83,13 +82,21 @@ func vendorBeforeTLS() []proto.Opcode {
 
 // missingFromVendorInit lists the commands of the vendor's pre-0xd0 init that
 // steps does not send. Run 11 left out 0xe4 and stalled; the vendor sends it in
-// every init, and its handshakes complete.
+// every init, and its handshakes complete. Commands are counted, not just
+// looked up: the vendor sends 0xa2 twice, and one 0xa2 in steps covers only one
+// of them.
 func missingFromVendorInit(steps []proto.Opcode) []proto.Opcode {
+	sent := make(map[proto.Opcode]int)
+	for _, op := range steps {
+		sent[op]++
+	}
 	var missing []proto.Opcode
 	for _, op := range vendorBeforeTLS() {
-		if !slices.Contains(steps, op) {
-			missing = append(missing, op)
+		if sent[op] > 0 {
+			sent[op]--
+			continue
 		}
+		missing = append(missing, op)
 	}
 	return missing
 }

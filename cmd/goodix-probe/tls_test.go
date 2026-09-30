@@ -317,3 +317,19 @@ func TestMissingFromVendorInitNamesRun11sGap(t *testing.T) {
 		t.Errorf("missingFromVendorInit(Run 11) = %q, want \"e4\"", got)
 	}
 }
+
+// TestMissingFromVendorInitCountsRepeats checks that one 0xa2 does not stand in
+// for both of the vendor's: an init that drops the second reset is incomplete.
+func TestMissingFromVendorInitCountsRepeats(t *testing.T) {
+	var allow []proto.Opcode
+	for _, u := range unlockable {
+		allow = append(allow, u.op)
+	}
+	oneReset, err := parseSteps("96,a8,ae,e4,a2,82,a6,70,98,90", allow...)
+	if err != nil {
+		t.Fatalf("parseSteps: %v", err)
+	}
+	if got := opList(missingFromVendorInit(oneReset)); got != "a2" {
+		t.Errorf("missingFromVendorInit(one a2) = %q, want \"a2\"", got)
+	}
+}
