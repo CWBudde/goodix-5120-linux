@@ -188,7 +188,7 @@ These are implementation tasks from the code review, not new hardware observatio
 owner-only live procedure and the prohibition on firmware writes. Do not make the driver part of the
 default build or enable PAM while these checks and matching validation remain open.
 
-### 6a — Secrets and TLS correctness (highest priority)
+### 6a — Secrets and TLS correctness (complete)
 
 - [x] **Remove secret output from the DPAPI tool.** `cmd/goodix-dpapi/main.go:113` prints the Windows
       boot key by default. Keep the boot key withheld; also reconcile default GUID / plaintext-hash
@@ -197,16 +197,17 @@ default build or enable PAM while these checks and matching validation remain op
       `internal/session/loopback.go:146` pass it to `openssl -psk`, making it visible through process
       inspection. Use a private in-process PSK endpoint or an interface that receives the key through
       a protected descriptor. Rehearsal should use a synthetic key when the device's key is unnecessary.
-- [ ] **Secure replacement of PSK and biometric output files.** `os.WriteFile(..., 0600)` in
+- [x] **Secure replacement of PSK and biometric output files.** `os.WriteFile(..., 0600)` in
       `cmd/goodix-dpapi/main.go:171` and `os.OpenFile(..., 0600)` in `cmd/goodix-probe/tls.go:359`
       do not restrict permissions on an existing file and follow symlinks. Create private temporary
       files and replace deliberately, or refuse existing destinations; test existing 0644 files,
       symlinks, write failures, and final ownership after `sudo` capture.
       **Implementation and offline regressions pass:** atomic private replacement, cleanup, mandatory
-      ownership, and UID/GID range validation. Final ownership under real sudo remains unverified:
-      `TestCaptureSudoOwnershipOnDisk` is skipped without root; passwordless sudo is unavailable here.
-      Owner-only offline check (synthetic image, no USB):
+      ownership, and UID/GID range validation. **Owner verified final ownership under real sudo
+      (2026-09-30):** the following offline check passed (`ok goodix5120/cmd/goodix-probe 0.008s`):
       `sudo env GOCACHE=/tmp/goodix-owner-cache go test ./cmd/goodix-probe -run TestCaptureSudoOwnershipOnDisk -count=1`.
+      It writes a synthetic image without USB access and checks the invoking user's UID/GID and
+      mode `0600` on disk. This closes the remaining Phase 6a acceptance check.
 - [x] **Fix C TLS record boundaries across feeds.** `goodix5120_tls.c:337` treats each fragment as a
       record boundary. A valid encrypted image split at a ciphertext byte that resembles an alert
       is rejected before OpenSSL can reassemble it. Track boundaries across calls or leave alert
@@ -239,8 +240,8 @@ regression tests caught it and the correction passed re-review. Go tests / race 
 opcode tags, command builds, and all 43 standalone C subtests pass. ASan/UBSan pass with leak
 detection disabled because LeakSanitizer cannot operate under sandbox ptrace. Offline three-touch
 capture and mismatched-key rejection pass. Private-capture / Windows fixtures were not used; the
-actual USB driver and hardware remain untested here. The real sudo ownership check above is the
-remaining 6a acceptance check. Phase 6b / 6c gates still apply.
+actual USB driver and hardware remained untested at that point. The owner has now passed the real
+sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply.
 
 ### 6b — Exercise and harden the actual libfprint driver
 
@@ -276,7 +277,7 @@ remaining 6a acceptance check. Phase 6b / 6c gates still apply.
       leak detection disabled under ptrace; `just check` and Go race tests pass (existing formatting
       differences remain). Independent review found no actionable issues. Four mutation checks
       catch missing validation, unchecked chip ID, an unset TLS bit, and a non-NUL terminator.
-      The five remaining 6b tasks and the owner-only sudo check in 6a still gate the first hardware run.
+      The five remaining 6b tasks still gate the first hardware run; the owner has passed the 6a sudo check.
 - [ ] **Invalidate failed sessions.** After an image / TLS / transport failure, `session_done` retains
       the TLS object and `dev_activate` treats the session as usable for another operation. Require a
       deliberate recovery / reopen boundary rather than reusing a failed session; test late image
