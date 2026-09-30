@@ -363,6 +363,47 @@ test_tls_frame (void)
   g_assert_cmpuint (g5120_tls_record_len (two, 4), ==, 0);
 }
 
+static void
+test_tls_frame_validation (void)
+{
+  const struct { guint8 type, major, minor; gsize body; gboolean valid; } cases[] = {
+    { 0x13, 3, 3, 1, FALSE }, { 0x18, 3, 3, 1, FALSE },
+    { 0x14, 3, 1, 1, TRUE }, { 0x15, 3, 2, 2, TRUE },
+    { 0x16, 3, 3, 18432, TRUE }, { 0x17, 3, 3, 1, TRUE },
+    { 0x16, 2, 3, 1, FALSE }, { 0x16, 3, 0, 1, FALSE },
+    { 0x16, 3, 4, 1, FALSE }, { 0x16, 3, 255, 1, FALSE },
+    { 0x16, 3, 3, 0, FALSE }, { 0x16, 3, 3, 18433, FALSE },
+    { 0x16, 3, 3, 65530, FALSE }, { 0x16, 3, 3, 65531, FALSE },
+    { 0x16, 3, 3, 65535, FALSE },
+  };
+
+  for (gsize i = 0; i < G_N_ELEMENTS (cases); i++)
+    {
+      g_autoptr(GError) error = NULL;
+      g_autofree guint8 *rec = g_malloc0 (5 + cases[i].body);
+      g_autoptr(GByteArray) pack = NULL;
+
+      rec[0] = cases[i].type;
+      rec[1] = cases[i].major;
+      rec[2] = cases[i].minor;
+      rec[3] = cases[i].body >> 8;
+      rec[4] = cases[i].body & 0xff;
+      pack = g5120_tls_frame (rec, 5 + cases[i].body, &error);
+      if (cases[i].valid)
+        {
+          g_assert_no_error (error);
+          g_assert_nonnull (pack);
+          g_assert_cmpmem (pack->data + 4, 5 + cases[i].body, rec, 5 + cases[i].body);
+          g_assert_cmpuint (pack->data[1] | (pack->data[2] << 8), ==, 5 + cases[i].body);
+        }
+      else
+        {
+          g_assert_null (pack);
+          g_assert_error (error, G5120_PROTO_ERROR, G5120_PROTO_ERROR_REFUSED);
+        }
+    }
+}
+
 /* ---- FDT: fdt_test.go vectors ------------------------------------------- */
 
 static void
@@ -686,6 +727,7 @@ main (int argc, char **argv)
   g_test_add_func ("/goodix5120/gate/refuses-empty-e4", test_gate_refuses_empty_e4);
   g_test_add_func ("/goodix5120/gate/vendor-init", test_vendor_init_matches_reference);
   g_test_add_func ("/goodix5120/gate/tls-frame", test_tls_frame);
+  g_test_add_func ("/goodix5120/gate/tls-frame-validation", test_tls_frame_validation);
   g_test_add_func ("/goodix5120/fdt/arm-vectors", test_fdt_arm_vectors);
   g_test_add_func ("/goodix5120/fdt/event-headers", test_fdt_event_headers);
   g_test_add_func ("/goodix5120/fdt/event-zones", test_fdt_event_zones);

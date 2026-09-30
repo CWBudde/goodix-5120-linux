@@ -84,7 +84,8 @@ So the guarantee here is structural, not a promise to be careful:
 
 ## Requirements
 
-- Go 1.26+
+- Go 1.25+ (see `go.mod`)
+- OpenSSL >= 3.0 development headers and `pkg-config` (`libssl-dev` on Debian/Ubuntu)
 - `libusb-1.0-0-dev` (`sudo apt install libusb-1.0-0-dev`)
 - Root for live runs — there is deliberately no udev rule yet, so an unprivileged run fails with
   `libusb: bad access [code -3]`
@@ -98,7 +99,7 @@ go build -buildvcs=false ./cmd/goodix-probe
 
 ./goodix-probe --dry-run                          # print the frames a run can send
 ./goodix-probe --bisect --replay --assume-keys    # the step loop against the Run 1 capture
-just rehearse                                     # the TLS path against a local openssl stand-in
+just rehearse                                     # real TLS with synthetic keys; no device or PSK file
 ```
 
 Every live run goes through `--bisect`, with an external keyboard attached, following
@@ -134,8 +135,8 @@ cmd/goodix-pcap/      offline reader for USBPcap captures; cannot reach hardware
 internal/proto/       packet framing, checksums, opcode registry, safety classes, payload rules
 internal/transport/   gousb USB transport, replay fake, ceiling + payload enforcement
 internal/capture/     pcapng and USBPcap decoding (stdlib + proto only)
-internal/tlspsk/      Tier 2 scaffold — TLS-PSK via openssl subprocess (no call sites)
-internal/image/       Tier 2 scaffold — PGM writer (no call sites)
+internal/tlspsk/      in-process OpenSSL TLS-PSK endpoint (cgo, no listener or subprocess)
+internal/image/       sensor decoding and PGM output helpers
 docs/protocol.md      observed wire format, appended as we learn
 docs/acpi.md          what the ACPI tables say about the EC, the keyboard and the port
 ```

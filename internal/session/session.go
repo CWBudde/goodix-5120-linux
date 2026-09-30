@@ -3,11 +3,11 @@
 // After `0xd0` the embedded controller opens a TLS 1.2 handshake in which **the
 // EC is the client** and the host is the server (docs/protocol.md, "TLS"). Every
 // record travels as the payload of a `0xb0` pack. Go's crypto/tls has no PSK
-// suites, so the host end is an `openssl s_server` subprocess driven by
+// suites, so the host end is a native OpenSSL memory-BIO endpoint in
 // internal/tlspsk; this package is the plumbing between the two:
 //
-//	device --0xb0 pack--> Bridge --TCP socket--> openssl (ciphertext side)
-//	                                openssl --stdout--> Bridge (plaintext)
+//	device --0xb0 pack--> Bridge --> native endpoint (ciphertext side)
+//	                       native endpoint --> Bridge (plaintext)
 //
 // The bridge is deliberately **single threaded and half duplex**: it reads from
 // the device, forwards to the host, reads whatever the host has to say, and
@@ -106,6 +106,7 @@ func (o Options) withDefaults() Options {
 // Handshake is the entire result of PLAN.md Phase 5b, so they are separate
 // sentinels rather than one opaque failure.
 var (
+	ErrPolicy = tlspsk.ErrPolicy
 	// ErrHandshakeTimeout means neither side finished the handshake in time.
 	ErrHandshakeTimeout = errors.New("session: TLS handshake did not complete in time")
 
@@ -174,8 +175,7 @@ func (b *Bridge) Counts() (toHost, toDevice int) { return b.toHost, b.toDevice }
 // reaching this point *is* the answer to "does the EC accept our PSK".
 func (b *Bridge) Handshake(ctx context.Context) error {
 	deadline := time.Now().Add(b.opts.HandshakeTimeout)
-	b.opts.Logger.Printf("  TLS: bridging the handshake — the EC is the client, openssl (pid %d, port %d) is the server",
-		b.sess.PID(), b.sess.Port())
+	b.opts.Logger.Printf("  TLS: bridging the handshake; EC client, native host server (%s)", b.sess.Backend())
 
 	for !b.done {
 		if err := ctx.Err(); err != nil {
@@ -250,7 +250,7 @@ func (b *Bridge) Deliver(raw []byte) (bool, error) {
 	}
 
 	if _, err := b.sess.Device().Write(payload); err != nil {
-		return true, fmt.Errorf("session: forwarding %d byte(s) to the local endpoint: %w", len(payload), err)
+		return true, fmt.Errorf("session: forwarding %d byte(s) to the local endpoint: %w", len(payload), endpointError(err))
 	}
 	return true, nil
 }
@@ -288,8 +288,7 @@ const (
 // shows ServerHello and ServerHelloDone leaving as two sends of 86 and 9 bytes,
 // and later change-cipher-spec and Finished as two sends of 6 and 85. Run 11
 // (2026-09-20) used the same framing and still stalled, so the framing is not
-// what stalled it; Options.CoalesceFlight sends a flight as one pack instead,
-// the way openssl writes it to the socket, for comparison only.
+// what stalled it. The native endpoint preserves the same record boundaries.
 //
 // A flight ends at ServerHelloDone or at the host's Finished, so neither waits
 // out HostIdle before it is sent: the vendor answers a ClientHello within a
@@ -383,7 +382,7 @@ var errHostIdle = errors.New("session: local endpoint idle")
 func (b *Bridge) readHostRecord() ([]byte, error) {
 	rec, err := readRecord(b.sess.Device(), b.opts.HostIdle, b.opts.HostBody)
 	if err != nil && !errors.Is(err, errHostIdle) {
-		return nil, fmt.Errorf("session: on the local endpoint (openssl): %w", err)
+		return nil, fmt.Errorf("session: on the local native endpoint: %w", endpointError(err))
 	}
 	return rec, err
 }
@@ -462,8 +461,7 @@ const DefaultPlaintextIdle = 400 * time.Millisecond
 
 // startPlaintextReader starts the one goroutine that drains the local endpoint's
 // plaintext side. It runs for the life of the bridge: the read it is blocked in
-// is released when the caller closes the tlspsk session, which tears down the
-// subprocess and with it the pipe.
+// is released when the caller closes the native tlspsk session.
 func (b *Bridge) startPlaintextReader() {
 	b.plain.mu.Lock()
 	defer b.plain.mu.Unlock()
@@ -553,6 +551,21 @@ func (b *Bridge) alertError(side string, body []byte) error {
 	return fmt.Errorf("%w: %s sent a %s alert: %s (0x%02x)", err, side, alertLevelName(level), alertName(desc), desc)
 }
 
+// endpointError preserves local policy and translates native PSK evidence to
+// the bridge's public alert sentinels; generic failures stay ambiguous.
+func endpointError(err error) error {
+	if errors.Is(err, tlspsk.ErrPolicy) {
+		return fmt.Errorf("%w: %w", ErrPolicy, err)
+	}
+	if errors.Is(err, tlspsk.ErrPSKMismatch) {
+		return fmt.Errorf("%w: %w", ErrPSKMismatch, err)
+	}
+	if errors.Is(err, tlspsk.ErrTLS) {
+		return fmt.Errorf("%w: %w", ErrAlert, err)
+	}
+	return err
+}
+
 // TLS alert descriptions (RFC 5246 §7.2), named only where this project could
 // plausibly see them.
 const (
@@ -573,10 +586,9 @@ const (
 // With a PSK suite and no certificates involved, that means the pre-shared keys
 // differ — which is the one answer Phase 5b exists to get.
 var keyMismatchAlerts = map[byte]bool{
-	alertBadRecordMAC:     true,
-	alertHandshakeFailure: true,
-	alertDecryptError:     true,
-	alertUnknownPSKID:     true,
+	alertBadRecordMAC: true,
+	alertDecryptError: true,
+	alertUnknownPSKID: true,
 }
 
 func alertName(desc byte) string {

@@ -26,7 +26,8 @@ driver is built around that:
   `0xae`, and sending the init into that state cost the keyboard in Run 12.
 - **Only the tested firmware.** If the firmware string is not `GF_ITE_EC_20063`, open stops before the init.
 - **Everything that can fail offline fails before the first byte.** A missing or malformed PSK file, or an OpenSSL
-  without suite `0x00ae`, fails open before the USB interface is claimed. An unfinished handshake leaves the EC
+  whose effective policy forbids suite `0x00ae`, fails open before the USB interface is claimed. Policy is
+  tested on a disposable TLS server with a synthetic ClientHello; no automatic security-level downgrade occurs. An unfinished handshake leaves the EC
   stuck, so a handshake that cannot succeed must never start.
 - **Fail closed.** A missing ACK or data reply, data that arrives before its ACK, an ACK status other than `0x01`,
   a handshake without progress for 5 s: each of these stops the sequence. Nothing is retried.
@@ -34,8 +35,10 @@ driver is built around that:
   awaited.
 - **No USB reset.** `goodixmoc` resets its device on open; this driver does not, because what a reset does to the EC
   is unknown.
-- **Never logged:** the PSK, the `0xe4` reply (a hash of the PSK), the `0xa6` reply (OTP), TLS record bodies and image
-  data. TLS records are logged by type and length only.
+- **Driver-level redaction:** the driver withholds the PSK, `0xe4`/`0xa6` reply bodies, TLS bodies, and image data.
+  TLS records are logged by type and length only. This does not cover libfprint USB transfer tracing: when
+  `FP_DEBUG_TRANSFER` and debug logging are enabled, the USB helper can dump raw sensitive replies.
+  Leave `FP_DEBUG_TRANSFER` unset, including inherited service environments; never publish raw transfer traces.
 
 ## Files
 
@@ -242,6 +245,7 @@ in, 40 s power-button hold if the previous session ended badly):
 1. Check the EC answers with `goodix-probe --bisect --read-state` first, per `docs/bisect-runbook.md`.
 2. Build libfprint with only this driver. Run a single capture with libfprint's `examples/img-capture` (not fprintd),
    with `G_MESSAGES_DEBUG=all` and `GOODIX5120_PSK_FILE` pointing at the key in `captures/`.
+   Ensure `FP_DEBUG_TRANSFER` is unset (`env -u FP_DEBUG_TRANSFER ...`); do not enable raw transfer dumps.
 3. Compare the debug log against Runs 20–22 step by step (arm thresholds, event headers, the 7753-byte image
    pack, the lift). Stop at the first difference.
 4. Only then try enrolment through fprintd. Its stages repeat the touch, frame and lift loop in one TLS session,

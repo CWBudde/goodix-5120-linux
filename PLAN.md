@@ -164,6 +164,8 @@ keyboard checks. The runbook has the exact command lines.
    thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
    vectors. **It has not run on hardware.** It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
+   **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
+   the first C-driver hardware run. Passing the pure helper tests does not exercise the driver itself.
 
 **Decide early — the PSK-provisioning problem.** A shipped driver needs the device's TLS PSK, and there is
 no portable way to get it:
@@ -180,12 +182,128 @@ pipeline end to end, then the libfprint port — developed with upstream off the
 
 ---
 
+## Phase 6 review follow-up — offline first (2026-09-30)
+
+These are implementation tasks from the code review, not new hardware observations. Keep the existing
+owner-only live procedure and the prohibition on firmware writes. Do not make the driver part of the
+default build or enable PAM while these checks and matching validation remain open.
+
+### 6a — Secrets and TLS correctness (highest priority)
+
+- [x] **Remove secret output from the DPAPI tool.** `cmd/goodix-dpapi/main.go:113` prints the Windows
+      boot key by default. Keep the boot key withheld; also reconcile default GUID / plaintext-hash
+      output with the publication rules above. Add a CLI-output regression test using synthetic data.
+- [x] **Keep the PSK out of process arguments.** `internal/tlspsk/tlspsk.go:213` and
+      `internal/session/loopback.go:146` pass it to `openssl -psk`, making it visible through process
+      inspection. Use a private in-process PSK endpoint or an interface that receives the key through
+      a protected descriptor. Rehearsal should use a synthetic key when the device's key is unnecessary.
+- [ ] **Secure replacement of PSK and biometric output files.** `os.WriteFile(..., 0600)` in
+      `cmd/goodix-dpapi/main.go:171` and `os.OpenFile(..., 0600)` in `cmd/goodix-probe/tls.go:359`
+      do not restrict permissions on an existing file and follow symlinks. Create private temporary
+      files and replace deliberately, or refuse existing destinations; test existing 0644 files,
+      symlinks, write failures, and final ownership after `sudo` capture.
+      **Implementation and offline regressions pass:** atomic private replacement, cleanup, mandatory
+      ownership, and UID/GID range validation. Final ownership under real sudo remains unverified:
+      `TestCaptureSudoOwnershipOnDisk` is skipped without root; passwordless sudo is unavailable here.
+      Owner-only offline check (synthetic image, no USB):
+      `sudo env GOCACHE=/tmp/goodix-owner-cache go test ./cmd/goodix-probe -run TestCaptureSudoOwnershipOnDisk -count=1`.
+- [x] **Fix C TLS record boundaries across feeds.** `goodix5120_tls.c:337` treats each fragment as a
+      record boundary. A valid encrypted image split at a ciphertext byte that resembles an alert
+      is rejected before OpenSSL can reassemble it. Track boundaries across calls or leave alert
+      interpretation to OpenSSL. Test partial headers, every split position, and concatenated records.
+- [x] **Validate effective TLS policy before USB writes.** `goodix5120_tls.c:223` treats successful
+      `SSL_CTX_set_cipher_list()` as capability; security level 3 can accept that setter and then reject
+      the same suite during handshake. Fail offline with a policy-specific error if the suite is
+      unavailable, and distinguish local policy failures from likely PSK mismatch. Test multiple
+      security levels; do not silently weaken policy without a deliberate compatibility decision.
+- [x] **Preflight the Go TLS endpoint before live init.** Load and validate the PSK before opening
+      hardware, rather than first doing so in the post-init `runTLS` hook. Confirm that the bridge
+      connects to its own subprocess: `tlspsk.Start` currently accepts a connection to an occupied
+      port even when its OpenSSL child cannot bind. Establish listener ownership, detect child startup
+      failure, retain bounded diagnostics, and test a prebound port.
+- [x] **Bound and validate TLS framing in both implementations.** Reject invalid record types / versions
+      and records too large for the outer 16-bit length in the C send helper (`goodix5120_proto.c:129`).
+      Guard encoder failure before padding. The Go transport also needs an aggregate TLS-pack size
+      check: `SendTLS` can accept several valid records totalling more than 65535 bytes, while
+      `proto.EncodePack` truncates the declared length. Add boundary tests for both implementations.
+- [x] **Account for libfprint's transfer tracing.** Driver-level redaction does not stop
+      `FP_DEBUG_TRANSFER` plus debug logging from dumping the raw `0xe4` / `0xa6` replies through
+      the USB helper. Establish a supported way to prevent sensitive transfer dumps, or explicitly
+      document this limitation and keep it out of the recommended debugging procedure.
+
+**Implemented / verified (2026-09-30):** native OpenSSL server and rehearsal client; synthetic
+rehearsal keys; effective policy checks before USB (including configured protocol and cipher
+restrictions); DPAPI redaction; private file replacement; C stream-boundary tracking; bounded TLS
+framing; transfer-tracing limitation documented. Independent review found a policy-override gap;
+regression tests caught it and the correction passed re-review. Go tests / race / vet, supported
+opcode tags, command builds, and all 43 standalone C subtests pass. ASan/UBSan pass with leak
+detection disabled because LeakSanitizer cannot operate under sandbox ptrace. Offline three-touch
+capture and mismatched-key rejection pass. Private-capture / Windows fixtures were not used; the
+actual USB driver and hardware remain untested here. The real sudo ownership check above is the
+remaining 6a acceptance check. Phase 6b / 6c gates still apply.
+
+### 6b — Exercise and harden the actual libfprint driver
+
+- [ ] **Add an offline fake USB / libfprint lifecycle harness for `goodix5120.c`.** The standalone
+      Meson tests compile only the protocol and TLS helpers. Exercise open, activation, touch → image →
+      lift, multiple enrollment stages, cancellation in every state, unplug, timeouts, wrong ACKs,
+      unexpected messages, and reopen. Use synthetic images and keys; no private capture is required.
+- [ ] **Validate init reply contents before continuing.** `xchg_recv_cb` currently accepts any
+      correctly framed data payload with the expected command after its ACK. Validate known response
+      lengths and status fields, including chip ID. `OPEN_LOG_MCU_STATE` must refuse a truncated state
+      or an unset `isTlsConnected` bit instead of succeeding with a warning. Tests must verify that
+      no subsequent command is written after a rejected response.
+- [ ] **Invalidate failed sessions.** After an image / TLS / transport failure, `session_done` retains
+      the TLS object and `dev_activate` treats the session as usable for another operation. Require a
+      deliberate recovery / reopen boundary rather than reusing a failed session; test late image
+      arrival and activation after failure. Do not invent an untested EC reset or cleanup command.
+- [ ] **Fix capture-read budget ordering.** `cap_read_cb` rejects the fourth additional transfer
+      before attempting to decrypt the bytes it just fed. Try decoding the newly completed record
+      before declaring the read budget exhausted; test completion on the final permitted read.
+- [ ] **Reset per-operation FDT retry state.** `base_invalid` is reset only on accepted finger-down.
+      A retry after exhausting that budget inherits the exhausted count. Reset it at the intended
+      operation / session boundary and test a retry after failure.
+- [ ] **Restore detached kernel drivers on release.** Claim uses
+      `G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`, but close and open-failure cleanup release with
+      flags zero. Track successful claim / detach ownership and release symmetrically. Test rollback
+      on open failure and close with a previously bound driver.
+- [ ] **Use independent shared protocol fixtures.** Compare every init payload byte, reply expectation,
+      FDT vector, and image layout between Go and C. Selected payload assertions and a config checksum
+      cannot establish full byte-for-byte parity.
+
+### 6c — Portability, authentication quality, and repeatable checks
+
+- [ ] Derive DAC settings and FDT delta from OTP, or explicitly restrict this prototype to a supported
+      per-device profile. Matching firmware alone does not establish matching calibration. Reconcile
+      committed device-specific DAC constants with the publication policy before upstream submission.
+- [ ] Validate ridge polarity, contrast, minutiae yield, enlargement, enrollment stages, and match
+      threshold on owner-controlled hardware. Measure repeated genuine-finger and different-finger
+      attempts before enabling PAM; a recognizable image and three captures do not validate matching.
+- [ ] Validate repeated open / close, cancellation and immediate reuse, suspend / resume, and autosuspend
+      under the owner-only procedure after the offline gate passes. Record recovery behavior in the docs.
+- [ ] Harden offline parsers: compare DPAPI master-key lengths before conversion to `int`
+      (`internal/dpapi/dpapi.go:319`), bound key-stretch work, and reject cyclic / excessively deep registry
+      subkey indexes (`internal/winreg/hive.go:155`). Add malformed-input tests and a winreg test suite.
+- [ ] Bound Go bridge socket writes and the background plaintext buffer, so cancellation and size
+      limits apply while I/O is in progress. Exercise backpressure. Keep the keyboard check on the
+      ordinary bisect send / receive error path, as the TLS hook already does.
+- [ ] Add repeatable checks for Go tests / race / vet, both opcode tags, C helper tests / sanitizers,
+      and compilation against a pinned libfprint revision. Make format checking fail on differences;
+      `just fmt-check` currently only prints filenames. Refresh the root README's obsolete stop verdict,
+      dimensions, layout, and unused-scaffold descriptions to match the completed Go bring-up.
+
+---
+
 ## Recommended order
 
 1. ~~**Phase 6, layer 1** — `--touches` live: several frames in one session.~~ Done (Run 22).
-2. **Phase 6, layer 2** — the C driver's first live run (PR #2, `libfprint/goodix5120/README.md`).
-3. **Phase 2** — owner posts the two drafts; this also opens the upstream collaboration for layer 2.
-4. The PSK-provisioning decision, before the driver goes upstream.
+2. **Phase 6 review, 6a and 6b** — offline secret handling, TLS fixes, response validation, and
+   actual-driver lifecycle tests. These precede the first C-driver hardware run.
+3. **Phase 6, layer 2** — owner runs one C-driver capture, then validates repeated lifecycle and
+   enrollment / matching behavior under 6c. PAM comes after matching validation.
+4. **Phase 2** — owner reviews the publication checklist and posts the drafts; this can proceed in
+   parallel with offline hardening once the secret-publication inconsistencies are resolved.
+5. Device calibration portability and the PSK-provisioning decision, before the driver goes upstream.
 
 **Dropped as no longer useful:** the standalone "capture a real init on the wire" task (old Phase 3).
 USBPcap cannot follow the PnP re-enumeration a full init needs, the `0x90` config it was wanted for is

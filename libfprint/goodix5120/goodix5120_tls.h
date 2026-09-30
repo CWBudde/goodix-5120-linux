@@ -38,9 +38,10 @@ typedef enum {
   G5120_TLS_ERROR_SETUP,          /* OpenSSL context could not be built */
   G5120_TLS_ERROR_PSK_FILE,       /* PSK file missing or malformed */
   G5120_TLS_ERROR_ALERT,          /* the EC sent an alert */
-  G5120_TLS_ERROR_PSK_MISMATCH,   /* an alert/failure that means different keys */
+  G5120_TLS_ERROR_PSK_MISMATCH,   /* bad MAC/decryption suggests different keys */
   G5120_TLS_ERROR_FAILED,         /* the handshake failed on our side */
   G5120_TLS_ERROR_CLOSED,         /* the EC closed the session */
+  G5120_TLS_ERROR_POLICY,         /* effective local policy rejects the device suite */
 } G5120TlsError;
 
 GQuark g5120_tls_error_quark (void);
@@ -53,13 +54,15 @@ gboolean g5120_psk_load (const char *path,
                          guint8      psk[G5120_PSK_LEN],
                          GError    **error);
 
+/* Probes the effective context policy offline with a synthetic device-shaped
+ * ClientHello before returning a usable server. Never lowers security policy. */
 G5120Tls *g5120_tls_new (const guint8 psk[G5120_PSK_LEN],
                          GError     **error);
 void      g5120_tls_free (G5120Tls *tls);
 
-/* Hands the server the payload of one 0xb0 pack from the EC, verbatim. An
- * alert record from the EC is reported here as an error, with the alert's
- * description when it is readable. */
+/* Hands the server EC bytes verbatim, preserving record boundaries across
+ * arbitrary feeds. Counts only complete records. A complete plaintext alert is
+ * reported here; encrypted alerts are interpreted by OpenSSL. */
 gboolean g5120_tls_feed (G5120Tls     *tls,
                          const guint8 *data,
                          gsize         len,

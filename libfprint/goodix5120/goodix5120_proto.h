@@ -186,6 +186,8 @@ const G5120Step *g5120_step_get_image (void);        /* 0x20 01 00 */
 /* ---- TLS records ---------------------------------------------------------- */
 
 #define G5120_TLS_RECORD_HEADER_LEN 5
+/* TLS 1.2 plaintext ceiling plus maximum cipher expansion (RFC 5246 6.2.3). */
+#define G5120_TLS_MAX_BODY_LEN ((1 << 14) + 2048)
 #define G5120_TLS_CHANGE_CIPHER_SPEC 0x14
 #define G5120_TLS_ALERT              0x15
 #define G5120_TLS_HANDSHAKE          0x16

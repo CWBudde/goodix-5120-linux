@@ -22,7 +22,7 @@ bridges to the sensor *and* drives the keyboard over i8042.
 
 ## Commands
 
-Requires `libusb-1.0-0-dev` (gousb is cgo).
+Requires `libusb-1.0-0-dev`, OpenSSL >= 3 development headers (`libssl-dev`), and `pkg-config` (gousb and TLS are cgo).
 
 The `justfile` wraps the offline ones (`just` lists them; `just check` is build + vet + both test
 tags). It has no recipe that touches the device, on purpose — `just live-help` says why.
@@ -38,14 +38,14 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 ./goodix-probe --bisect --replay --assume-keys   # bisect flow offline (no root, no USB)
 
 # The TLS-PSK bridge, rehearsed offline: no device is opened, and the "EC" is an
-# openssl s_client in Goodix framing. Needs openssl on PATH.
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+# an in-process OpenSSL client in Goodix framing. Uses synthetic keys; no device key file.
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
   --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s   # Phase 5d: capture on touch
 # add --touches 3 for three touch → frame → lift rounds in one TLS session
-./goodix-probe --bisect --replay --assume-keys --tls --psk captures/goodix-psk.bin \
+./goodix-probe --bisect --replay --assume-keys --tls \
   --allow-d0 --steps a8 --rehearse-rejection   # what a PSK the EC rejects looks like
 
 go build -buildvcs=false ./cmd/goodix-pcap
@@ -103,7 +103,8 @@ The safety guarantee is structural, and changes must preserve it:
   `safety_test.go` fails if any step is not `ClassSafe` and checks the ceiling end to end through the
   replay transport.
 - **`internal/tlspsk`, `internal/image`, `internal/session`** are the TLS-PSK image path. TLS-PSK goes through an
-  `openssl s_server` subprocess because Go's `crypto/tls` has no PSK suites (socket = ciphertext side, stdio = plaintext).
+  in-process OpenSSL memory-BIO endpoint because Go's `crypto/tls` has no PSK suites. Keys are stored in native
+  memory; no TLS subprocess or TCP listener exists. Local key and policy validation happen before USB is opened.
   `internal/session` is the bridge between that and the device, **half duplex on purpose** so nothing writes to the
   OUT endpoint while something else reads from it. Their one caller is `goodix-probe --tls`, which runs as the tail of
   a bisect run and is therefore behind the same keyboard-safe procedure as any live step
@@ -134,7 +135,7 @@ The safety guarantee is structural, and changes must preserve it:
   `proto.SecretPack` is the one deny list. `goodix-pcap` refuses to show those replies, and the probe's
   `raw`/`payload` lines and every transport's RX line keep only the header (Run 21 printed both in full).
   Print a received transfer through `rawdump` or `dumpRX`, never plain `hexdump`/`dump`.
-- **`session.LoopbackEC` is not a device and must never become one.** It is an `openssl s_client` in Goodix framing,
+- **`session.LoopbackEC` is not a device and must never become one.** It is an in-process OpenSSL client in Goodix framing,
   used to rehearse the bridge offline; like the EC it stays silent until `0xd0`. It goes through
   `transport.NewPeer`, so a rehearsal refuses exactly what a live run refuses. `usb.go` remains the only code in the
   repository that opens hardware.
