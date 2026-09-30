@@ -975,6 +975,10 @@ frame per session.
 - **The untouched readings are stable to 2 counts** across the three lifts, and within 3 of Run 21's.
 - **Every image record was 7744 bytes and decrypted to 7693**, as in Runs 20 and 21. Touch to frame on
   disk took about 530 ms, 400 of them the idle window.
+- **The three frames are three different prints**, not one buffer served again. Each shows clear
+  ridges, read as 64 × 80, at a different placement (touch 2's ridges run nearly vertical, touches 1
+  and 3 run diagonally). The pixel correlation between pairs is only 0.24–0.33, and the range and
+  spread are alike (min 52–59, max 172–179, SD 22.6–23.3). So `0x20` takes a fresh image each time.
 - **The frames were written root-owned with mode `0600`,** because the run is under sudo, so the user
   who took them could not open them. **Fixed:** the probe now hands its capture and log files to
   `SUDO_UID`/`SUDO_GID`. It now also logs each frame's 8-byte header and 5-byte trailer, so the next
