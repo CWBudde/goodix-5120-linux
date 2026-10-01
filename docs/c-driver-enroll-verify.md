@@ -15,7 +15,8 @@ The device table lists only `27c6:5120`, and `ldd` resolves the bundled library 
 
 What the examples do, read from the pinned build:
 
-- `enroll` asks for a finger number on stdin (`7` = right index) and needs **5** successful scans.
+- `enroll` asks for a finger number on stdin, counted from 0 (`6` = right index, `7` = right middle),
+  and needs **5** successful scans.
   The driver does not override libfprint's image-device default stage count, so all five touch/lift
   rounds happen in **one** open/TLS session. That has not been tried in C before. Go did three in one
   session (Run 22).
@@ -23,6 +24,13 @@ What the examples do, read from the pinned build:
   **into the current directory**; `verify` reads `test-storage.variant` from there and writes `verify.pgm`.
   All three are biometric data. The commands below run in a fresh private directory under `$HOME`.
   Never put them in the repository and never share them.
+- After open, `enroll` asks `Should an existing fingerprint be updated …? Enter Y/y or N/n`, because
+  libfprint's image-device class declares `FP_DEVICE_FEATURE_UPDATE_PRINT`. It prints that prompt and its
+  stage messages with plain `printf`, which is block-buffered when stdout is a pipe. Without `stdbuf -oL`
+  the prompt stays hidden in the buffer and the program waits silently after `Image device open completed`.
+  That happened in Run 35. Answer `n`. Ctrl-C cannot interrupt the wait: GLib's SIGINT handler only runs
+  from the main loop, which is blocked in `getchar`.
+- `verify` uses `g_print`, which flushes. After each attempt it asks `Verify again? [Y/n]`.
 
 ## Before
 
@@ -47,11 +55,11 @@ run=$(mktemp -d "$HOME/goodix-c-enroll-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
   FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
   sh -c 'umask 077; cd "$1" || exit 1; shift; exec "$@"' sh "$run" \
-  "$build/examples/enroll" 2>&1 | tee "$run/enroll.log"
+  stdbuf -oL "$build/examples/enroll" 2>&1 | tee "$run/enroll.log"
 ```
 
-Enter `7` (right index), or another finger's number; use the same one for verification. For each
-stage, place the finger when `arming 0x32` appears and lift it when `arming 0x34` appears. Shift the
+Enter the finger number (`6` = right index); use the same one for verification. Answer `n` to the
+update question. For each stage, place the finger when `arming 0x32` appears and lift it when `arming 0x34` appears. Shift the
 placement slightly between stages. A `Reporting retry` or `retry` stage is a quality signal, not an EC fault:
 the program asks again. Stop with Ctrl-C on the external keyboard on any warning or error other than
 the known PSK-permission warning, or if the keyboard fails. Check typing after the program exits.
@@ -65,11 +73,12 @@ enrolled finger:
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
   FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
   sh -c 'umask 077; cd "$1" || exit 1; shift; exec "$@"' sh "$run" \
-  "$build/examples/verify" 2>&1 | tee "$run/verify-genuine.log"
+  "$build/examples/verify" 2>&1 | tee "$run/verify.log"
 ```
 
-Choose the same finger number. Expect `MATCH!`. Then repeat the command with the log named
-`verify-impostor.log`, choose the same finger number, but touch with a **different** finger. Expect `NO MATCH!`.
+Choose the same finger number and touch with the enrolled finger: expect `MATCH!`. At
+`Verify again? [Y/n]` answer `y` and touch with a **different** finger: expect `NO MATCH!`. Then answer `n`.
+Both attempts run in one session and one log.
 
 ## Report
 
