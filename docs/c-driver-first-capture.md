@@ -32,6 +32,7 @@ found no minutiae and saved no file (`docs/protocol.md`, Run 32). The current so
 listen bundle from the same bit-set state: no image, bit cleared — the pacing, not the start state,
 made Run 32 work. Do not reuse the listen bundle. **Run 34 ran the stretch bundle from the bit-clear
 state and saved the first C image** (`docs/protocol.md`, Run 34); this first-capture procedure is complete.
+Next: [enrollment and verification](c-driver-enroll-verify.md).
 
 ## Prepare the build offline
 

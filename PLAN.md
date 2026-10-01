@@ -182,7 +182,8 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    Run 34 ran `dist/goodix-owner-c-stretch/` (per-frame 1st/99th-percentile contrast stretch) from
    that bit-clear state: the session set the bit itself, NBIS accepted the stretched frame (bounds
    1468..2756) and the image was saved — **the first complete C capture**. Next: Phase 6c
-   (repeated captures, enrollment, verification).**
+   (repeated captures, enrollment, verification).** The owner-only enroll/verify procedure is
+   [docs/c-driver-enroll-verify.md](docs/c-driver-enroll-verify.md), using `dist/goodix-owner-c-enroll/`.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
@@ -485,7 +486,8 @@ The [capture runbook](docs/c-driver-first-capture.md) uses this revision; one re
       per-device profile. Matching firmware alone does not establish matching calibration. Reconcile
       committed device-specific DAC constants with the publication policy before upstream submission.
 - [ ] Validate ridge polarity, contrast, minutiae yield, enlargement, enrollment stages, and match
-      threshold on owner-controlled hardware. Measure repeated genuine-finger and different-finger
+      threshold on owner-controlled hardware. First step: [enroll and verify](docs/c-driver-enroll-verify.md)
+      with libfprint's examples (5 stages in one session, one genuine and one impostor verify). Measure repeated genuine-finger and different-finger
       attempts before enabling PAM; a recognizable image and three captures do not validate matching.
 - [ ] Validate repeated open / close, cancellation and immediate reuse, suspend / resume, and autosuspend
       under the owner-only procedure after the offline gate passes. Record recovery behavior in the docs.
