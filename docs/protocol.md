@@ -1037,8 +1037,49 @@ The next candidate completes one 64-byte OUT submission at a time, preserving ea
 bytes, one-record-per-pack ordering and overall write budget. Its offline peer now assembles completed
 packets, and regressions cover packet sizes, all config-packet failures and budget exhaustion.
 Pinned libfprint excludes zero completions from its `short_is_error` check, so the driver explicitly
-rejects any packet completion other than 64 bytes. **The candidate has not run on hardware**;
-whether submission granularity resolves this alert and whether a C capture works remain open.
+rejects any packet completion other than 64 bytes. At the time of preparation, this was an
+unvalidated candidate; Run 25 below records its hardware result.
+
+### Run 25 — 2026-10-01 05:42, completed 64-byte OUT writes still draw the TLS alert (observed)
+
+The owner reported rebooting, then ran the Go health check at 05:39:08–26. Attach, the
+firmware health query and the subsequent `0xa8` step all passed; every internal-keyboard check
+passed. This establishes responsiveness after reboot, without assuming a particular power-button
+procedure was performed. The owner then used the prepared `e8930b4` packet-write bundle.
+
+- Firmware health and the full C plaintext init passed again. The initial MCU state matched
+  the fresh-state shape in Run 18: TLS-connected byte clear and trailing counter `02 02`.
+  Secret PSK-hash and OTP replies remained redacted; config returned `01 01`.
+- `0xd0` was sent at 05:42:44.810. ClientHello (52 record bytes) arrived at .824;
+  the host logged ServerHello (86) and ServerHelloDone (9) at .825. At .827 it read
+  a seven-byte plaintext fatal alert, **`decode_error (50)`**, as in Run 24.
+- Open failed before ClientKeyExchange, `0xd4`, the final MCU check, finger arming or image
+  capture. **Both keyboards still typed after exit**, confirmed by the owner. The known
+  PSK-mode warning and libusb exit-reference warnings also appeared. Post-failure EC
+  responsiveness was not tested; working keyboards do not establish that the TLS endpoint reset.
+
+**Result:** completed 64-byte submissions did not resolve the rejection. No new packet-size,
+negotiation or timing change is justified by this result alone. The log reads IN only after both
+server records are sent, so it cannot identify which record prompted the alert.
+
+**Offline follow-up:** the successful Go Runs 18–22 used the historical `openssl s_server`
+subprocess (`ec490e0^`), not the current Go memory-BIO endpoint. The earlier C/native comparison
+therefore did not compare against the endpoint that succeeded live. A new synthetic probe used
+the historical CLI settings on a localhost socket and called only pure TLS/protocol helpers
+from the exact owner bundle; no device discovery, GUsb context or USB transport functions were
+invoked, and no private artifacts were accessed.
+Both emitted the same 86/9-byte first-flight structure after random/session-ID normalization.
+An independent framing check verified the bundle helper's 128/64-byte padded packs byte for byte.
+This proves helper output for the documented synthetic ClientHello, not what Run 25's EC received.
+
+One meaningful random-field distinction must not be normalized away: the CLI's TLS-1.3-capable
+context emits the standard `DOWNGRD\x01` suffix when negotiating TLS 1.2, whereas C's TLS-1.2-only
+context does not ([RFC 8446 §4.1.3](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.1.3)).
+This is an observed configuration difference, **not a demonstrated cause**. It does not justify
+editing TLS random bytes or changing the protocol ceiling. Independent review found no proven
+framing, packet-buffer ownership or callback-lifetime defect. The next investigation needs
+sanitized first-flight structure and packet-completion evidence at the actual submission boundary;
+length-only logs cannot recover those bytes from this run. Hardware retries are deferred.
 
 ### Recovering the EC (researched offline, 2026-09-30)
 

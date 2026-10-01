@@ -4,14 +4,16 @@ This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerpr
 `HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its wire sequence byte for byte.
 
 **Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. Run 23's `0xe4` check
-is corrected; Run 24 passed the full init but the EC rejected the first TLS server flight with `decode_error`.
-Both keyboards survived. The next candidate matches Go's 64-byte OUT submissions; its hardware result and
-a successful capture remain pending.** Its protocol evidence comes from the Go reference,
+is corrected; Runs 24 and 25 passed the full init but the EC rejected the first TLS server flight with
+`decode_error`. Both keyboards survived. Completed 64-byte OUT writes did not resolve the rejection;
+a successful capture remains pending, and hardware retries are deferred for targeted diagnostics.**
+The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
+has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
 [`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The Go probe has run this
 driver's whole wire sequence live, including the capture loop three times in one TLS session (Run 22), and
 `/goodix5120/fdt/run22-session` checks that this driver derives the same arms from the same events. The corrected
-capture attempt is the owner's to make, following the procedure below.
+capture attempt remains gated on investigation and review, following the procedure below.
 
 ## Read this first: the hardware can be wedged
 
@@ -272,7 +274,8 @@ The [first-capture runbook](../../docs/c-driver-first-capture.md) provides the p
 exact owner commands, expected log milestones, private output handling, and result checks.
 The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf`
 with only `goodix5120` enabled after aligning OUT submissions with the Go reference. The candidate
-in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence; it has not run on hardware.
+in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence but reproduced the TLS rejection
+in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix.
 
 As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
 in, 40 s power-button hold if the previous session ended badly):

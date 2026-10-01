@@ -6,8 +6,11 @@ original tested machine/profile; firmware identity alone does not establish cali
 Enrollment, matching, repeated lifecycle tests, and PAM remain Phase 6c work.
 Run 23 stopped at a mis-transcribed `0xe4` reply header. Run 24 passed the corrected full init,
 then received fatal TLS `decode_error (50)` after the first server flight; both keyboards worked
-after exit. The candidate below matches Go's completed 64-byte OUT submissions. Whether that
-resolves the alert is unproven; a successful C capture remains pending.
+after exit. Run 25 tested the completed 64-byte OUT submissions below and received the same
+fatal alert; both keyboards still worked. A successful C capture remains pending.
+**Do not repeat this bundle as a proposed fix. Hardware retries are deferred until targeted
+diagnostics and review establish the next experiment.** The procedure below is retained as the
+owner capture procedure for a future reviewed candidate; its preparation alone does not clear it.
 
 ## Prepare the build offline
 

@@ -162,7 +162,8 @@ keyboard checks. The runbook has the exact command lines.
    *Started (2026-09-30):* [`libfprint/goodix5120/`](libfprint/goodix5120/README.md) is a first
    `goodix5120` image driver. It compiles in a libfprint tree, and its framing, send gate, FDT
    thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
-   vectors. **Run 24 passed the full C init but its first TLS flight drew `decode_error`; capture is pending.**
+   vectors. **Runs 24 and 25 passed the full C init but their first TLS flights drew `decode_error`;
+   completed 64-byte OUT writes did not resolve it, and capture is pending.**
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
@@ -391,9 +392,29 @@ under short/zero/I/O/cancel failure, and aggregate budget exhaustion. The packet
 before the change; the zero-completion regression failed without the production guard. **Verified:**
 232 C subtests pass normally and under ASan/UBSan (leak detection disabled under ptrace), `just check`
 passes with existing formatting listings, and pinned real libfprint compiles without compiler warnings.
-The ready bundle is `dist/goodix-owner-c-packet-writes/`; independent review found no remaining
-blocking issues after the zero-write guard. This candidate awaits an owner capture; no hardware
-recovery, successful capture, enrollment, matching or Phase 6c criterion is established by these tests.
+The reviewed offline candidate bundle was `dist/goodix-owner-c-packet-writes/`; independent review found no remaining
+blocking issues after the zero-write guard. These offline tests establish neither a successful
+capture nor enrollment, matching or a Phase 6c criterion.
+
+**Owner attempt 2026-10-01 (Run 25):** after a reported reboot and passing 05:39 Go health/keyboard
+checks, candidate `e8930b4` passed the full C init and again received fatal `decode_error (50)`
+after its 86/9-byte first server flight. No ClientKeyExchange, `0xd4`, finger arm or image followed;
+both keyboards worked after exit. The packet-submission change did not resolve the failure.
+Post-failure EC health remains unverified; hardware retries are deferred while diagnosis proceeds.
+
+The previous first-flight comparison used current Go's memory-BIO endpoint, whereas the successful
+live Go runs used historical `openssl s_server`. A synthetic comparison with that actual CLI and
+pure helpers from the owner bundle now verifies matching first-flight structure and padded frames.
+Normalization conceals one protocol-semantic random suffix: the CLI's TLS-1.3-capable context emits
+`DOWNGRD\x01`, C's TLS-1.2-only context does not. This is not a confirmed cause; no protocol/random-byte
+change or arbitrary delay is warranted. See Run 25 in `docs/protocol.md` for limits and evidence.
+
+- [ ] **Diagnose the live C first-flight rejection before another candidate run.** Add targeted,
+      sanitized diagnostics for ClientHello/ServerHello structure and each completed OUT packet's
+      frame/offset/length/timing. Independently verify the production helper → frame → completed
+      packet path offline. Keep raw transfer tracing disabled, TLS bytes unmodified and secret/
+      application payloads withheld. A candidate must address demonstrated evidence; the existing
+      owner review/health gate still applies before any future hardware experiment.
 
 ### 6c — Portability, authentication quality, and repeatable checks
 
