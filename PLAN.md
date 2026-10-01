@@ -177,7 +177,9 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    paces ChangeCipherSpec/Finished by 60 ms too, so no two host writes are under 10 ms apart; next:
    one C capture with `dist/goodix-owner-c-gaps/`. Run 32 ran it: first C image (decrypted, 7693
    bytes), but from a bit-set start state left by Run 31, and NBIS found no minutiae, so nothing
-   was saved (`docs/protocol.md`, Run 32).**
+   was saved (`docs/protocol.md`, Run 32). Next: an A/B run of the unpaced listen bundle from the
+   bit-set state, then `dist/goodix-owner-c-stretch/`, which replaces `>> 4` with a per-frame
+   1st/99th-percentile contrast stretch and logs the two bounds.**
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

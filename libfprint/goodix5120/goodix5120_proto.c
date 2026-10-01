@@ -711,3 +711,50 @@ g5120_samples_to_gray8 (const guint16 *samples, gsize n, guint8 *out)
   for (gsize i = 0; i < n; i++)
     out[i] = (guint8) (samples[i] >> 4);
 }
+
+void
+g5120_samples_to_gray8_stretched (const guint16 *samples, gsize n, guint8 *out,
+                                  guint16 *lo_out, guint16 *hi_out)
+{
+  g_autofree guint32 *hist = g_new0 (guint32, G5120_SAMPLE_LEVELS);
+  gsize clip = n / G5120_STRETCH_CLIP_DIV;
+  gsize seen = 0;
+  guint lo = 0, hi = G5120_SAMPLE_LEVELS - 1;
+
+  for (gsize i = 0; i < n; i++)
+    hist[samples[i] & (G5120_SAMPLE_LEVELS - 1)]++;
+
+  /* lo is the sample at rank clip, hi the one at rank n - 1 - clip. */
+  for (lo = 0; lo < G5120_SAMPLE_LEVELS - 1; lo++)
+    if ((seen += hist[lo]) > clip)
+      break;
+  seen = 0;
+  for (hi = G5120_SAMPLE_LEVELS - 1; hi > 0; hi--)
+    if ((seen += hist[hi]) > clip)
+      break;
+
+  if (lo_out)
+    *lo_out = (guint16) lo;
+  if (hi_out)
+    *hi_out = (guint16) hi;
+
+  /* A flat frame has nothing to stretch; keep the plain mapping. */
+  if (hi <= lo)
+    {
+      g5120_samples_to_gray8 (samples, n, out);
+      return;
+    }
+
+  for (gsize i = 0; i < n; i++)
+    {
+      guint v = samples[i] & (G5120_SAMPLE_LEVELS - 1);
+      guint range = hi - lo;
+
+      if (v <= lo)
+        out[i] = 0;
+      else if (v >= hi)
+        out[i] = 255;
+      else
+        out[i] = (guint8) (((v - lo) * 255 + range / 2) / range);
+    }
+}

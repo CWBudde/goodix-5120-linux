@@ -545,6 +545,61 @@ test_decode_12bit_full_range (void)
     g_assert_cmphex (gray[i], ==, 0xff);
 }
 
+/* Expected values are computed by hand: (v - lo) * 255 / (hi - lo), rounded. */
+static void
+test_stretch_vector (void)
+{
+  const guint16 samples[] = { 0x234, 0x781, 0xc56, 0x9ab };
+  guint8 gray[4];
+  guint16 lo = 0, hi = 0;
+
+  /* n = 4 clips nothing: the bounds are the minimum and maximum. */
+  g5120_samples_to_gray8_stretched (samples, 4, gray, &lo, &hi);
+  g_assert_cmphex (lo, ==, 0x234);
+  g_assert_cmphex (hi, ==, 0xc56);
+  g_assert_cmpmem (gray, 4, ((const guint8[]) { 0x00, 0x85, 0xff, 0xbc }), 4);
+}
+
+static void
+test_stretch_clips_outliers (void)
+{
+  guint16 samples[200];
+  guint8 gray[200];
+  guint16 lo = 0, hi = 0;
+
+  /* Values 1000..1100 then 1000..1098, with a dead (0) and hot (0xfff) pixel
+   * in place of the first 1000 and 1001. 200 samples clip two from each end,
+   * so the bounds are 1001 (after 0, 1000) and 1099 (after 0xfff, 1100). */
+  for (guint i = 0; i < 200; i++)
+    samples[i] = 1000 + (i % 101);
+  samples[0] = 0;
+  samples[1] = 0xfff;
+  g5120_samples_to_gray8_stretched (samples, 200, gray, &lo, &hi);
+  g_assert_cmpuint (lo, ==, 1001);
+  g_assert_cmpuint (hi, ==, 1099);
+  g_assert_cmpuint (gray[0], ==, 0);        /* dead pixel clamps */
+  g_assert_cmpuint (gray[1], ==, 255);      /* hot pixel clamps */
+  g_assert_cmpuint (gray[2], ==, 3);        /* 1002: (1 * 255 + 49) / 98 */
+  g_assert_cmpuint (gray[100], ==, 255);    /* 1100 is above hi */
+  g_assert_cmpuint (gray[50], ==, 128);     /* 1050: (49 * 255 + 49) / 98 */
+}
+
+static void
+test_stretch_flat_frame (void)
+{
+  guint16 samples[64];
+  guint8 gray[64];
+  guint16 lo = 0, hi = 0;
+
+  for (guint i = 0; i < 64; i++)
+    samples[i] = 0x7a3;
+  g5120_samples_to_gray8_stretched (samples, 64, gray, &lo, &hi);
+  g_assert_cmphex (lo, ==, 0x7a3);
+  g_assert_cmphex (hi, ==, 0x7a3);
+  for (guint i = 0; i < 64; i++)
+    g_assert_cmphex (gray[i], ==, 0x7a);   /* plain >> 4 fallback */
+}
+
 static void
 test_decode_12bit_errors (void)
 {
@@ -641,6 +696,9 @@ main (int argc, char **argv)
   g_test_add_func ("/goodix5120/image/12bit-vector", test_decode_12bit_vector);
   g_test_add_func ("/goodix5120/image/12bit-full-range", test_decode_12bit_full_range);
   g_test_add_func ("/goodix5120/image/12bit-errors", test_decode_12bit_errors);
+  g_test_add_func ("/goodix5120/image/stretch-vector", test_stretch_vector);
+  g_test_add_func ("/goodix5120/image/stretch-clips-outliers", test_stretch_clips_outliers);
+  g_test_add_func ("/goodix5120/image/stretch-flat-frame", test_stretch_flat_frame);
   g_test_add_func ("/goodix5120/image/12bit-round-trip-64x80", test_decode_12bit_round_trip_64x80);
   g_test_add_func ("/goodix5120/image/frame-layouts", test_frame_layouts);
 

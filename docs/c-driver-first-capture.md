@@ -27,7 +27,8 @@ Run 31, a Go capture from the same bit-clear state, got an image. Every failing 
 host writes within ~1 ms; the current source paces ChangeCipherSpec/Finished by 60 ms again while keeping
 the settle and listen windows, so no two host writes are closer than 10 ms (`docs/protocol.md`, Run 31).
 Run 32 ran that bundle from Run 31's bit-set state: `0x20` drew and decrypted an image, then libfprint
-found no minutiae and saved no file (`docs/protocol.md`, Run 32).
+found no minutiae and saved no file (`docs/protocol.md`, Run 32). The current source replaces the
+`>> 4` grey mapping with a per-frame contrast stretch and logs its bounds.
 
 ## Prepare the build offline
 
@@ -62,10 +63,14 @@ ASan/UBSan; no compiler warnings; host linkage and the driver table check out. N
 **Superseded by Run 30:** `dist/goodix-owner-c-listen/`, the settle change plus the 5 s listen after
 the `0xd4` ACK, built from the working tree on `8cb3957`.
 
-**Paced-gaps bundle, 2026-10-02:** use `dist/goodix-owner-c-gaps/`, built offline from the working tree
-on `8cb3957` (driver diff hash in its `provenance.txt`). It adds the 60 ms pace between ChangeCipherSpec
-and Finished to the listen bundle. 254 C subtests pass normally and under ASan/UBSan; no compiler
-warnings; host linkage and the driver table check out. No agent accessed hardware.
+**Superseded by Run 32:** `dist/goodix-owner-c-gaps/`, the listen bundle plus the 60 ms pace between
+ChangeCipherSpec and Finished; exactly commit `70317c9`. It drew an image that failed minutiae detection.
+
+**Contrast-stretch bundle, 2026-10-02:** use `dist/goodix-owner-c-stretch/`, built offline from the working
+tree on `70317c9` (driver diff hash in its `provenance.txt`). It adds the per-frame 1st/99th-percentile
+contrast stretch to the gaps bundle. 257 C subtests pass normally and under ASan/UBSan; no compiler
+warnings; host linkage and the driver table check out. No agent accessed hardware. Besides the checks
+below, report the `image: stretched 12-bit samples LO..HI` line.
 
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
 and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
@@ -87,7 +92,7 @@ meson compile -C build
 build="$PWD/build"
 ```
 
-For the prepared bundle, set `build="$repo/dist/goodix-owner-c-gaps"` instead.
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-stretch"` instead.
 Do not install the library or change fprintd/PAM configuration for this run. The following tool
 reads compiled driver ID tables without opening USB:
 
@@ -124,7 +129,7 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build="$repo/dist/goodix-owner-c-gaps"
+build="$repo/dist/goodix-owner-c-stretch"
 umask 077
 run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \

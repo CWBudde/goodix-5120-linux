@@ -1289,6 +1289,12 @@ listen bundle (unpaced final flight) from this bit-set state separates the two. 
 is a separate image-quality question: the driver maps 12-bit samples to 8 bits with a plain `>> 4`,
 with no calibration frame or contrast stretch.
 
+Offline follow-up (2026-10-02): the driver now stretches each frame's 1st..99th-percentile sample range
+to 0..255 before the ×3 resize, and logs the two bounds (not pixels) as
+`image: stretched 12-bit samples LO..HI to 0..255`. Run 22's Go frames spanned 52–179 after `>> 4`,
+so the stretch roughly doubles the contrast NBIS sees. It is not a calibration; whether NBIS then finds
+minutiae, and whether ridge polarity needs `FPI_IMAGE_COLORS_INVERTED`, are hardware questions.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

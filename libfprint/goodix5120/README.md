@@ -12,7 +12,9 @@ intervals, then stopped at an overly strict immediate MCU-state gate. Both keybo
 The corrected gate accepts the observed status `0x00` after authentication and positive `0xd4` ACK;
 Run 27 then reached the touch, but `0x20` drew no image and the TLS bit stayed clear; the final
 flight and `0xd4` follow the Go timing, which Runs 28/29 showed was not enough. The current source
-also listens 5 s after the `0xd4` ACK before `0xae` (254 offline tests). The image path has not worked live.**
+also listens 5 s after the `0xd4` ACK before `0xae` and paces every pair of host records. Run 32 drew and
+decrypted the first C image, but NBIS found no minutiae in its `>> 4` frame; the current source stretches each
+frame's contrast instead (257 offline tests). No C image has passed minutiae detection yet.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
@@ -186,8 +188,10 @@ Threshold rules (Phase 5d, from `dump.pcapng` and the vendor debug log):
 
 Image: 7693 bytes of plaintext = an 8-byte header, 7680 bytes of samples and a 5-byte trailer (Run 20). A bare
 7680-byte frame is also accepted, as `image.TrimFrame` accepts it; any other length is refused rather than guessed.
-The samples are 12-bit, packed four to six bytes, **64 columns × 80 rows**, reduced to 8 bits with `>> 4` as the Go
-reference does, then enlarged ×3 to 192 × 240 with pixman, as `aes4000` does for its small press sensor.
+The samples are 12-bit, packed four to six bytes, **64 columns × 80 rows**, stretched to 8 bits per frame: the samples at
+the 1st and 99th percentile become 0 and 255, values between map linearly and outliers clamp
+(`g5120_samples_to_gray8_stretched`; a flat frame falls back to the Go reference's `>> 4`). The debug log reports
+the two bounds, never pixels. The frame is then enlarged ×3 to 192 × 240 with pixman, as `aes4000` does for its small press sensor.
 
 ## Tests (offline, no device)
 
@@ -254,7 +258,8 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
    `G5120_ENLARGE_FACTOR`, `G5120_BZ3_THRESHOLD` (24) and the default 5 enrol stages are unvalidated guesses.
 2. **Ridge polarity and contrast.** Unknown whether ridges are dark. If they are not, set
    `FPI_IMAGE_COLORS_INVERTED`. `>> 4` uses half the range: Run 22's three frames span 52–179 after it, with a
-   standard deviation of about 23.
+   standard deviation of about 23, and Run 32's `>> 4` frame yielded no minutiae. The per-frame stretch is not a
+   calibration: without a background frame, uneven sensor response is stretched along with the ridges.
 3. **Timing.** The live Go runs waited seconds between steps. The vendor waits for nothing. This driver waits for
    each reply plus 200 ms of quiet. The handshake itself has no host-side waits, which is the part that mattered
    (Runs 11 and 17).
@@ -299,7 +304,8 @@ bundle `dist/goodix-owner-c-pacing/` also failed with an owner-reported EC crash
 is unavailable. The reviewed minimum-interval driver `2b77542` completed TLS in Run 26 but rejected
 the immediate status `0x00`; retain that bundle for diagnosis. `d6a9701` (Run 27) reached `0x20` but got
 no image, as did the Go-timed settle build (Runs 28/29). The current source, which adds a 5 s
-listen after the `0xd4` ACK, has 254 passing
+listen after the `0xd4` ACK, drew Run 32's image with paced records; the current source adds the
+contrast stretch and has 257 passing
 standalone C tests normally and under ASan/UBSan (leak detection disabled). Use the new revision
 prepared in the capture runbook. No successful live C capture is established yet.
 

@@ -319,4 +319,20 @@ void g5120_samples_to_gray8 (const guint16 *samples,
                              gsize          n,
                              guint8        *out);
 
+#define G5120_SAMPLE_LEVELS     4096
+#define G5120_STRETCH_CLIP_DIV  100
+
+/* Stretches the frame's own sample range to 0..255: the samples at the 1st
+ * and 99th percentile (rank n/100 from either end) become 0 and 255, values
+ * between map linearly with rounding, values outside clamp. Run 32's >> 4
+ * frame found no minutiae; the sensor's raw range is unknown, so this is a
+ * per-frame normalisation, not a calibration. A frame whose two percentiles
+ * coincide falls back to g5120_samples_to_gray8. The chosen bounds go to
+ * @lo_out / @hi_out when non-NULL. */
+void g5120_samples_to_gray8_stretched (const guint16 *samples,
+                                       gsize          n,
+                                       guint8        *out,
+                                       guint16       *lo_out,
+                                       guint16       *hi_out);
+
 G_END_DECLS

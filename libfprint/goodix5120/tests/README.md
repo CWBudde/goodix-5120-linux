@@ -82,8 +82,8 @@ ServerHello packet at its deadline, and exhaust the budget during allocation bef
 Noise cannot shorten/restart the interval; fragments cannot bypass alert handling; no further write or
 successful open may follow budget exhaustion. These exercise the driver, not the EC's firmware timing.
 
-The driver suite contains 170 subtests; the protocol and TLS helpers add 43. Shared protocol checks add 39,
-and corpus-reader checks add two (254 total).
+The driver suite contains 170 subtests; the protocol and TLS helpers add 46. Shared protocol checks add 39,
+and corpus-reader checks add two (257 total).
 
 ## Shared independent fixtures
 
@@ -95,8 +95,10 @@ use corpus data as their valid starting point and still require no later OUT sub
 
 Both languages consume the same literal FDT arms, events and event-to-arm pairs, including Run 22, saturation,
 uncovered zones and both deltas. Synthetic image vectors check every 12-bit sample and grayscale pixel in bare
-and wrapped layouts, geometry, trimming offsets and adjacent invalid lengths. Expected values never come from
-production builders. Go FDT integration tests live in `internal/testfixtures` to preserve the protocol package's
+and wrapped layouts, geometry, trimming offsets and adjacent invalid lengths, through the shared `>> 4` mapping.
+The driver's per-frame contrast stretch is C-only: hand-computed vectors cover rounding, percentile clipping of a
+dead and a hot pixel, and the flat-frame fallback, and the driver scenarios expect the stretched pixels.
+Expected values never come from production builders. Go FDT integration tests live in `internal/testfixtures` to preserve the protocol package's
 standard-library-only import rule.
 
 Readers fail on missing/duplicate/incomplete records and malformed values. The C fixture path is configured by

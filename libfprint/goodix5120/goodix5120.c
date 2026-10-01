@@ -1526,6 +1526,7 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
         g_autoptr(FpImage) img = NULL;
         const guint8 *packed;
         gboolean wrapped;
+        guint16 lo, hi;
 
         packed = g5120_frame_samples (self->plain->data, self->plain->len, &wrapped, &error);
         if (packed == NULL ||
@@ -1539,7 +1540,9 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
                 wrapped ? "8-byte header + samples + 5-byte trailer" : "bare samples");
 
         img = fp_image_new (G5120_IMG_WIDTH, G5120_IMG_HEIGHT);
-        g5120_samples_to_gray8 (samples, G5120_IMG_SAMPLES, img->data);
+        g5120_samples_to_gray8_stretched (samples, G5120_IMG_SAMPLES, img->data, &lo, &hi);
+        /* Two percentile bounds, not pixels: they show the frame's contrast. */
+        fp_dbg ("image: stretched 12-bit samples %u..%u to 0..255", lo, hi);
         memset (samples, 0, G5120_IMG_SAMPLES * sizeof (guint16));
         memset (self->plain->data, 0, self->plain->len);
         g_byte_array_set_size (self->plain, 0);

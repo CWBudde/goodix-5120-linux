@@ -392,8 +392,9 @@ test_enrollment (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->handshakes, ==, 1);
   g_assert_cmpuint (f->usb.notify.last_image->width, ==, 192);
   g_assert_cmpuint (f->usb.notify.last_image->height, ==, 240);
-  /* Literal 12-bit decoding expectations, carried through fake resize. */
-  const guint8 want[] = { 0x23, 0x78, 0xc5, 0x9a };
+  /* Literal expectations for samples 0x234 0x781 0xc56 0x9ab after the
+   * per-frame stretch (bounds 0x234..0xc56), carried through fake resize. */
+  const guint8 want[] = { 0x00, 0x85, 0xff, 0xbc };
   for (guint i = 0; i < 4; i++)
     g_assert_cmphex (f->usb.notify.last_image->data[i * 3], ==, want[i]);
 }
@@ -1209,7 +1210,7 @@ test_image_final_read (Fixture *f, gconstpointer data)
       g_assert_no_error (f->usb.notify.error);
       g_assert_cmpuint (f->usb.notify.session_errors, ==, 0);
       g_assert_cmpuint (f->usb.notify.images, ==, 1);
-      const guint8 want[] = { 0x23, 0x78, 0xc5, 0x9a };
+      const guint8 want[] = { 0x00, 0x85, 0xff, 0xbc }; /* stretched */
       for (guint i = 0; i < G_N_ELEMENTS (want); i++)
         g_assert_cmphex (f->usb.notify.last_image->data[i * 3], ==, want[i]);
     }
