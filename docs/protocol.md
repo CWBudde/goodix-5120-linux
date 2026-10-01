@@ -1346,6 +1346,8 @@ frame.** This is the first complete C capture.
   image was handed to the example; libfprint does not log the minutiae count.
 - `0x34` finger-up 4.7 s later (header `00 02 00 00`, readings `[369 395 343 371 341 371]`, within 1
   of Run 32's untouched readings); deactivation and close completed; the frame was written.
+- Saved file: header `P5 192 240 255`, mode `600`, 46095 bytes — the 64×80 frame enlarged ×3, private
+  to root as the runbook intends.
 
 **Open:** whether the stretch was needed, or whether Run 32's failure was that frame's touch. The
 minutiae count and quality per frame, ridge polarity, and enrollment/verification (Phase 6c) are not
