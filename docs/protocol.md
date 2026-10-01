@@ -1353,6 +1353,53 @@ frame.** This is the first complete C capture.
 minutiae count and quality per frame, ridge polarity, and enrollment/verification (Phase 6c) are not
 established by one saved frame.
 
+### Run 35 — 2026-10-02 01:47, first C enrollment: 5 of 5 stages in one session (observed)
+
+The owner ran `examples/enroll` from `dist/goodix-owner-c-enroll/` (the same compiled driver as Run 34,
+commit `17af857`), right middle finger, twelve minutes after Run 34, no EC reset.
+**Result: enrollment completed (5/5) with one retry, all in one TLS session; the template was saved
+and close completed without error.**
+
+- **Start state was Run 34's end state:** pre-handshake `0xae` byte 1 `0x02`, counter `15 15`. Init and
+  the paced handshake matched Run 34 to the millisecond pattern (host CCS → Finished 60 ms, settle 10 ms,
+  `0xd4` ACK `0x01`, 5 s silent listen); post-listen byte 1 `0x02`, counter `17 17`.
+- **Runbook defect, not a device one:** after open the example waited 5.5 minutes for an invisible
+  answer. Image devices declare `FP_DEVICE_FEATURE_UPDATE_PRINT`, so `enroll` asks a Y/N question with
+  block-buffered `printf` behind `tee`. Answering `n` continued. The runbook now uses `stdbuf -oL`.
+  The idle TLS session survived the 5.5 minutes: the first `0x32` arm after it ACKed in 2 ms.
+- **Six touch → image → lift rounds in one session**, every one with `0x20` ACKed in 1–2 ms and the
+  7749-byte record arriving 86–87 ms after the command, decoded as `7693 plaintext bytes`.
+
+  | Round | Down header / readings | Stretch bounds | Minutiae | Stage |
+  |---|---|---|---|---|
+  | 1 | `3f` `[290 264 184 234 166 239]` | 1032..2504 | ok, 21 ms | 1/5 |
+  | 2 | `3f` `[278 272 221 278 231 262]` | 1160..2511 | ok, 30 ms | 2/5 |
+  | 3 | `3f` `[302 333 213 247 220 252]` | 1151..2676 | **none found**, retry | 2/5 |
+  | 4 | `2f` `[272 275 251 258 301 321]` | 1108..2779 | ok, 18 ms | 3/5 |
+  | 5 | `3f` `[296 334 227 272 221 261]` | 1131..2552 | ok, 23 ms | 4/5 |
+  | 6 | `3f` `[257 284 240 275 232 253]` | 1079..2500 | ok, 21 ms | 5/5 |
+
+  libfprint reports the retry as `Minutiae detection failed, please retry` and continues. It is a
+  quality signal, not a protocol fault. Round 4's touch flags `0x2f` again gave zone 4 the untouched up
+  threshold `0x19`.
+- **Down thresholds follow the last up event.** Each re-arm uses that lift's readings `>> 1`
+  (e.g. up `[367 394 339 368 336 368]` → down `b7 c5 a9 b8 a8 b8`). Untouched readings stayed within
+  `[329..370 379..396 339..344 368..372 336..342 368..372]`.
+- **First base-invalid event in a C run, re-armed correctly.** After round 4's lift, the readings
+  `[329 379 …]` (zone 0 about 40 counts low: finger not fully off) gave down arm `a4 bd a9 b8 aa b9`.
+  70 ms later the EC sent `0x32` header `80 00 00 00` with readings `[370 396 344 372 342 372]`. The
+  driver re-armed at once with `b9 c6 ac ba ab ba` (those readings `>> 1`), and the next touch worked.
+- The final stage completed while `0x34` was armed. libfprint logged its own `Deactivating image device
+  while it is not idle` warning (the image-device class deactivates as soon as the last stage completes)
+  and cancelled the up wait. As designed, close sent nothing (`dev_close`: no session-ending command is
+  known), so the EC was left with the TLS session open and `0x34` armed.
+- `Error loading storage, assuming it is empty` is the example's first-run message (no
+  `test-storage.variant` yet); no save error followed. Keyboard: no problems reported.
+
+**Open:** verification, both genuine and impostor, and the match scores against `bz3_threshold` 24.
+Also open: whether the next open behaves the same from an EC left with `0x34` armed. Runs 20–22 reopened
+after Go sessions, not after this C close.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

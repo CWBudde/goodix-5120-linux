@@ -4,6 +4,9 @@ Phase 6c's first hardware check after Run 34's first complete C capture
 ([first-capture procedure](c-driver-first-capture.md)). Agents must not run it. It uses libfprint's own
 pinned `examples/enroll` and `examples/verify`; this is not fprintd or PAM, and nothing is installed.
 
+**Run 35** (`docs/protocol.md`) completed enrollment: 5/5 stages in one session, one NBIS retry,
+right middle finger (`7`). Its template is in the owner's private run directory. Verification is pending.
+
 ## The bundle
 
 `dist/goodix-owner-c-enroll/` (ignored by Git, local only) is the **same compiled build** as

@@ -16,8 +16,8 @@ also listens 5 s after the `0xd4` ACK before `0xae` and paces every pair of host
 that pacing is what lets `0x20` answer (an unpaced final flight from the same EC state drew nothing). Run 32 drew and
 decrypted the first C image, but NBIS found no minutiae in its `>> 4` frame; the current source stretches each
 frame's contrast instead (257 offline tests). Run 34 ran that build from a bit-clear EC: the first
-complete C capture, with the stretched frame passing minutiae detection and saved. Enrollment and
-matching are untested.**
+complete C capture, with the stretched frame passing minutiae detection and saved. Run 35 enrolled a
+finger with libfprint's `enroll` example (5/5 stages, one retry, in one session). Matching is untested.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
