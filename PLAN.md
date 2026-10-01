@@ -428,6 +428,15 @@ change or arbitrary delay is warranted. See Run 25 in `docs/protocol.md` for lim
       its final error is not available. This reviewed revision has not run on hardware; targeted structure/packet diagnostics
       above remain open, and the owner review/health gate is unchanged.
 
+**Prepared for the owner's requested test, 2026-10-01:** the owner reports the EC healthy and
+requests one real-hardware test of reviewed driver `2b77542`. Exact committed sources now compile
+against pinned libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf` without compiler warnings.
+Fresh normal and ASan/UBSan runs pass all 245 C subtests (leak detection disabled). The ignored
+bundle `dist/goodix-owner-c-2b77542/` has verified source hashes, binary checksums, host library
+resolution and a driver table containing only `27c6:5120`. No hardware access or system installation
+occurred during preparation. The [capture runbook](docs/c-driver-first-capture.md) now uses this
+revision; the hardware result and targeted diagnosis task above remain pending.
+
 ### 6c — Portability, authentication quality, and repeatable checks
 
 - [ ] Derive DAC settings and FDT delta from OTP, or explicitly restrict this prototype to a supported

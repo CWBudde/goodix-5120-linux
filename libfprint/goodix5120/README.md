@@ -282,7 +282,12 @@ The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b37
 with only `goodix5120` enabled after aligning OUT submissions with the Go reference. The candidate
 in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence but reproduced the TLS rejection
 in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix. The record-pacing
-candidate that follows it has no owner bundle yet; it needs review and a rebuild against pinned libfprint first.
+bundle `dist/goodix-owner-c-pacing/` also failed with an owner-reported EC crash; its final error
+is unavailable. The reviewed minimum-interval driver `2b77542` has now been rebuilt against pinned
+libfprint, with all 245 standalone C tests passing normally and under ASan/UBSan (leak detection
+disabled). The new bundle is `dist/goodix-owner-c-2b77542/`, with verified host linkage, a driver
+table containing only `27c6:5120`, and source/binary provenance. The owner requested one test after
+reporting a healthy EC; no successful C capture or failure cause is established yet.
 
 As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
 in, 40 s power-button hold if the previous session ended badly):

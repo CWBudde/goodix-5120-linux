@@ -12,8 +12,9 @@ The owner also reports an EC crash using `dist/goodix-owner-c-pacing/`; its fina
 available. Do not repeat either bundle. The reviewed source tests a 60 ms minimum interval between
 host records while reading IN, preserving that deadline across unrelated input and completing partial
 TLS records before more output. This is an unproven timing hypothesis, not a confirmed vendor requirement.
-**Further hardware attempts remain deferred pending targeted diagnostics and review.** The procedure
-below applies only to a future reviewed build; its preparation alone does not clear the gate.
+The owner has now requested one test of reviewed driver `2b77542` after reporting a healthy EC.
+The fresh build below is prepared for that test. The earlier failed bundles remain superseded;
+targeted TLS-structure diagnostics and the live failure's cause remain open.
 
 ## Prepare the build offline
 
@@ -26,6 +27,13 @@ are included. It predates the review refinements and must not be used to test th
 The bundle is local, not distributed with the repository. Prepare a new revision-labelled bundle
 after review and record its source revision and checksums.
 
+**Prepared 2026-10-01:** `dist/goodix-owner-c-2b77542/` contains exact driver commit
+`2b77542ea3c8cc8c951123d6637f7a877deb5694` and the pinned libfprint below, compiled in Ubuntu 26.04.
+All 245 C subtests pass normally and under ASan/UBSan (leak detection disabled). Host linkage resolves
+the bundle's library without missing dependencies, and the driver table lists only `27c6:5120`.
+`provenance.txt`, source hashes, build/test logs and `SHA256SUMS` record preparation; hardware outcome
+is pending. The capture executable was not invoked, and no hardware was accessed during preparation.
+
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
 and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
 
@@ -35,7 +43,7 @@ git clone https://gitlab.freedesktop.org/libfprint/libfprint.git /tmp/goodix-own
 cd /tmp/goodix-owner-libfprint
 git checkout --detach 6f9479c3d55f847c1b3769f28ceb99227f9858cf
 driver_source=$(mktemp -d /tmp/goodix-owner-driver-XXXXXX)
-git -C "$repo" archive e8930b49612222c55f7ffc228207f900b78aa313 libfprint/goodix5120 \
+git -C "$repo" archive 2b77542ea3c8cc8c951123d6637f7a877deb5694 libfprint/goodix5120 \
   | tar -x -C "$driver_source"
 mkdir -p libfprint/drivers/goodix5120
 cp "$driver_source"/libfprint/goodix5120/goodix5120*.[ch] libfprint/drivers/goodix5120/
@@ -46,7 +54,7 @@ meson compile -C build
 build="$PWD/build"
 ```
 
-For the prepared bundle, set `build="$repo/dist/goodix-owner-c-packet-writes"` instead.
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-2b77542"` instead.
 Do not install the library or change fprintd/PAM configuration for this run. The following tool
 reads compiled driver ID tables without opening USB:
 
@@ -82,7 +90,7 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build=/absolute/path/to/the/new-reviewed-bundle
+build="$repo/dist/goodix-owner-c-2b77542"
 umask 077
 run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
