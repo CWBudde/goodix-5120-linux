@@ -1,15 +1,16 @@
 # goodix5120: libfprint driver for the Goodix `27c6:5120` behind an ITE EC
 
 This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerprint reader in the Huawei MateBook
-`HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its command sequence. Its actual live TLS bytes remain under investigation.
+`HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its command sequence.
 
 **Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. Run 23's `0xe4` check
 is corrected; Runs 24 and 25 passed the full init but the EC rejected the first TLS server flight with
 `decode_error`. Both keyboards survived. Completed 64-byte OUT writes did not resolve the rejection;
-a successful capture remains pending. The owner reports the original pacing bundle also crashed
-the EC; its final error is not available. The reviewed candidate tests a 60 ms minimum interval between
-TLS records of a host flight, reading IN throughout; it has offline evidence only (docs/protocol.md, "The gap between
-the host's TLS records").**
+a successful capture remains pending. The original pacing bundle also crashed the EC; its final error
+is unavailable. Run 26's reviewed `2b77542` bundle completed authenticated TLS with 60 ms host-record
+intervals, then stopped at an overly strict immediate MCU-state gate. Both keyboards worked.
+The corrected gate accepts the observed status `0x00` after authentication and positive `0xd4` ACK;
+251 offline tests pass, but the corrected image path has not run live.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
@@ -45,7 +46,11 @@ driver is built around that:
   after completion. Short/zero completions stop the frame; all packets share its original write budget.
 - **Experimental TLS pacing.** Between records of a host flight, a 60 ms interval permits alert reads.
   Stale input preserves the deadline; fragmented TLS input is completed before more output. The total
-  handshake budget bounds all states and transfers. The original pacing experiment failed live; this reviewed revision has offline evidence only.
+  handshake budget bounds all states and transfers. Run 26 completed TLS with these intervals;
+  their causal role and the required minimum remain unknown.
+- **Immediate MCU state.** After authenticated TLS, completed host records and a positive `0xd4` ACK,
+  the final reply must be 20 bytes and have the TLS bit set or exactly status `0x00` (Run 26).
+  This exception does not reinterpret the clear bit. Other bit-clear states, including stuck `0x08`, stop open.
 - **No USB reset.** `goodixmoc` resets its device on open; this driver does not, because what a reset does to the EC
   is unknown.
 - **Driver-level redaction:** the driver withholds the PSK, `0xe4`/`0xa6` reply bodies, TLS bodies, and image data.
@@ -143,7 +148,7 @@ d0 00 00                      no ACK: the EC opens a TLS handshake
   <- ClientKeyExchange, ChangeCipherSpec, Finished   three transfers, all read
   -> ChangeCipherSpec, Finished        one 0xb0 pack each
 d4 00 00                      ACK only
-ae 55 a2 52 00 00             data only; isTlsConnected (byte 1 bit 1) expected
+ae 55 a2 52 00 00             data only; TLS bit set or immediate status 00 after authenticated TLS + d4 ACK
 drain
 ```
 
@@ -283,14 +288,14 @@ with only `goodix5120` enabled after aligning OUT submissions with the Go refere
 in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence but reproduced the TLS rejection
 in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix. The record-pacing
 bundle `dist/goodix-owner-c-pacing/` also failed with an owner-reported EC crash; its final error
-is unavailable. The reviewed minimum-interval driver `2b77542` has now been rebuilt against pinned
-libfprint, with all 245 standalone C tests passing normally and under ASan/UBSan (leak detection
-disabled). The new bundle is `dist/goodix-owner-c-2b77542/`, with verified host linkage, a driver
-table containing only `27c6:5120`, and source/binary provenance. The owner requested one test after
-reporting a healthy EC; no successful C capture or failure cause is established yet.
+is unavailable. The reviewed minimum-interval driver `2b77542` completed TLS in Run 26 but rejected
+the immediate status `0x00`; retain that bundle for diagnosis. The corrected gate has 251 passing
+standalone C tests normally and under ASan/UBSan (leak detection disabled). Use the new revision
+prepared in the capture runbook. No successful live C capture is established yet.
 
-As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
-in, 40 s power-button hold if the previous session ended badly):
+As with `--bisect`, the owner runs this with an **external keyboard attached** and a passing firmware
+health check. Recovery is required for a failed health check or an unfinished/crashed TLS session;
+Run 26's local gate failure alone is not evidence that recovery is needed:
 
 1. Check the EC answers with `goodix-probe --bisect --read-state` first, per `docs/bisect-runbook.md`.
 2. Build libfprint with only this driver. Run a single capture with libfprint's `examples/img-capture` (not fprintd),

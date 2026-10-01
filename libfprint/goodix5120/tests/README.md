@@ -44,11 +44,15 @@ Sweeps inject unplug at every open transfer and unplug, I/O failure or deactivat
 with a two-piece image. State-entry hooks also cancel both FDT states in each direction and all three capture states.
 
 Init regressions inject empty, truncated and oversized data at every init exchange, including both firmware/reset
-replies and the final MCU state. They change each documented status/header byte, chip ID and TLS-connected bit,
+replies and the final MCU state. They change each documented status/header byte, chip ID and invalid MCU statuses,
 then assert failed open with no further OUT submission. Firmware permits exactly the supported name with an optional
 NUL; hidden suffixes are rejected. Positive cases vary synthetic hashes, OTP and MCU counters to keep
 undocumented fields opaque. The PSK reply requires Run 8's nine-byte envelope plus a 32-byte synthetic hash;
 dedicated regressions accept that recorded shape and reject the old request-echo fixture.
+Run 26's literal immediate MCU status `0x00` is accepted only after authenticated TLS and a positive
+`0xd4` ACK, then exercised through encrypted capture, lift and close. Separate cases reject bit-clear
+statuses `0x08`, `0x01`, `0x10`, `0x11` and a negative `0xd4` ACK without further writes. Status `0x00`
+does not change the TLS-bit decoder or establish when that bit will become set.
 
 Session-failure regressions cover invalid image layout, timeout/read-budget exhaustion, malformed TLS records,
 corrupt ciphertext, OUT/IN errors and I/O failure during deactivation. Repeated activation must fail without
@@ -74,8 +78,8 @@ and exhaust the budget during allocation before the first OUT submission.
 Noise cannot shorten/restart the interval; fragments cannot bypass alert handling; no further write or
 successful open may follow budget exhaustion. These exercise the driver, not the EC's firmware timing.
 
-The driver suite contains 161 subtests; the protocol and TLS helpers add 43. Shared protocol checks add 39,
-and corpus-reader checks add two (245 total).
+The driver suite contains 167 subtests; the protocol and TLS helpers add 43. Shared protocol checks add 39,
+and corpus-reader checks add two (251 total).
 
 ## Shared independent fixtures
 

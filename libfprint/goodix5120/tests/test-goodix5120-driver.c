@@ -1567,7 +1567,10 @@ test_init_reply_field (Fixture *f, gconstpointer data)
   const InitReply *reply = &init_replies[field->reply];
   guint8 bytes[65];
   memcpy (bytes, reply->bytes, sizeof (bytes));
-  bytes[field->offset] ^= reply->cmd == 0xae ? 2 : 1;
+  if (reply->cmd == 0xae)
+    bytes[field->offset] = 0x08; /* known stuck state, not immediate status 0x00 */
+  else
+    bytes[field->offset] ^= 1;
   replace_init_reply (f, reply, bytes, reply->len);
   assert_init_rejected (f, reply->cmd);
 }
@@ -1593,6 +1596,65 @@ test_psk_reply_request_echo (Fixture *f, gconstpointer data)
   const guint8 bytes[41] = { 0x03, 0x00, 0x02, 0xbb, 0x20, 0x00, 0x00, 0x00 };
   replace_init_reply (f, &init_replies[3], bytes, sizeof (bytes));
   assert_init_rejected (f, 0xe4);
+}
+
+static void
+test_immediate_mcu_zero_status (Fixture *f, gconstpointer data)
+{
+  /* Owner's 2026-10-01 08:03:59 reply after authenticated TLS and the d4 ACK.
+   * This is non-secret state data, not a TLS-bit-set interpretation. */
+  static const guint8 reply[] = {
+    0x02, 0x00, 0x31, 0x03, 0x00, 0x00, 0x01, 0x00, 0x90, 0x63,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x04,
+  };
+
+  (void) data;
+  replace_init_reply (f, &init_replies[10], reply, sizeof (reply));
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+  g_assert_true (SSL_is_init_finished (f->client));
+  g_assert_null (f->usb.pending);
+
+  f->usb.notify.defer_processing = TRUE;
+  start_operation (f);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+  g_assert_cmpuint (f->usb.notify.fingers_on, ==, 1);
+  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 1);
+  fake_processing_complete (&f->usb);
+  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.closes, ==, 1);
+  g_assert_false (f->usb.claimed);
+  g_assert_null (f->usb.pending);
+}
+
+static void
+test_immediate_mcu_invalid_status (Fixture *f, gconstpointer data)
+{
+  guint8 reply[20];
+
+  memcpy (reply, init_replies[10].bytes, sizeof (reply));
+  reply[1] = GPOINTER_TO_UINT (data);
+  replace_init_reply (f, &init_replies[10], reply, sizeof (reply));
+  assert_init_rejected (f, 0xae);
+}
+
+static void
+test_tls_established_negative_ack (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  before_command (f, 0xd4);
+  g_assert_true (fake_usb_step (&f->usb));
+  fake_drop_replies (&f->usb);
+  queue_ack (f, 0xd4, 0);
+  assert_init_rejected (f, 0xd4);
 }
 
 static void
@@ -1674,6 +1736,18 @@ main (int argc, char **argv)
       memcpy (r->bytes, bytes->data, r->len);
     }
   g_test_add ("/goodix5120/driver/shared-init", Fixture, NULL, setup, test_shared_init, teardown);
+  g_test_add ("/goodix5120/driver/mcu-state/immediate-zero", Fixture, NULL, setup,
+              test_immediate_mcu_zero_status, teardown);
+  static const guint rejected_mcu_statuses[] = { 0x08, 0x01, 0x10, 0x11 };
+  for (guint i = 0; i < G_N_ELEMENTS (rejected_mcu_statuses); i++)
+    {
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/mcu-state/reject-%02x",
+                                               rejected_mcu_statuses[i]);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (rejected_mcu_statuses[i]), setup,
+                  test_immediate_mcu_invalid_status, teardown);
+    }
+  g_test_add ("/goodix5120/driver/tls-established-negative-ack", Fixture, NULL, setup,
+              test_tls_established_negative_ack, teardown);
   g_test_add ("/goodix5120/driver/packet-writes", Fixture, NULL, setup,
               test_packet_writes, teardown);
   g_test_add ("/goodix5120/driver/packet-budget", Fixture, NULL, setup,

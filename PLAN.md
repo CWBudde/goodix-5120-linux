@@ -266,12 +266,14 @@ sudo ownership check above, completing Phase 6a. Phase 6b / 6c gates still apply
 - [x] **Validate init reply contents before continuing.** `xchg_recv_cb` previously accepted any
       correctly framed data payload with the expected command after its ACK. Validate known response
       lengths and status fields, including chip ID. `OPEN_LOG_MCU_STATE` must refuse a truncated state
-      or an unset `isTlsConnected` bit instead of succeeding with a warning. Tests must verify that
+      or an unexpected post-handshake status instead of succeeding with a warning. Tests must verify that
       no subsequent command is written after a rejected response.
       **Done 2026-09-30:** both firmware replies require the exact supported name with an optional
       trailing NUL; all init data replies require their documented lengths. Reset / DAC / config
       status bytes, chip ID `0x2504`, and the PSK-hash type/length header are checked before advancing
-      the exchange. The final 20-byte MCU state must report TLS connected. Hash, OTP and MCU counters
+      the exchange. The original final-state gate required the TLS-connected bit; Run 26 corrects
+      that assumption for the immediate status `0x00` after authenticated TLS and a positive `0xd4` ACK.
+      Hash, OTP and MCU counters
       remain opaque; no new device commands were introduced. **Run 23 correction:** the PSK reply's
       observed nine-byte prefix is recorded in Run 8; the prior eight-byte request-echo header and
       supposed trailing byte were a transcription error (see the owner-run follow-up below).
@@ -425,8 +427,9 @@ change or arbitrary delay is warranted. See Run 25 in `docs/protocol.md` for lim
       when an alert is observed, without assigning causality. Two original and eleven additional regressions
       cover flight boundaries, immediate/split alerts, noise, elapsed intervals and budget failures.
       **245 C subtests pass offline.** The owner reports the original pacing bundle crashed the EC;
-      its final error is not available. This reviewed revision has not run on hardware; targeted structure/packet diagnostics
-      above remain open, and the owner review/health gate is unchanged.
+      its final error is not available. Run 26 subsequently completed TLS with the reviewed revision;
+      targeted structure/packet diagnostics remain open as follow-up evidence, not a demonstrated blocker
+      to the immediate MCU-state fix. The owner review/health gate is unchanged.
 
 **Prepared for the owner's requested test, 2026-10-01:** the owner reports the EC healthy and
 requests one real-hardware test of reviewed driver `2b77542`. Exact committed sources now compile
@@ -435,7 +438,22 @@ Fresh normal and ASan/UBSan runs pass all 245 C subtests (leak detection disable
 bundle `dist/goodix-owner-c-2b77542/` has verified source hashes, binary checksums, host library
 resolution and a driver table containing only `27c6:5120`. No hardware access or system installation
 occurred during preparation. The [capture runbook](docs/c-driver-first-capture.md) now uses this
-revision; the hardware result and targeted diagnosis task above remain pending.
+revision. The owner result is recorded below; targeted diagnostics remain follow-up work.
+
+**Run 26, 2026-10-01 08:03:** driver `2b77542` completed authenticated TLS (four records each way),
+received `0xd4` ACK status `0x01`, and immediately received a valid 20-byte MCU reply with status
+`0x00`. The local TLS-bit gate then rejected open before finger arming or image capture. Both keyboards
+still typed after exit; this log does not establish an EC wedge or a need to reboot. No post-exit
+firmware health check is recorded. The 60 ms intervals are observed, but their causal role/minimum is unknown.
+
+**Immediate MCU-state correction:** accept exactly status `0x00` at that post-authentication gate,
+while retaining exact length, authenticated peer Finished, completed host records, and positive
+`0xd4` ACK requirements. Other bit-clear statuses, including stuck `0x08`, remain rejected. The bit
+decoder, commands, delays and retries are unchanged; Go does not make this immediate query.
+Independent review found no blocker. The literal owner reply now passes a synthetic encrypted
+capture → lift → close regression; four rejected-status cases and a negative `0xd4` ACK guard refusal.
+All 251 C subtests pass normally and under ASan/UBSan (leak detection disabled); `just check` passes
+with existing formatting listings. Actual C image capture and Phase 6c remain unverified.
 
 ### 6c — Portability, authentication quality, and repeatable checks
 

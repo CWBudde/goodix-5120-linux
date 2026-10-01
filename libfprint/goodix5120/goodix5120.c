@@ -1083,16 +1083,23 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case OPEN_LOG_MCU_STATE:
-      /* Only isTlsConnected (byte 1, bit 1) is pinned down. A local TLS
-       * handshake alone does not establish that the EC accepted the session. */
-      if (self->x_data->len != 20 || !(self->x_data->data[1] & 0x02))
+      /* This state follows authenticated peer Finished, completed host records
+       * and a positive d4 ACK. The owner's 08:03 run then returned status 00
+       * immediately, despite completing TLS. Do not infer that its TLS bit is
+       * set or invent a delay/retry. Accept that observed value here only;
+       * other bit-clear states, including the known stuck 08, remain errors. */
+      if (self->x_data->len != 20 ||
+          (!(self->x_data->data[1] & 0x02) && self->x_data->data[1] != 0x00))
         {
           fpi_ssm_mark_failed (ssm,
                                fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                                         "MCU state does not report isTlsConnected "
-                                                         "after the handshake; refusing to activate"));
+                                                         "unexpected MCU state after authenticated TLS "
+                                                         "and the TLS-established ACK; refusing to activate"));
           return;
         }
+      if (self->x_data->data[1] == 0x00)
+        fp_info ("immediate MCU status 0x00: TLS status bit is clear; continuing after "
+                 "authenticated TLS and the positive TLS-established ACK");
       fpi_ssm_next_state (ssm);
       break;
 

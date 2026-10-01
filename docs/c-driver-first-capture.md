@@ -12,9 +12,11 @@ The owner also reports an EC crash using `dist/goodix-owner-c-pacing/`; its fina
 available. Do not repeat either bundle. The reviewed source tests a 60 ms minimum interval between
 host records while reading IN, preserving that deadline across unrelated input and completing partial
 TLS records before more output. This is an unproven timing hypothesis, not a confirmed vendor requirement.
-The owner has now requested one test of reviewed driver `2b77542` after reporting a healthy EC.
-The fresh build below is prepared for that test. The earlier failed bundles remain superseded;
-targeted TLS-structure diagnostics and the live failure's cause remain open.
+Run 26 used reviewed driver `2b77542`: authenticated TLS completed, `0xd4` ACKed, and an immediate
+20-byte MCU reply with status `0x00` failed the local TLS-bit gate. Both keyboards worked; no image
+was requested. The corrected gate permits exactly that immediate status after authentication and
+positive ACK; other bit-clear states remain errors. The earlier bundles are superseded.
+The timing cause/minimum remains unproven; targeted diagnostics are follow-up evidence.
 
 ## Prepare the build offline
 
@@ -32,7 +34,8 @@ after review and record its source revision and checksums.
 All 245 C subtests pass normally and under ASan/UBSan (leak detection disabled). Host linkage resolves
 the bundle's library without missing dependencies, and the driver table lists only `27c6:5120`.
 `provenance.txt`, source hashes, build/test logs and `SHA256SUMS` record preparation; hardware outcome
-is pending. The capture executable was not invoked, and no hardware was accessed during preparation.
+is recorded as Run 26. This bundle predates the immediate MCU-state fix; do not reuse it for capture.
+The capture executable was not invoked by agents, and no hardware was accessed during preparation.
 
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
 and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
@@ -69,9 +72,10 @@ inside this build. Do not invoke `img-capture` as an offline smoke test: it open
 ## Check the EC
 
 Attach and test an **external keyboard**, save other work, and follow the
-[bisect runbook](bisect-runbook.md#before). If the preceding session failed, recover first:
+[bisect runbook](bisect-runbook.md#before). If TLS was unfinished/crashed or the health check fails, recover first:
 shutdown, charger **plugged in**, power button held **40 seconds**, then boot. There is no
-automatic reset or retry. Ensure no other probe or fingerprint client is using the device.
+automatic reset or retry. Run 26's completed handshake and local gate rejection alone do not require
+a reboot; confirm responsiveness with the health check. Ensure no other client is using the device.
 
 From the repository root:
 
@@ -110,14 +114,17 @@ Leave `FP_DEBUG_TRANSFER` unset: raw transfer tracing can reveal secrets and ima
 Watch the log. When `arming 0x32` appears, place one finger. When `arming 0x34` appears, lift it.
 Stop at the first unexpected exchange or warning/error other than that known PSK-permission
 warning, or keyboard failure (Ctrl-C on the external keyboard). Check typing during the wait and after exit.
-Preserve the log and recover as described above before any further hardware attempt.
+Preserve the log. An unfinished handshake, keyboard failure or failed health check requires recovery
+as described above; a local validation error after completed TLS does not by itself establish a wedge.
 
 ## Judge and record the result
 
 Compare the log with Runs 20–22 in [the protocol evidence](protocol.md):
 
 - Firmware is `GF_ITE_EC_20063`; init completes without rejected replies.
-- TLS handshake completes, `0xd4` is acknowledged, and the MCU state passes the TLS-bit check.
+- Authenticated TLS completes and `0xd4` ACK status is `0x01`. The final MCU reply is exactly 20 bytes,
+  with the TLS bit set or immediate status `0x00`. The informational clear-bit log is expected for Run 26's
+  status and is not a warning/error; it does not mean the decoder considers the bit set.
 - Initial down thresholds are `b8 c5 ab b9 aa b9`; a down event leads to one image request.
 - The observed image pack was 7753 bytes, containing a TLS record with a 7744-byte body; the driver's image
   log should report `7693 plaintext bytes, 8-byte header + samples + 5-byte trailer`.

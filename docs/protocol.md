@@ -1127,6 +1127,30 @@ been provided, so the failure point and cause are unknown. Its spacing experimen
 a working C driver. The reviewed source is not represented by that bundle, and further hardware
 attempts remain deferred pending diagnostics and review.
 
+### Run 26 — 2026-10-01 08:03, reviewed C pacing completes TLS
+
+The owner reported a healthy EC and ran `dist/goodix-owner-c-2b77542/` against the pinned libfprint.
+The firmware health check and full plaintext init succeeded.
+
+- TLS completed at 08:03:59.098, with four records from the EC and four to it. Both logged host-flight
+  intervals lasted 60 ms. OpenSSL accepted the EC's Finished and the host's final record was fully written.
+- `0xd4` received ACK status `0x01` at 08:03:59.099. The immediate `0xae` reply at .100 was:
+  `02 00 31 03 00 00 01 00 90 63 00 00 00 00 00 00 00 00 04 04`.
+  Byte 1 is `0x00`: its TLS-connected bit is clear. The existing local gate rejected open here.
+- No finger arm or image request followed. The owner confirmed both keyboards still typed after exit.
+  No post-exit firmware health check is recorded. This log does not establish a wedge or require a reboot.
+
+**Observation:** authenticated C TLS and the positive `0xd4` ACK succeeded despite the immediate clear
+MCU bit. This is the first recorded successful live C handshake; image capture remains untested.
+The intervals correlate with success in this run but do not establish causality or a required minimum.
+
+**Correction:** accept exactly status `0x00` only at this gate after authenticated TLS, completed host
+records and positive `0xd4` ACK. Keep the exact 20-byte length and reject other bit-clear statuses,
+including known stuck `0x08`. Do not reinterpret the bit or invent a delay/poll; the working Go path
+does not issue an immediate post-`0xd4` query. Whether the bit later becomes set is unknown.
+The literal reply passes synthetic capture/lift/close coverage; rejected statuses and negative ACK
+remain regression-tested. All 251 C subtests pass normally and under ASan/UBSan (leaks disabled).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
