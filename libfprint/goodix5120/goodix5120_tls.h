@@ -83,6 +83,12 @@ gboolean g5120_tls_handshake (G5120Tls *tls,
  * g5120_tls_handshake() instead. */
 GBytes *g5120_tls_pop_record (G5120Tls *tls);
 
+/* Whether another whole record is queued for the EC, without popping it. */
+gboolean g5120_tls_has_record (G5120Tls *tls);
+
+/* A received TLS record is incomplete; read its suffix before more output. */
+gboolean g5120_tls_has_partial_input (G5120Tls *tls);
+
 /* Reads decrypted application data into @buf. Returns the number of bytes
  * read, 0 if nothing is available yet, or -1 with @error set. */
 gssize g5120_tls_read (G5120Tls *tls,

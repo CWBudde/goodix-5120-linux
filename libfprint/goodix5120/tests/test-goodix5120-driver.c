@@ -27,6 +27,7 @@ typedef struct {
   gboolean auto_events;
   gboolean no_hello, corrupt_image;
   gboolean wrong_key;
+  gboolean alert_after_hello; /* answer ServerHello alone with decode_error */
   guint tls_fault; /* synthetic image: 1 = bad record type, 2 = bad ciphertext */
   guint image_parts;
   const char *cancel_machine;
@@ -35,6 +36,7 @@ typedef struct {
   guint cancel_hits;
   GByteArray *out_frame;
   GPtrArray *sent_frames;
+  gint64 tls_start;
 } Fixture;
 
 static void pump (Fixture *f);
@@ -209,6 +211,12 @@ peer_frame (const guint8 *buf, gsize len, gpointer data)
   if (flags == 0xb0)
     {
       g_assert_nonnull (f->client);
+      if (f->alert_after_hello && payload_len > 5 && payload[0] == 0x16 && payload[5] == 0x02)
+        {
+          static const guint8 alert[] = { 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 50 };
+          queue_pack (f, 0xb0, alert, sizeof (alert));
+          return;
+        }
       g_assert_cmpint (BIO_write (SSL_get_rbio (f->client), payload, payload_len), ==, payload_len);
       client_step (f);
       return;
@@ -257,7 +265,10 @@ peer_frame (const guint8 *buf, gsize len, gpointer data)
           queue_message (f, cmd, data_bytes->data, data_bytes->len);
         }
       if ((mode & G5120_REPLY_TLS) && !f->no_hello)
-        start_client (f);
+        {
+          f->tls_start = g_get_monotonic_time ();
+          start_client (f);
+        }
       return;
     }
   /* The fake speaks only the documented exchanges, never generic success. */
@@ -436,6 +447,208 @@ test_packet_writes (Fixture *f, gconstpointer data)
     }
   g_assert_cmpuint (f->usb.writes->len, >, f->sent_frames->len);
   g_assert_cmpuint (f->out_frame->len, ==, 0);
+}
+
+static guint
+tls_frames_sent (Fixture *f)
+{
+  guint n = 0;
+  for (guint i = 0; i < f->sent_frames->len; i++)
+    if (((const guint8 *) g_bytes_get_data (g_ptr_array_index (f->sent_frames, i), NULL))[0] == 0xb0)
+      n++;
+  return n;
+}
+
+static void
+open_to_server_hello (Fixture *f)
+{
+  guint steps = 0;
+
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  while (tls_frames_sent (f) == 0)
+    {
+      g_assert_true (fake_usb_step (&f->usb));
+      g_assert_cmpuint (++steps, <, 400);
+    }
+  g_assert_cmpuint (tls_frames_sent (f), ==, 1);
+  g_assert_nonnull (f->usb.pending);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+}
+
+/* Stale input must neither shorten the gap nor restart its deadline. */
+static void
+test_tls_pacing_noise (Fixture *f, gconstpointer data)
+{
+  gint64 start;
+
+  (void) data;
+  open_to_server_hello (f);
+  start = g_get_monotonic_time ();
+  queue_ack (f, 0xa8, 1);
+  queue_event (f, 0x32);
+  fake_queue_bytes (&f->usb, NULL, 0);
+  for (guint i = 0; i < 3; i++)
+    {
+      fake_advance_time (5000);
+      g_assert_true (fake_usb_step (&f->usb));
+      g_assert_cmpuint (tls_frames_sent (f), ==, 1);
+      g_assert_nonnull (f->usb.pending);
+      g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+    }
+  g_assert_cmpuint (f->usb.timeout, ==, 45);
+  g_assert_true (fake_usb_step (&f->usb)); /* remaining interval expires */
+  g_assert_cmpint (g_get_monotonic_time () - start, ==, 60000);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+/* A partially received alert must finish before another record is submitted,
+ * including when its suffix arrives after the pacing interval. */
+static void
+test_tls_pacing_fragmented_alert (Fixture *f, gconstpointer data)
+{
+  static const guint8 alert[] = { 0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 50 };
+  guint split = GPOINTER_TO_UINT (data);
+  guint writes;
+
+  open_to_server_hello (f);
+  writes = f->usb.writes->len;
+  queue_pack (f, 0xb0, alert, split);
+  g_assert_true (fake_usb_step (&f->usb));
+  g_assert_nonnull (f->usb.pending);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  fake_advance_time (60000);
+  fake_usb_complete (&f->usb, NULL, 0,
+                     g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT, "timeout"));
+  g_assert_nonnull (f->usb.pending);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  queue_pack (f, 0xb0, alert + split, sizeof (alert) - split);
+  pump (f);
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_nonnull (strstr (f->usb.notify.error->message, "decode_error (50)"));
+  g_assert_cmpuint (tls_frames_sent (f), ==, 1);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_false (f->usb.claimed);
+}
+
+/* Pacing cannot send another record or report success after the total budget.
+ * Check both host flights, including one ending with an already completed SSL. */
+static void
+test_tls_pacing_budget (Fixture *f, gconstpointer data)
+{
+  guint target = GPOINTER_TO_UINT (data);
+  guint steps = 0, writes;
+
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  while (tls_frames_sent (f) < target)
+    {
+      g_assert_true (fake_usb_step (&f->usb));
+      g_assert_cmpuint (++steps, <, 400);
+    }
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  writes = f->usb.writes->len;
+  fake_advance_time (G5120_HANDSHAKE_BUDGET * 1000);
+  g_assert_true (fake_usb_step (&f->usb));
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_cmpuint (tls_frames_sent (f), ==, target);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_null (f->usb.pending);
+  g_assert_false (f->usb.claimed);
+}
+
+/* A nearly expired handshake cannot start a fresh two-second frame budget. */
+static void
+test_tls_write_budget (Fixture *f, gconstpointer data)
+{
+  guint steps = 0, writes;
+  gboolean allocation_expires = GPOINTER_TO_UINT (data);
+
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  while (!f->client)
+    {
+      g_assert_true (fake_usb_step (&f->usb));
+      g_assert_cmpuint (++steps, <, 400);
+    }
+  fake_advance_time (f->tls_start + 4999000 - g_get_monotonic_time ());
+  writes = f->usb.writes->len;
+  if (allocation_expires)
+    f->usb.next_transfer_delay = 1000;
+  g_assert_true (fake_usb_step (&f->usb)); /* feed ClientHello */
+  if (allocation_expires)
+    {
+      g_assert_nonnull (f->usb.notify.error);
+      g_assert_cmpuint (f->usb.writes->len, ==, writes);
+      g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+      g_assert_null (f->usb.pending);
+      g_assert_false (f->usb.claimed);
+      return;
+    }
+  g_assert_nonnull (f->usb.pending);
+  g_assert_false (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  g_assert_cmpuint (f->usb.timeout, ==, 1);
+  writes = f->usb.writes->len;
+  fake_advance_time (1000);
+  g_assert_true (fake_usb_step (&f->usb)); /* first packet completes at deadline */
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_cmpuint (tls_frames_sent (f), ==, 0);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_null (f->usb.pending);
+  g_assert_false (f->usb.claimed);
+}
+
+/* Between two records of one host flight the driver reads during a minimum
+ * interval, as the vendor's logged gaps suggest; after a flight's last record it waits for the
+ * EC as before. Runs 24/25 sent ServerHelloDone right behind ServerHello. */
+static void
+test_tls_pacing (Fixture *f, gconstpointer data)
+{
+  /* ServerHello, ServerHelloDone, ChangeCipherSpec, Finished. */
+  static const guint want[] = { G5120_TIMEOUT_HS_PACE, G5120_TIMEOUT_HS_READ, G5120_TIMEOUT_HS_PACE };
+  guint seen = 0, steps = 0;
+
+  (void) data;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  while (seen < 4)
+    {
+      g_assert_true (fake_usb_step (&f->usb));
+      g_assert_cmpuint (++steps, <, 400);
+      if (tls_frames_sent (f) == seen)
+        continue;
+      g_assert_cmpuint (tls_frames_sent (f), ==, seen + 1);
+      g_assert_nonnull (f->usb.pending);
+      if (seen < G_N_ELEMENTS (want))
+        {
+          g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+          g_assert_cmpuint (f->usb.timeout, ==, want[seen]);
+        }
+      else
+        g_assert_cmphex (pending_command (f), ==, 0xd4);
+      seen++;
+    }
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+/* A synthetic alert after ServerHello alone is read before ServerHelloDone goes
+ * out, and the error says how far the handshake got. */
+static void
+test_tls_alert_after_hello (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  f->alert_after_hello = TRUE;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  pump (f);
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_nonnull (strstr (f->usb.notify.error->message, "decode_error (50)"));
+  g_assert_nonnull (strstr (f->usb.notify.error->message, "from the EC and 1 to it"));
+  g_assert_cmpuint (tls_frames_sent (f), ==, 1);
+  g_assert_false (f->usb.claimed);
 }
 
 static void
@@ -1479,6 +1692,25 @@ main (int argc, char **argv)
   g_test_add ("/goodix5120/driver/psk-reply/request-echo", Fixture, NULL, setup,
               test_psk_reply_request_echo, teardown);
   g_test_add ("/goodix5120/driver/enrollment", Fixture, NULL, setup, test_enrollment, teardown);
+  g_test_add ("/goodix5120/driver/tls-pacing", Fixture, NULL, setup, test_tls_pacing, teardown);
+  g_test_add ("/goodix5120/driver/tls-alert-after-hello", Fixture, NULL, setup,
+              test_tls_alert_after_hello, teardown);
+  g_test_add ("/goodix5120/driver/tls-pacing-noise", Fixture, NULL, setup,
+              test_tls_pacing_noise, teardown);
+  for (guint split = 1; split < 7; split++)
+    {
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/tls-pacing-alert-split/%u", split);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (split), setup,
+                  test_tls_pacing_fragmented_alert, teardown);
+    }
+  g_test_add ("/goodix5120/driver/tls-pacing-budget/first-flight", Fixture,
+              GUINT_TO_POINTER (1), setup, test_tls_pacing_budget, teardown);
+  g_test_add ("/goodix5120/driver/tls-pacing-budget/final-flight", Fixture,
+              GUINT_TO_POINTER (3), setup, test_tls_pacing_budget, teardown);
+  g_test_add ("/goodix5120/driver/tls-write-budget", Fixture, NULL, setup,
+              test_tls_write_budget, teardown);
+  g_test_add ("/goodix5120/driver/tls-write-budget-before-submit", Fixture,
+              GUINT_TO_POINTER (1), setup, test_tls_write_budget, teardown);
   g_test_add ("/goodix5120/driver/processing-after-lift", Fixture, NULL, setup,
               test_processing_after_lift, teardown);
   g_test_add ("/goodix5120/driver/reopen", Fixture, NULL, setup, test_reopen, teardown);

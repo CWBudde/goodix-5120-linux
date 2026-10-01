@@ -2,10 +2,7 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,98 +11,23 @@ import (
 	"time"
 )
 
-// internalKeyboardName is the evdev name of the i8042 keyboard the EC drives.
-const internalKeyboardName = "AT Translated Set 2 keyboard"
-
 // linuxHost observes the real machine. Everything it does is read-only apart
 // from Mark, which appends to the kernel log.
 type linuxHost struct {
-	keys  chan struct{}
-	done  chan error
 	marks bool
 	ec    *ecRefreshCounter
 }
 
-// newLinuxHost opens the internal keyboard for reading. It does not grab the
-// device, so key presses still reach the desktop as usual.
-func newLinuxHost(marks bool) (*linuxHost, error) {
-	path, err := findKeyboard()
-	if err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening %s (needs root or the input group): %w", path, err)
-	}
+// newLinuxHost starts watching the EC's battery block. It needs no device
+// access; only Mark writes, to /dev/kmsg.
+func newLinuxHost(marks bool) *linuxHost {
 	h := &linuxHost{
-		keys:  make(chan struct{}, 64),
-		done:  make(chan error, 1),
 		marks: marks,
 		ec:    &ecRefreshCounter{read: readBatteryTuple},
 	}
-	h.ec.sample() // establish a baseline before the first check
-	go h.read(f)
+	h.ec.sample() // establish a baseline before the first log line
 	go h.ec.poll(time.Second)
-	return h, nil
-}
-
-// findKeyboard returns the /dev/input node of the internal keyboard.
-func findKeyboard() (string, error) {
-	names, _ := filepath.Glob("/sys/class/input/event*/device/name")
-	for _, n := range names {
-		b, err := os.ReadFile(n)
-		if err == nil && strings.TrimSpace(string(b)) == internalKeyboardName {
-			event := filepath.Base(filepath.Dir(filepath.Dir(n)))
-			return "/dev/input/" + event, nil
-		}
-	}
-	return "", fmt.Errorf("no input device named %q", internalKeyboardName)
-}
-
-// inputEventSize is sizeof(struct input_event): a struct timeval (two longs)
-// followed by u16 type, u16 code and s32 value.
-const inputEventSize = 2*strconv.IntSize/8 + 8
-
-// read forwards every key-down event to h.keys until the device fails.
-func (h *linuxHost) read(f *os.File) {
-	defer f.Close()
-	buf := make([]byte, inputEventSize)
-	for {
-		if _, err := io.ReadFull(f, buf); err != nil {
-			h.done <- err
-			return
-		}
-		tv := inputEventSize - 8
-		typ := binary.NativeEndian.Uint16(buf[tv:])
-		value := int32(binary.NativeEndian.Uint32(buf[tv+4:]))
-		if typ == 1 && value == 1 { // EV_KEY, pressed
-			select {
-			case h.keys <- struct{}{}:
-			default:
-			}
-		}
-	}
-}
-
-func (h *linuxHost) WaitKey(timeout time.Duration) (bool, error) {
-	// Discard presses made before the prompt, e.g. the Enter that started
-	// the program.
-drain:
-	for {
-		select {
-		case <-h.keys:
-		default:
-			break drain
-		}
-	}
-	select {
-	case <-h.keys:
-		return true, nil
-	case err := <-h.done:
-		return false, fmt.Errorf("reading the keyboard: %w", err)
-	case <-time.After(timeout):
-		return false, nil
-	}
+	return h
 }
 
 func (h *linuxHost) SensorPresent() bool {
@@ -123,8 +45,7 @@ func (h *linuxHost) SensorPresent() bool {
 // Snapshot reports two counters, both of which matter only as differences.
 //
 // The i8042 interrupt counts (summed over CPUs) watch the keyboard half of the
-// EC: a key press that does not move them means the EC sent nothing, as opposed
-// to Linux dropping it.
+// EC: counts that stop moving while keys are typed mean the EC sent nothing.
 //
 // "ec refreshes" watches the EC itself, through an interface the fingerprint
 // commands do not touch. See ecRefreshCounter.
@@ -259,14 +180,13 @@ func readBatteryTuple() (string, bool) {
 	return strings.Join(parts, " "), true
 }
 
-// assumeKeysHost stands in for the keyboard in --replay runs without root:
-// every check passes.
-type assumeKeysHost struct{}
+// offlineHost stands in for the machine in --replay runs: nothing to observe,
+// and no kernel log to mark.
+type offlineHost struct{}
 
-func (assumeKeysHost) WaitKey(time.Duration) (bool, error) { return true, nil }
-func (assumeKeysHost) SensorPresent() bool                 { return false }
-func (assumeKeysHost) Snapshot() string                    { return "not observed (--assume-keys)" }
-func (assumeKeysHost) Mark(string)                         {}
+func (offlineHost) SensorPresent() bool { return false }
+func (offlineHost) Snapshot() string    { return "not observed (replay)" }
+func (offlineHost) Mark(string)         {}
 
 // syncWriter writes to a file and flushes it to disk after every write, so the
 // log survives the machine being powered off mid-run.
@@ -279,5 +199,3 @@ func (w syncWriter) Write(p []byte) (int, error) {
 	}
 	return n, w.f.Sync()
 }
-
-var errAssumeKeysLive = errors.New("--assume-keys is only allowed with --replay")

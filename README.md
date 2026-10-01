@@ -98,7 +98,7 @@ These are safe — none of them opens the device:
 go build -buildvcs=false ./cmd/goodix-probe
 
 ./goodix-probe --dry-run                          # print the frames a run can send
-./goodix-probe --bisect --replay --assume-keys    # the step loop against the Run 1 capture
+./goodix-probe --bisect --replay    # the step loop against the Run 1 capture
 just rehearse                                     # real TLS with synthetic keys; no device or PSK file
 ```
 

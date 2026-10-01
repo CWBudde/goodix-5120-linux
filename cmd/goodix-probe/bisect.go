@@ -13,22 +13,19 @@ import (
 	"goodix5120/internal/transport"
 )
 
-// Bisect mode answers the question Run 1 left open: which step stops the
-// internal keyboard. The EC fails silently — in Run 1 the kernel logged nothing
-// until something wrote to the i8042 half an hour later (FINDINGS.md) — so the
-// only reliable signal is a human pressing a key on the internal keyboard after
-// every step. The run stops at the first step that is not followed by one.
+// Bisect mode sends one command per step and logs what the device answers.
+// It was built to find which step stopped the internal keyboard (Run 1) and
+// used to ask for a key press after every step. It now checks EC responsiveness
+// before the steps and logs host counters passively. This does not test keyboard
+// health or prove that the EC continues answering throughout the run.
 //
 // Step 0 ("attach") opens and claims the USB interface and only reads, sending
-// nothing, so a wedge caused by attaching alone is told apart from one caused
+// nothing, so a fault caused by attaching alone is told apart from one caused
 // by a command.
 
 // bisectHost is the machine around the probe: everything bisect observes that
 // is not the sensor itself.
 type bisectHost interface {
-	// WaitKey reports whether a key was pressed on the internal keyboard within
-	// timeout. Presses made before the call do not count.
-	WaitKey(timeout time.Duration) (bool, error)
 	// SensorPresent reports whether 27c6:5120 is still enumerated.
 	SensorPresent() bool
 	// Snapshot returns counters worth logging around each step, such as the
@@ -38,9 +35,6 @@ type bisectHost interface {
 	// kernel messages in `journalctl -k`.
 	Mark(msg string)
 }
-
-// errKeyboardLost means the internal keyboard did not respond after a step.
-var errKeyboardLost = errors.New("internal keyboard stopped responding")
 
 // checkECResponsive sends the one command that is harmless, read-only and always
 // answered by a healthy EC, and refuses to go on if nothing comes back. See
@@ -110,8 +104,7 @@ func checkECResponsive(logger *log.Logger, tr transport.Transport, timeout time.
 // the shape of mistake that wedges this EC, so a run now stops before the first
 // step instead of after the eighth.
 var errECUnresponsive = errors.New("the EC did not answer firmware_version (0xa8), so it is not in the " +
-	"state a run assumes, and nothing was sent. A working internal keyboard does not mean the EC is " +
-	"clean — the host's i8042 recovers on its own, the EC does not. An unfinished --tls handshake " +
+	"state a run assumes, and nothing else was sent. An unfinished --tls handshake " +
 	"leaves it like this, and neither a reset (0xa2) nor, in Run 14, a cold power cycle cleared it. " +
 	"What did (Run 16): shut down with the charger PLUGGED IN, hold the power button 40 s, then boot. Run again with --read-state to see which state it is in; " +
 	"docs/protocol.md, \"Recovering the EC\", has the rest")
@@ -139,8 +132,8 @@ const statusHandshakeOpen = 1 << 3
 const run12Counter = 0x14
 
 // readStuckState sends a single get_mcu_state (0xae) to an EC that has just
-// ignored 0xa8, reports what the reply says about why, and checks the keyboard.
-// It sends nothing else, whatever comes back.
+// ignored 0xa8 and reports what the reply says about why. It sends nothing
+// else, whatever comes back.
 //
 // 0xae is the one frame worth sending into that EC: in Run 12 it was the only
 // command the stuck EC answered, and the keyboard survived it. What it answers
@@ -148,7 +141,7 @@ const run12Counter = 0x14
 // 0x14) from an EC that did reset and is unhappy for a new reason — the two call
 // for different next steps, and nothing else can tell them apart without
 // sending more.
-func readStuckState(logger *log.Logger, host bisectHost, tr transport.Transport, timeout, keyWait time.Duration) error {
+func readStuckState(logger *log.Logger, host bisectHost, tr transport.Transport, timeout time.Duration) error {
 	st, ok := stepFor(opMCUState)
 	if !ok {
 		return fmt.Errorf("no catalogue entry for get_mcu_state (0x%02x)", byte(opMCUState))
@@ -156,6 +149,7 @@ func readStuckState(logger *log.Logger, host bisectHost, tr transport.Transport,
 	logger.Printf("\n--- --read-state: one %s (0x%02x), the only command the stuck EC answered in Run 12",
 		opMCUState.Name(), byte(opMCUState))
 	host.Mark("read-state: sending get_mcu_state")
+	defer logHost(logger, host, "read-state")
 	if err := tr.Send(opMCUState, st.payload); err != nil {
 		return fmt.Errorf("read-state: send %s: %w", opMCUState.Name(), err)
 	}
@@ -189,7 +183,7 @@ func readStuckState(logger *log.Logger, host bisectHost, tr transport.Transport,
 	for _, line := range stuckVerdict(state) {
 		logger.Printf("  %s", line)
 	}
-	return checkKeyboard(logger, host, "read-state", keyWait)
+	return nil
 }
 
 // mcuStateFrom decodes a raw 0xae transfer down to the MCU state.
@@ -233,10 +227,6 @@ func stuckVerdict(s *proto.MCUState) []string {
 	}
 	return lines
 }
-
-// errBaseline means the internal keyboard did not respond before anything was
-// done, so a bisect run would prove nothing.
-var errBaseline = errors.New("internal keyboard not responding before the run")
 
 // The opcodes above the safe ceiling that a bisect run can be told to send.
 // Every one of them is a frame the Windows driver sends with a payload that is
@@ -360,28 +350,19 @@ func defaultBisectSteps() string {
 	return strings.Join(parts, ",")
 }
 
-// runBisect runs attach and then each opcode, draining the device and checking
-// the internal keyboard after every one. It returns errKeyboardLost at the
-// first step the keyboard does not survive.
+// runBisect runs attach and then each opcode, draining the device and logging
+// the host's counters after every one.
 //
-// after, when non-nil, runs once every step has passed and is followed by one
-// more keyboard check. That is where --tls hangs its TLS bridge: it needs the
-// device in the state the steps left it in, and it needs the same keyboard
-// safety net as a step.
+// after, when non-nil, runs once every step has passed. That is where --tls
+// hangs its TLS bridge: it needs the device in the state the steps left it in.
 func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Transport, error),
-	ops []proto.Opcode, timeout, keyWait time.Duration, health healthMode,
+	ops []proto.Opcode, timeout time.Duration, health healthMode,
 	after func(transport.Transport) error) error {
 
-	logger.Printf("bisect: attach, then %d command(s); keyboard check after each step", len(ops))
-	logger.Printf("bisect: press a harmless key (Shift) on the INTERNAL keyboard when asked")
+	logger.Printf("bisect: attach, then %d command(s)", len(ops))
 
 	logger.Printf("\n--- baseline")
-	if err := checkKeyboard(logger, host, "baseline", keyWait); err != nil {
-		if errors.Is(err, errKeyboardLost) {
-			return errBaseline
-		}
-		return err
-	}
+	logHost(logger, host, "baseline")
 
 	logger.Printf("\n--- step 0: attach (open + claim, read only, send nothing)")
 	host.Mark("step 0 attach: opening device")
@@ -391,15 +372,13 @@ func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Trans
 	}
 	defer tr.Close()
 	drain(logger, tr, timeout)
-	if err := checkKeyboard(logger, host, "step 0 attach", keyWait); err != nil {
-		return err
-	}
+	logHost(logger, host, "step 0 attach")
 
 	if health != healthOff {
 		if err := checkECResponsive(logger, tr, timeout); err != nil {
 			if errors.Is(err, errECUnresponsive) && health == healthReadState {
-				if kerr := readStuckState(logger, host, tr, timeout, keyWait); kerr != nil {
-					return kerr
+				if stateErr := readStuckState(logger, host, tr, timeout); stateErr != nil {
+					return errors.Join(err, stateErr)
 				}
 			}
 			return err
@@ -423,52 +402,31 @@ func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Trans
 			return fmt.Errorf("recv after %s: %w", name, err)
 		}
 		drain(logger, tr, timeout)
-		if err := checkKeyboard(logger, host, label, keyWait); err != nil {
-			return err
-		}
+		logHost(logger, host, label)
 	}
 
 	if after != nil {
 		host.Mark("after-steps hook: starting")
-		if err := after(tr); err != nil {
-			// The hook's own failure is not a keyboard failure, and the keyboard
-			// is worth checking either way: whatever it just did to the device is
-			// exactly the kind of thing that wedges the EC.
+		err := after(tr)
+		if err != nil {
 			logger.Printf("\n  after the steps: %v", err)
-			if kerr := checkKeyboard(logger, host, "the after-steps hook", keyWait); kerr != nil {
-				return kerr
-			}
-			return err
 		}
-		if err := checkKeyboard(logger, host, "the after-steps hook", keyWait); err != nil {
+		logHost(logger, host, "the after-steps hook")
+		if err != nil {
 			return err
 		}
 	}
 
-	logger.Printf("\nRESULT: internal keyboard alive after every step")
-	host.Mark("bisect done: keyboard alive after every step")
+	logger.Printf("\nRESULT: every step completed; EC and keyboard health after the steps not verified")
+	host.Mark("bisect done: every step completed")
 	return nil
 }
 
-// checkKeyboard logs the host state and waits for a key press on the internal
-// keyboard.
-func checkKeyboard(logger *log.Logger, host bisectHost, after string, keyWait time.Duration) error {
-	logger.Printf("  host: %s, sensor enumerated: %t", host.Snapshot(), host.SensorPresent())
-	logger.Printf("  >>> press Shift on the INTERNAL keyboard (waiting %s)", keyWait)
-
-	ok, err := host.WaitKey(keyWait)
-	if err != nil {
-		return fmt.Errorf("keyboard check after %s: %w", after, err)
-	}
-	if !ok {
-		logger.Printf("  RESULT: no key press within %s after %s", keyWait, after)
-		logger.Printf("  host: %s, sensor enumerated: %t", host.Snapshot(), host.SensorPresent())
-		host.Mark("NO KEY after " + after)
-		return fmt.Errorf("%w after %s", errKeyboardLost, after)
-	}
-	logger.Printf("  keyboard alive after %s", after)
-	host.Mark("keyboard alive after " + after)
-	return nil
+// logHost logs the host's counters and whether the sensor is still enumerated.
+// It asks nothing of the user: the counters are there to read afterwards.
+func logHost(logger *log.Logger, host bisectHost, after string) {
+	logger.Printf("  host after %s: %s, sensor enumerated: %t", after, host.Snapshot(), host.SensorPresent())
+	host.Mark("done: " + after)
 }
 
 // scriptFor returns the replay exchanges for ops, in the order given, so

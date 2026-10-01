@@ -917,7 +917,7 @@ rebooted.
   event.** The vendor's thresholds from `dump.pcapng` still fit this EC, so the re-arm path is still
   untested live.
 - **Finger-down event 10.0 s after the arm**, when the user found the sensor: header `02 00 3f 00`,
-  flags `0x3f` (all six zones), readings `[297 271 244 281 229 272]`.
+  flags `0x3f` (all six zones), readings `[297 271 245 281 229 272]`.
 - **`0x20`:** ACK after 3.6 ms, then the 7753-byte image transfer 88 ms after the command, as in Run 20.
   It decrypted to **7693 bytes again**, and the frame shows clear diagonal ridges read as 64 × 80. The
   mean |Δ| between neighbours is 8.8 vertically and 7.4 horizontally.
@@ -1080,6 +1080,52 @@ editing TLS random bytes or changing the protocol ceiling. Independent review fo
 framing, packet-buffer ownership or callback-lifetime defect. The next investigation needs
 sanitized first-flight structure and packet-completion evidence at the actual submission boundary;
 length-only logs cannot recover those bytes from this run. Hardware retries are deferred.
+
+**Between Runs 24 and 25** (log `goodix-bisect-20260930-210653.log`), a Go `--read-state` run at 21:06
+got no answer to the `0xa8` health check. One `0xae` returned status `0x08` (TLS not connected) and
+trailing counter `0x0c`, which is Run 12's stuck mid-handshake state. The internal keyboard worked
+throughout. So Run 24's rejected handshake did leave the EC stuck, and the reboot before Run 25 cleared it
+(05:39: `0xa8` answered again).
+
+### The gap between the host's TLS records (analysis, 2026-10-01)
+
+The available log timestamps correlate **spacing between consecutive host records** with different
+outcomes. They measure logging points, not USB completion times or the EC's parsing interval:
+
+| Handshake | ClientHello → ServerHello | ServerHello → ServerHelloDone | Result |
+|---|---|---|---|
+| Vendor driver (log above, "The vendor's handshake") | 1 ms | **61 ms** | completed |
+| Go probe, Run 18 (`openssl s_server`) | ~10 ms | **~3 ms** (+27 → +30) | completed |
+| C driver, Run 24 | ~0 ms | **≤ 1 ms** (.351 → .352) | `decode_error` |
+| C driver, Run 25 | ~1 ms | **same logged millisecond** (both at .825) | `decode_error` |
+
+The vendor log also has 66 ms between ChangeCipherSpec and Finished. The hypothesis is that the EC
+firmware is still parsing one pack when the next arrives. The accepted config is a single pack,
+whereas a TLS flight contains separate packs without command/reply synchronization, so config success
+does not exclude a timing problem between packs. **Neither causality nor a required minimum gap is
+established.** The successful Go run used a much shorter logged gap than the vendor. Actual C wire
+bytes remain unobserved; the matching synthetic framing and the CLI random-suffix distinction in
+Run 25 still apply. Timing is not the only unverified difference.
+
+The candidate tests a 60 ms minimum interval (`G5120_TIMEOUT_HS_PACE`) after one host record completes
+and before the next is submitted, with IN reads during that interval. Stale messages and zero-length
+completions preserve its original monotonic deadline. A partially received TLS record must finish
+before more output, even after the interval expires; the total handshake budget bounds that wait.
+Complete alerts stop the flight immediately. Counts show handshake progress when an alert was seen;
+they do not establish which record caused it. After the last host record, normal EC-flight reads
+continue without a pacing interval. TLS bytes, framing and opcode gates are unchanged.
+
+Review regressions reproduced premature writes after stale input and alert prefixes, and writes after
+the overall handshake budget expired. The revised candidate checks that budget in every handshake
+state and caps its reads and frame writes to the remaining time. The full offline suite now has
+245 passing C subtests; hardware timing and resolution of `decode_error` remain unvalidated.
+
+**Owner follow-up, 2026-10-01:** the owner reports another EC crash while running
+`dist/goodix-owner-c-pacing/` and is recovering the EC. That bundle was built from the original staged
+read-once candidate on `dbdb6d0`, before these review refinements. No final error or sanitized log has
+been provided, so the failure point and cause are unknown. Its spacing experiment did not establish
+a working C driver. The reviewed source is not represented by that bundle, and further hardware
+attempts remain deferred pending diagnostics and review.
 
 ### Recovering the EC (researched offline, 2026-09-30)
 

@@ -1,14 +1,15 @@
 // Command goodix-probe talks to the Goodix 27c6:5120 fingerprint sensor behind
-// the ITE EC in a Huawei MateBook HVY-WXX9, one keyboard-checked step at a time.
+// the ITE EC in a Huawei MateBook HVY-WXX9, one logged step at a time.
 //
 // It began as a read-only probe and is now the reference implementation of the
 // whole path: the vendor init, the TLS-PSK handshake, image capture and finger
 // detection, each confirmed on hardware (docs/protocol.md, Runs 11-21). The C
-// libfprint driver follows its wire sequence byte for byte.
+// libfprint driver follows its command sequence; its live TLS path remains
+// under investigation.
 //
-// Every live run goes through --bisect (docs/bisect-runbook.md), which checks
-// the internal keyboard after each step, because a wrong frame can wedge the EC
-// that drives it. --dry-run and --bisect --replay run offline. Every frame
+// Every live run goes through --bisect (docs/bisect-runbook.md), which refuses
+// to start the steps if the EC does not answer the initial 0xa8 health check.
+// --dry-run and --bisect --replay run offline. Every frame
 // passes the transport's safety gate; firmware-write opcodes are not compiled
 // into this binary at all.
 package main
@@ -46,13 +47,11 @@ func main() {
 		dryRun  = flag.Bool("dry-run", false, "print the frames a run can send, then exit; opens no USB device")
 		timeout = flag.Duration("timeout", 5*time.Second, "per-transfer timeout")
 
-		bisect     = flag.Bool("bisect", false, "attach, then one command per step, checking the internal keyboard after each. The only mode that sends anything (docs/bisect-runbook.md)")
-		replay     = flag.Bool("replay", false, "--bisect: run against the replay fake (or, with --tls, a local openssl stand-in) instead of the device")
-		stepList   = flag.String("steps", defaultBisectSteps(), "--bisect: comma-separated hex opcodes to send after attach, in order")
-		logPath    = flag.String("log", "", "--bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
-		keyWait    = flag.Duration("key-wait", 30*time.Second, "--bisect: how long to wait for a key press on the internal keyboard")
-		assumeKeys = flag.Bool("assume-keys", false, "--bisect --replay: skip the keyboard checks (no root needed)")
-		readState  = flag.Bool("read-state", false, "--bisect, live: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to learn which state it is in, then stop")
+		bisect    = flag.Bool("bisect", false, "attach, then one command per step, logging every reply. The only mode that sends anything (docs/bisect-runbook.md)")
+		replay    = flag.Bool("replay", false, "--bisect: run against the replay fake (or, with --tls, a local openssl stand-in) instead of the device")
+		stepList  = flag.String("steps", defaultBisectSteps(), "--bisect: comma-separated hex opcodes to send after attach, in order")
+		logPath   = flag.String("log", "", "--bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
+		readState = flag.Bool("read-state", false, "--bisect, live: if the EC ignores the 0xa8 health check, send ONE get_mcu_state (0xae) to learn which state it is in, then stop")
 
 		useTLS        = flag.Bool("tls", false, "--bisect: after the steps, send 0xd0 and bridge the TLS-PSK handshake to a local openssl endpoint. Needs --allow-d0; live runs also need --psk")
 		pskPath       = flag.String("psk", "", "--tls: file holding the raw 32-byte device PSK, as written by `goodix-dpapi -out` (a path, so the key stays out of shell history)")
@@ -80,7 +79,7 @@ func main() {
 	}
 	if !*bisect {
 		logger.Print("nothing to do: live and replayed runs go through --bisect (docs/bisect-runbook.md).\n" +
-			"Offline: --dry-run, or --bisect --replay --assume-keys")
+			"Offline: --dry-run, or --bisect --replay")
 		os.Exit(2)
 	}
 	if *readState && *replay {
@@ -115,38 +114,33 @@ func main() {
 		armDown:       allowed[opFDTDown],
 		armUp:         allowed[opFDTUp],
 	}
-	os.Exit(mainBisect(*replay, *assumeKeys, *wrongPSK, *readState, allow, allowed, tls, *stepList, *logPath, *timeout, *keyWait))
+	os.Exit(mainBisect(*replay, *wrongPSK, *readState, allow, allowed, tls, *stepList, *logPath, *timeout))
 }
 
-// mainBisect runs bisect mode and returns the exit status: 0 if the keyboard
-// survived every step, 2 if it stopped (or was not working to begin with), 1
-// on any other failure.
-func mainBisect(replay, assumeKeys, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
-	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration) int {
+// mainBisect runs bisect mode and returns the exit status: 0 if every step
+// completed, 1 on any failure.
+func mainBisect(replay, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
+	tls tlsConfig, stepList, logPath string, timeout time.Duration) int {
 
-	return mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState, allow, allowed,
-		tls, stepList, logPath, timeout, keyWait, bisectDependencies{
-			newHost: func(live bool) (bisectHost, error) { return newLinuxHost(live) },
+	return mainBisectWithDeps(replay, replayWrongPSK, readState, allow, allowed,
+		tls, stepList, logPath, timeout, bisectDependencies{
+			newHost: func() bisectHost { return newLinuxHost(true) },
 			openUSB: transport.OpenUSB, startTLS: tlspsk.Start,
 		})
 }
 
 // The dependency boundary lets offline tests prove that local TLS failures
-// stop before the keyboard watcher or USB opener is reached.
+// stop before the host watcher or USB opener is reached.
 type bisectDependencies struct {
-	newHost  func(bool) (bisectHost, error)
+	newHost  func() bisectHost
 	openUSB  func(transport.Options) (transport.Transport, error)
 	startTLS func(context.Context, tlspsk.Config) (*tlspsk.Session, error)
 }
 
-func mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
-	tls tlsConfig, stepList, logPath string, timeout, keyWait time.Duration, deps bisectDependencies) int {
+func mainBisectWithDeps(replay, replayWrongPSK, readState bool, allow []proto.Opcode, allowed map[proto.Opcode]bool,
+	tls tlsConfig, stepList, logPath string, timeout time.Duration, deps bisectDependencies) int {
 
 	stderr := log.New(os.Stderr, "", 0)
-	if assumeKeys && !replay {
-		stderr.Print(errAssumeKeysLive)
-		return 1
-	}
 	ops, err := parseSteps(stepList, allow...)
 	if err != nil {
 		stderr.Printf("--steps: %v", err)
@@ -180,14 +174,9 @@ func mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState bool, allo
 	logger := log.New(io.MultiWriter(os.Stdout, syncWriter{f}), "", log.Ltime|log.Lmicroseconds)
 	giveToSudoUser(stderr, f)
 
-	var host bisectHost = assumeKeysHost{}
-	if !assumeKeys {
-		lh, err := deps.newHost(!replay)
-		if err != nil {
-			logger.Printf("cannot watch the internal keyboard: %v", err)
-			return 1
-		}
-		host = lh
+	var host bisectHost = offlineHost{}
+	if !replay {
+		host = deps.newHost()
 	}
 
 	opts := transport.Options{
@@ -269,7 +258,7 @@ func mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState bool, allo
 	case readState:
 		health = healthReadState
 	}
-	err = runBisect(logger, host, open, ops, timeout, keyWait, health, after)
+	err = runBisect(logger, host, open, ops, timeout, health, after)
 	if rehearsal != nil {
 		if cerr := rehearsal.Close(); cerr != nil {
 			logger.Printf("tearing down the rehearsal stand-in: %v", cerr)
@@ -278,12 +267,6 @@ func mainBisectWithDeps(replay, assumeKeys, replayWrongPSK, readState bool, allo
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, errKeyboardLost), errors.Is(err, errBaseline):
-		logger.Printf("\nstopped: %v", err)
-		if errors.Is(err, errKeyboardLost) {
-			logger.Printf("recover with an EC reset: shut down with the charger PLUGGED IN, hold the power button 40 s, then boot; confirm with --bisect --read-state")
-		}
-		return 2
 	default:
 		logger.Printf("\nbisect failed: %v", err)
 		if errors.Is(err, transport.ErrPermission) || errors.Is(err, transport.ErrNotFound) {

@@ -66,8 +66,16 @@ ordering, based on [GUsb 0.4.9](https://github.com/hughsie/libgusb/blob/0.4.9/gu
 Tests require matching binding flags on close and rollback, and no release before successful claim. Injected
 release and attachment failures preserve errors and block reopening that device object without new USB work.
 These checks exercise the driver's GUsb calls; they do not run actual detach/attach operations.
-The driver suite contains 127 subtests; the original helpers add 43. Shared protocol checks add 39,
-and corpus-reader checks add two (211 total).
+Handshake-pacing regressions require an IN interval between host records, normal reads after a flight's
+last record, and immediate alerts to stop further output. Further cases measure elapsed virtual time
+across stale ACK/FDT/zero reads, deliver an alert at all six splits with its suffix after the interval,
+expire the total budget in both host flights, complete the first ServerHello packet at its deadline,
+and exhaust the budget during allocation before the first OUT submission.
+Noise cannot shorten/restart the interval; fragments cannot bypass alert handling; no further write or
+successful open may follow budget exhaustion. These exercise the driver, not the EC's firmware timing.
+
+The driver suite contains 161 subtests; the protocol and TLS helpers add 43. Shared protocol checks add 39,
+and corpus-reader checks add two (245 total).
 
 ## Shared independent fixtures
 

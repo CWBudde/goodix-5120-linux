@@ -346,9 +346,21 @@ fpi_ssm_jump_to_state (FpiSsm *ssm, int state)
 FpiUsbTransfer *
 fpi_usb_transfer_new (FpDevice *dev)
 {
+  FakeUsb *usb = fpi_device_get_usb_device (dev);
   FpiUsbTransfer *transfer = g_new0 (FpiUsbTransfer, 1);
+
+  fake_advance_time (usb->next_transfer_delay);
+  usb->next_transfer_delay = 0;
   transfer->device = dev;
   return transfer;
+}
+
+void
+fpi_usb_transfer_unref (FpiUsbTransfer *transfer)
+{
+  if (transfer->free_buffer)
+    transfer->free_buffer (transfer->buffer);
+  g_free (transfer);
 }
 
 void
@@ -404,8 +416,7 @@ fake_usb_complete (FakeUsb *usb, const guint8 *bytes, gsize len, GError *error)
     usb->write_hook (t->buffer, len, usb->hook_data);
   /* Callback may synchronously submit the next transfer and free its SSM. */
   callback (t, t->device, user_data, error);
-  t->free_buffer (t->buffer);
-  g_free (t);
+  fpi_usb_transfer_unref (t);
 }
 
 void

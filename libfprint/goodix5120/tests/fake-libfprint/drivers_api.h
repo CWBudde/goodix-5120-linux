@@ -29,6 +29,7 @@ typedef struct _FpiUsbTransfer {
 typedef void (*FpiUsbTransferCallback) (FpiUsbTransfer *, FpDevice *, gpointer, GError *);
 
 FpiUsbTransfer *fpi_usb_transfer_new (FpDevice *);
+void fpi_usb_transfer_unref (FpiUsbTransfer *);
 void fpi_usb_transfer_fill_bulk (FpiUsbTransfer *, guint8, gsize);
 void fpi_usb_transfer_fill_bulk_full (FpiUsbTransfer *, guint8, guint8 *, gsize, GDestroyNotify);
 void fpi_usb_transfer_submit (FpiUsbTransfer *, guint, GCancellable *, FpiUsbTransferCallback, gpointer);

@@ -24,9 +24,8 @@ import (
 // handshake to a local openssl endpoint using the PSK recovered from Windows.
 //
 // It runs as the tail of a bisect run rather than as a mode of its own, so it
-// inherits the whole keyboard-safe procedure: one command per step, a key press
-// checked after each, an external keyboard attached, a flushed log. The bridge
-// itself is checked the same way — the keyboard is tested again after it.
+// inherits the whole bisect procedure: the 0xa8 health check, one command per
+// step, a flushed log, and the host's counters logged after the bridge too.
 //
 // The one question this answers is whether the EC accepts our PSK. Everything
 // else it prints (record counts, the plaintext length) is a bonus.

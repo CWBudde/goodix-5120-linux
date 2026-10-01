@@ -86,7 +86,7 @@ dry-run: probe
 
 # The bisect flow offline: no root, no USB.
 bisect-offline: probe
-    ./goodix-probe --bisect --replay --assume-keys
+    ./goodix-probe --bisect --replay
 
 # ---------------------------------------------------------------------------- TLS-PSK rehearsals
 #
@@ -96,22 +96,22 @@ bisect-offline: probe
 
 # Rehearse the handshake (PLAN.md 5b). Expect `handshake complete`.
 rehearse-handshake: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls \
+    ./goodix-probe --bisect --replay --tls \
       --allow-d0 --allow-d4 --steps a8
 
 # Rehearse a PSK the EC rejects, so its output is familiar before it matters. Exits non-zero.
 rehearse-rejection: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls \
+    ./goodix-probe --bisect --replay --tls \
       --allow-d0 --steps a8 --rehearse-rejection
 
 # Rehearse the frame capture (PLAN.md 5c). The stand-in sends a gradient, so the PGM is a ramp.
 rehearse-capture: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls \
+    ./goodix-probe --bisect --replay --tls \
       --allow-d0 --allow-d4 --allow-20 --steps a8 --capture {{pgm}}
 
 # Rehearse several touches in one TLS session (PLAN.md 5d/6). The stand-in plays a finger.
 rehearse-touches: probe
-    ./goodix-probe --bisect --replay --assume-keys --tls \
+    ./goodix-probe --bisect --replay --tls \
       --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
       --capture {{pgm}} --wait-finger --touches 3 --finger-timeout 3s
 
@@ -127,7 +127,8 @@ live-help:
     @echo
     @echo 'A live run wedged the ITE EC and killed the internal keyboard (FINDINGS.md). The'
     @echo 'safety of this repository is friction: one command per run, every state-changing'
-    @echo 'frame behind its own --allow-XX flag, an external keyboard attached, and a human'
+    @echo 'frame behind its own --allow-XX flag, the 0xa8 health check, an external keyboard,'
+    @echo 'and a human'
     @echo 'deciding each step. A recipe that hides `sudo --allow-90` behind a short name'
     @echo 'removes exactly the friction that is the safeguard, so the command lines stay'
     @echo 'where the procedure around them is written down:'

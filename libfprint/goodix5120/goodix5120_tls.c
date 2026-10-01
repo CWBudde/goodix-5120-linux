@@ -598,6 +598,19 @@ g5120_tls_pop_record (G5120Tls *tls)
   return NULL;
 }
 
+gboolean
+g5120_tls_has_record (G5120Tls *tls)
+{
+  collect_output (tls);
+  return g5120_tls_record_len (tls->out->data, tls->out->len) != 0;
+}
+
+gboolean
+g5120_tls_has_partial_input (G5120Tls *tls)
+{
+  return tls->input_header_len != 0 || tls->input_remaining != 0;
+}
+
 gssize
 g5120_tls_read (G5120Tls *tls, guint8 *buf, gsize len, GError **error)
 {

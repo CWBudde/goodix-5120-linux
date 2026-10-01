@@ -3,7 +3,9 @@
 Run 1 (2026-08-17) killed the internal keyboard, but the kernel logged nothing when it happened
 (FINDINGS.md, "What the journal shows"). So nobody knows whether attaching to the device, `nop`,
 `firmware_version` (`0xa8`) or `preset_psk_read` (`0xe4`) did it. `goodix-probe --bisect` finds out:
-it performs one step at a time and asks for a key press on the internal keyboard after each.
+it performs one step at a time. It used to ask for a key press on the internal keyboard after each step;
+the `0xa8` health check gates the start, and the probe logs the host's i8042/EC counters after each step.
+This initial check does not establish continued EC responsiveness or keyboard health.
 
 **Answered by Run 2 (2026-09-19): `0xe4`** — and narrowed by Run 4 the same evening: what wedges the EC
 is an `0xe4` **with an empty payload**, sent on its own, with no `nop` and no `0xa8` before it. See
@@ -23,16 +25,17 @@ vendor-driver capture exists, which departs from the Phase 4 gate in PLAN.md. Cl
 
 | Step | Action | Sends |
 |---|---|---|
-| baseline | keyboard check only | nothing (the device is not opened) |
+| baseline | log the host's counters | nothing (the device is not opened) |
 | 0 attach | open + claim the USB interface, drain | nothing |
 | 1 | `firmware_version` (`0xa8`) with payload `00 00`, collect, drain | 1 frame |
 | ~~2~~ | ~~`nop` (`0x00`)~~ — dropped; the vendor never sends it to an ITE EC | — |
 | ~~3~~ | ~~`preset_psk_read` (`0xe4`)~~ — removed after Run 2 wedged the EC on it | — |
 
 After each step it logs the i8042 interrupt counts, an **EC refresh counter** and whether `27c6:5120` is still
-enumerated, and then waits (30 s by default) for a key press on the **internal** keyboard. The first
-missing key press stops the run. Nothing after that step is sent. The exit status is 0 if every step
-passed, 2 if the keyboard stopped, and 1 on any other error.
+enumerated. It does not wait for keyboard input. Exit status is 0 if the sequence completes and 1
+on failure. The ordinary step collector logs missing replies but currently treats timeout/read-limit
+exhaustion as completion; later steps may therefore run after an expected reply is lost. Review the
+exchanges, and check typing yourself during and after a live run. A final result is not a health verdict.
 
 The log goes to stdout and to `goodix-bisect-<time>.log`. The file is flushed to disk after every line.
 Step markers (`goodix-probe: ...`) also go to the kernel log, so they line up with kernel messages in
@@ -68,7 +71,7 @@ Rehearse any selection offline first. The replay now answers the Phase 5 frames 
 log records for them, so a rehearsal shows the same shape of exchange as the live run:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --allow-a2 --allow-70 --allow-98 --allow-90 \
+./goodix-probe --bisect --replay --allow-a2 --allow-70 --allow-98 --allow-90 \
   --steps a8,ae,a2,82,a6,a2,70,98,90
 ```
 
@@ -87,10 +90,8 @@ sends only the ACK. `0xae` gets no ACK at all there, which is correct — it nev
 1. Plug in an **external USB keyboard** and check that it types. After a wedge, you need it to shut down.
 2. Save and close everything else.
 3. Build: `go build -buildvcs=false ./cmd/goodix-probe`
-4. **Rehearse without USB:** `sudo ./goodix-probe --bisect --replay`. This watches the real internal
-   keyboard but replays Run 1 instead of opening the device. Press Shift at every prompt and check that
-   each check says "keyboard alive". Then let one prompt time out to see the failure path (exit 2).
-   Delete the rehearsal log afterwards.
+4. **Rehearse without USB:** `./goodix-probe --bisect --replay` replays Run 1 instead of opening the
+   device. Delete the rehearsal log afterwards.
 5. Optional, recommended: record raw USB traffic in a second terminal (bus 1). Keep this file out of the
    repo:
 
@@ -105,13 +106,10 @@ sends only the ACK. `0xae` gets no ACK at all there, which is correct — it nev
 sudo ./goodix-probe --bisect
 ```
 
-At every `>>> press Shift on the INTERNAL keyboard` prompt, press Shift on the **laptop's** keyboard, not
-the external one. Shift types nothing into the terminal.
+The run needs no input. It stops on its own if the EC does not answer the health check, and otherwise
+ends with `RESULT: every step completed`.
 
-If you miss a prompt, the run stops with a false alarm. Check whether the internal keyboard still types.
-If it does, note that in the log and run again.
-
-## If the keyboard stops
+## If the keyboard or the EC stops
 
 1. Stop the usbmon `cat` with Ctrl-C on the external keyboard.
 2. Don't try to repair it: no `usbreset`, no atkbd unbind/bind, no suspend. In Run 1 these only added
@@ -136,7 +134,7 @@ sudo ./goodix-probe --bisect --read-state
 
 The run is the usual baseline and attach, then the `0xa8` health check. If `0xa8` goes unanswered, the
 probe sends **one** `0xae` and nothing else. That is the only command the stuck EC answered in Run 12, and
-the keyboard survived it. The probe prints a `VERDICT` line and runs one more keyboard check, then exits 1
+the keyboard survived it. The probe prints a `VERDICT` line, then exits 1
 without sending a single step. Its reading:
 
 | `0xae` reply | meaning | next |
@@ -182,7 +180,7 @@ The reply carries a hash of the device's PSK. Keep it out of the repo and out of
 Rehearse offline first:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --allow-e4 --steps e4
+./goodix-probe --bisect --replay --allow-e4 --steps e4
 ```
 
 The replay answers with the ACK that Runs 1, 2 and 4 all saw and nothing after it. It deliberately does
@@ -209,7 +207,7 @@ The following `0x82` should then read `a2 04 25 00` — chip ID `0x2504`. `0xa6`
 Rehearse offline first:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --allow-a2 --steps a8,ae,a2,82,a6
+./goodix-probe --bisect --replay --allow-a2 --steps a8,ae,a2,82,a6
 ```
 
 ## `--tls` — the TLS-PSK handshake (PLAN.md Phase 5b)
@@ -217,8 +215,9 @@ Rehearse offline first:
 This is the step the project turns on: **does the EC accept the PSK recovered from Windows?**
 
 `--tls` runs as the tail of a bisect run, not as a mode of its own, so it inherits everything above — one
-command per step, a key press after each, the flushed log — and the keyboard is checked once more after
-the bridge. The bridge sends `0xd0` itself, at the moment it can catch the EC's ClientHello, so **do not
+command per step, the initial health check and the flushed log. Host counters are logged after
+the bridge, including on failure; keyboard health is not checked automatically. The bridge sends
+`0xd0` itself, at the moment it can catch the EC's ClientHello, so **do not
 put `d0` in `--steps`**: the step loop drains the device after every command and would throw the hello
 away. The probe refuses that combination rather than letting it happen.
 
@@ -229,11 +228,11 @@ away. The probe refuses that combination rather than letting it happen.
 
 # 2. Rehearse offline. No device is opened; the "EC" is an in-process OpenSSL
 #    client wearing Goodix framing. Both ends use synthetic keys; no device key is read.
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --allow-d4 --steps a8
 
 # 3. Rehearse the failure too, so its output is familiar before it matters.
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --steps a8 --rehearse-rejection
 
 # 4. Live, with an external keyboard attached. Steps first, then the bridge.
@@ -318,7 +317,7 @@ Rehearse it first; the stand-in sends a synthetic gradient, so the PGM from a re
 fingerprint:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
 ```
 
@@ -359,7 +358,7 @@ Rehearse it first. The stand-in answers the first arm with a base-invalid event 
 finger-down, both taken from `dump.pcapng`, so the re-arm path runs too:
 
 ```sh
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
   --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s
 ```

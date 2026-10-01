@@ -103,6 +103,6 @@ the whole EC; a live counter with a dead keyboard would confine it to the parts 
 serve USB and i8042.
 
 Two limits, stated plainly. The battery block is RAM the EC writes, so this proves the firmware is
-still *running*, not that any particular interface still answers. And `--assume-keys` reports
+still *running*, not that any particular interface still answers. And a `--replay` run reports
 `not observed`, so an offline rehearsal never exercises it; `TestSnapshotReportsTheECAndNotTheSCICount`
 covers it instead.

@@ -20,6 +20,7 @@ struct _FakeUsb {
   gpointer user_data;
   GCancellable *cancel;
   guint timeout;
+  gint64 next_transfer_delay; /* one-shot allocation/scheduling delay */
   guint completions;
   GQueue replies;
   GPtrArray *writes;

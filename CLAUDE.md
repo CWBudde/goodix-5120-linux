@@ -16,7 +16,7 @@ bridges to the sensor *and* drives the keyboard over i8042.
   marked as transcribed from upstream or observed. Append new observations there.
 - `--bisect` (`cmd/goodix-probe/bisect.go`, `host.go`) is the one sanctioned live mode, per
   `docs/bisect-runbook.md`. The **user** runs it with an external keyboard attached; Claude never does.
-  Offline it runs as `--bisect --replay --assume-keys`.
+  Offline it runs as `--bisect --replay`.
 - No firmware blobs (`*.bin`) or captures (`*.pgm`, `*.raw`, `captures/`) go into the repo — captures may contain
   biometric data.
 
@@ -35,17 +35,17 @@ go test ./internal/transport -run TestReplayHappyPath   # single test
 go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-aware tests; cmd/goodix-probe safety tests intentionally fail under this tag
 
 ./goodix-probe --dry-run   # print the frames it would send; opens no USB device
-./goodix-probe --bisect --replay --assume-keys   # bisect flow offline (no root, no USB)
+./goodix-probe --bisect --replay   # bisect flow offline (no root, no USB)
 
 # The TLS-PSK bridge, rehearsed offline: no device is opened, and the "EC" is an
 # an in-process OpenSSL client in Goodix framing. Uses synthetic keys; no device key file.
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --allow-d4 --allow-20 --steps a8 --capture /tmp/rehearsal.pgm
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
   --capture /tmp/rehearsal.pgm --wait-finger --finger-timeout 3s   # Phase 5d: capture on touch
 # add --touches 3 for three touch → frame → lift rounds in one TLS session
-./goodix-probe --bisect --replay --assume-keys --tls \
+./goodix-probe --bisect --replay --tls \
   --allow-d0 --steps a8 --rehearse-rejection   # what a PSK the EC rejects looks like
 
 go build -buildvcs=false ./cmd/goodix-pcap
@@ -107,7 +107,7 @@ The safety guarantee is structural, and changes must preserve it:
   memory; no TLS subprocess or TCP listener exists. Local key and policy validation happen before USB is opened.
   `internal/session` is the bridge between that and the device, **half duplex on purpose** so nothing writes to the
   OUT endpoint while something else reads from it. Their one caller is `goodix-probe --tls`, which runs as the tail of
-  a bisect run and is therefore behind the same keyboard-safe procedure as any live step
+  a bisect run and is therefore behind the same health-checked procedure as any live step
   (`docs/bisect-runbook.md`, PLAN.md Phase 5b/5c).
 - **An unfinished TLS handshake leaves the EC answering nothing but `0xae`, and the power-button cold
   power cycle did not clear it in Run 14** (Run 12: sending the init into that state cost the keyboard).

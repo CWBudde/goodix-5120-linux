@@ -13,7 +13,7 @@ import (
 	"goodix5120/internal/transport"
 )
 
-// TLS local failures must stop before keyboard monitoring or USB open/init.
+// TLS local failures must stop before host monitoring or USB open/init.
 func TestTLSPreflightStopsBeforeHardware(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -35,7 +35,7 @@ func TestTLSPreflightStopsBeforeHardware(t *testing.T) {
 			}
 			started := 0
 			deps := bisectDependencies{
-				newHost: func(bool) (bisectHost, error) { t.Fatal("keyboard watcher reached after TLS failure"); return nil, nil },
+				newHost: func() bisectHost { t.Fatal("host watcher reached after TLS failure"); return nil },
 				openUSB: func(transport.Options) (transport.Transport, error) {
 					t.Fatal("USB opener reached after TLS failure")
 					return nil, nil
@@ -43,8 +43,8 @@ func TestTLSPreflightStopsBeforeHardware(t *testing.T) {
 				startTLS: func(context.Context, tlspsk.Config) (*tlspsk.Session, error) { started++; return nil, tc.endpointErr },
 			}
 			allowed := map[proto.Opcode]bool{opRequestTLS: true}
-			code := mainBisectWithDeps(false, false, false, false, []proto.Opcode{opRequestTLS}, allowed,
-				tlsConfig{enabled: true, pskPath: key}, "a8", filepath.Join(dir, "run.log"), time.Second, time.Second, deps)
+			code := mainBisectWithDeps(false, false, false, []proto.Opcode{opRequestTLS}, allowed,
+				tlsConfig{enabled: true, pskPath: key}, "a8", filepath.Join(dir, "run.log"), time.Second, deps)
 			if code != 1 {
 				t.Fatalf("exit %d, want 1", code)
 			}
@@ -63,5 +63,21 @@ func TestTLSReplayDoesNotRequireDeviceKey(t *testing.T) {
 	allowed := map[proto.Opcode]bool{opRequestTLS: true}
 	if err := (tlsConfig{enabled: true}).validate(nil, allowed, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplayNeverObservesLiveHostOrOpensUSB(t *testing.T) {
+	deps := bisectDependencies{
+		newHost: func() bisectHost { t.Fatal("replay constructed a live host"); return nil },
+		openUSB: func(transport.Options) (transport.Transport, error) { t.Fatal("replay opened USB"); return nil, nil },
+		startTLS: func(context.Context, tlspsk.Config) (*tlspsk.Session, error) {
+			t.Fatal("plain replay started TLS")
+			return nil, nil
+		},
+	}
+	code := mainBisectWithDeps(true, false, false, nil, nil, tlsConfig{}, "a8",
+		filepath.Join(t.TempDir(), "run.log"), time.Second, deps)
+	if code != 0 {
+		t.Fatalf("exit %d, want successful offline replay", code)
 	}
 }

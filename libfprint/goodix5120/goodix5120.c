@@ -108,6 +108,7 @@ struct _FpiDeviceGoodix5120
   gboolean      interface_cleanup_failed; /* release failure has ambiguous ownership */
   guint         init_idx;
   gint64        hs_deadline;
+  gint64        hs_pace_deadline;
   gboolean      hs_done;
 
   /* Capture. */
@@ -227,27 +228,43 @@ packet_write_next (PacketWrite *write, FpDevice *dev)
   FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
   guint8 *data = g_memdup2 (write->frame->data + write->offset, G5120_USB_PACKET_SIZE);
   gint64 remaining = write->deadline - g_get_monotonic_time ();
-  guint timeout = (guint) CLAMP ((remaining + 999) / 1000, 1, G5120_TIMEOUT_OUT);
+  guint timeout;
 
   transfer->ssm = write->ssm;
   transfer->short_is_error = TRUE;
   fpi_usb_transfer_fill_bulk_full (transfer, G5120_EP_OUT, data, G5120_USB_PACKET_SIZE, g_free);
+  if (remaining <= 0)
+    {
+      packet_write_cb (transfer, dev, write,
+                        g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT,
+                                             "OUT frame exceeded its write budget before submission"));
+      fpi_usb_transfer_unref (transfer);
+      return;
+    }
+  timeout = (guint) MIN ((remaining + 999) / 1000, G5120_TIMEOUT_OUT);
   fpi_usb_transfer_submit (transfer, timeout, NULL, packet_write_cb, write);
 }
 
 /* Consume a padded frame and submit one completed 64-byte OUT at a time,
  * matching the Go reference. Keep the original budget for the whole frame. */
 static void
-submit_write (FpiSsm *ssm, FpDevice *dev, GByteArray *frame, FpiUsbTransferCallback cb)
+submit_write_until (FpiSsm *ssm, FpDevice *dev, GByteArray *frame,
+                    FpiUsbTransferCallback cb, gint64 deadline)
 {
   PacketWrite *write = g_new0 (PacketWrite, 1);
 
   g_assert (frame->len > 0 && frame->len % G5120_USB_PACKET_SIZE == 0);
   write->ssm = ssm;
   write->frame = frame;
-  write->deadline = g_get_monotonic_time () + (gint64) G5120_TIMEOUT_OUT * 1000;
+  write->deadline = MIN (deadline, g_get_monotonic_time () + (gint64) G5120_TIMEOUT_OUT * 1000);
   write->callback = cb;
   packet_write_next (write, dev);
+}
+
+static void
+submit_write (FpiSsm *ssm, FpDevice *dev, GByteArray *frame, FpiUsbTransferCallback cb)
+{
+  submit_write_until (ssm, dev, frame, cb, G_MAXINT64);
 }
 
 /* Classifies one IN transfer relative to the command @expect. It records what
@@ -713,53 +730,70 @@ start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self)
  *
  * Read one transfer from the EC, feed it to the server, send every record the
  * server produced in its own 0xb0 pack, and go straight back to reading.
- * There is no waiting on the host side at all, which is what stalled Runs 11
- * and 17: the EC sends ClientKeyExchange, ChangeCipherSpec and Finished as
- * three transfers, 22 ms and 5 ms apart, and must be read through its flight.
+ * Read through the EC's flight without waiting for new host output: its
+ * ClientKeyExchange, ChangeCipherSpec and Finished are separate transfers,
+ * 22 ms and 5 ms apart. Waiting on the host here stalled Runs 11 and 17.
+ *
+ * Between two records of the host's own flight there is a bounded read interval
+ * (HS_PACE). The vendor's log has 61 ms between ServerHello and
+ * ServerHelloDone and 66 ms between ChangeCipherSpec and Finished; the Go
+ * probe, which completed Runs 18-22, left ~3 ms. Runs 24 and 25 sent both
+ * records within a millisecond and drew decode_error both times. This is a
+ * timing hypothesis, not a confirmed fix. Read any complete alert before
+ * sending another record; record counts describe progress when it was seen.
  */
 
 enum {
   HS_READ,
   HS_WRITE,
+  HS_PACE,
   HS_NUM_STATES,
 };
 
 static GError *
-handshake_error (GError *cause)
+handshake_error (FpiDeviceGoodix5120 *self, GError *cause)
 {
   GError *e;
+  guint from_ec, to_ec;
 
+  g5120_tls_counts (self->tls, &from_ec, &to_ec);
   if (g_error_matches (cause, G5120_TLS_ERROR, G5120_TLS_ERROR_PSK_MISMATCH))
     e = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                  "TLS-PSK handshake rejected (%s). The PSK file does not hold "
+                                  "TLS-PSK handshake rejected (%s) after %u record(s) from the EC "
+                                  "and %u to it. The PSK file does not hold "
                                   "this device's key. The EC is probably left inside the "
                                   "handshake now: power it down with the charger plugged in "
                                   "and hold the power button 40 s before trying again.",
-                                  cause->message);
+                                  cause->message, from_ec, to_ec);
   else
     e = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                  "TLS-PSK handshake failed (%s). The EC is probably left inside "
+                                  "TLS-PSK handshake failed (%s) after %u record(s) from the EC "
+                                  "and %u to it. The EC is probably left inside "
                                   "the handshake now: power it down with the charger plugged in "
                                   "and hold the power button 40 s before trying again.",
-                                  cause->message);
+                                  cause->message, from_ec, to_ec);
   g_error_free (cause);
   return e;
 }
 
+/* HS_PACE keeps its original deadline across stale/empty reads. Complete a
+ * fragmented incoming record before output, even if the interval has expired;
+ * the overall handshake budget bounds that additional wait. */
 static void
-hs_read_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+hs_receive (FpiUsbTransfer *transfer, FpDevice *dev, GError *error, gboolean pacing)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
   FpiSsm *ssm = transfer->ssm;
   GError *terr = NULL;
   gboolean done = FALSE;
+  int next = pacing ? HS_PACE : HS_READ;
 
   if (error)
     {
       if (is_timeout (error))
         {
           g_error_free (error);
-          fpi_ssm_jump_to_state (ssm, HS_READ);
+          fpi_ssm_jump_to_state (ssm, next);
           return;
         }
       fpi_ssm_mark_failed (ssm, error);
@@ -772,16 +806,18 @@ hs_read_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError 
       if (!g5120_tls_feed (self->tls, self->rx_tls->data, self->rx_tls->len, &terr) ||
           !g5120_tls_handshake (self->tls, &done, &terr))
         {
-          fpi_ssm_mark_failed (ssm, handshake_error (terr));
+          fpi_ssm_mark_failed (ssm, handshake_error (self, terr));
           return;
         }
       self->hs_done = done;
-      fpi_ssm_jump_to_state (ssm, HS_WRITE);
+      fpi_ssm_jump_to_state (ssm, pacing ? HS_PACE :
+                             (g5120_tls_has_partial_input (self->tls) ? HS_READ : HS_WRITE));
       return;
 
     case RX_EMPTY:
-      fp_warn ("zero-length transfer inside the handshake: the stalled Runs 11 and 17 "
-               "showed exactly this where the EC's next record should have been");
+      if (!pacing)
+        fp_warn ("zero-length transfer inside the handshake: the stalled Runs 11 and 17 "
+                 "showed exactly this where the EC's next record should have been");
       break;
 
     case RX_ACK:
@@ -792,41 +828,78 @@ hs_read_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError 
       break;
     }
 
-  fpi_ssm_jump_to_state (ssm, HS_READ);
+  fpi_ssm_jump_to_state (ssm, next);
+}
+
+static void
+hs_read_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  hs_receive (transfer, dev, error, FALSE);
+}
+
+static void
+hs_pace_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  hs_receive (transfer, dev, error, TRUE);
 }
 
 static void
 hs_write_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
 {
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+
   if (error)
     {
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
-  fpi_ssm_jump_to_state (transfer->ssm, HS_WRITE);
+  if (g5120_tls_has_record (self->tls))
+    {
+      self->hs_pace_deadline = g_get_monotonic_time () + (gint64) G5120_TIMEOUT_HS_PACE * 1000;
+      fpi_ssm_jump_to_state (transfer->ssm, HS_PACE);
+    }
+  else
+    fpi_ssm_jump_to_state (transfer->ssm, HS_WRITE);
 }
 
 static void
 hs_run_state (FpiSsm *ssm, FpDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  gint64 remaining = self->hs_deadline - g_get_monotonic_time ();
+  guint read_budget;
+
+  if (remaining <= 0)
+    {
+      fpi_ssm_mark_failed (ssm,
+                           handshake_error (self, g_error_new (G5120_TLS_ERROR, G5120_TLS_ERROR_FAILED,
+                                                               "handshake exceeded its %d ms budget",
+                                                               G5120_HANDSHAKE_BUDGET)));
+      return;
+    }
+  read_budget = (guint) MIN ((remaining + 999) / 1000, G5120_TIMEOUT_HS_READ);
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
     case HS_READ:
-      if (g_get_monotonic_time () > self->hs_deadline)
-        {
-          guint from_ec, to_ec;
+      submit_read (ssm, dev, read_budget, NULL, hs_read_cb);
+      break;
 
-          g5120_tls_counts (self->tls, &from_ec, &to_ec);
-          fpi_ssm_mark_failed (ssm,
-                               handshake_error (g_error_new (G5120_TLS_ERROR, G5120_TLS_ERROR_FAILED,
-                                                             "no progress within %d ms; %u record(s) "
-                                                             "from the EC, %u to it",
-                                                             G5120_HANDSHAKE_BUDGET, from_ec, to_ec)));
-          return;
-        }
-      submit_read (ssm, dev, G5120_TIMEOUT_HS_READ, NULL, hs_read_cb);
+    case HS_PACE:
+      {
+        gint64 gap = self->hs_pace_deadline - g_get_monotonic_time ();
+
+        if (gap <= 0 && !g5120_tls_has_partial_input (self->tls))
+          {
+            fp_dbg ("TLS: inter-record interval completed (%d ms); sending the next record",
+                    G5120_TIMEOUT_HS_PACE);
+            fpi_ssm_jump_to_state (ssm, HS_WRITE);
+            return;
+          }
+        if (gap > 0)
+          read_budget = (guint) MIN ((gap + 999) / 1000, read_budget);
+        submit_read (ssm, dev, read_budget, NULL, hs_pace_cb);
+      }
       break;
 
     case HS_WRITE:
@@ -854,7 +927,7 @@ hs_run_state (FpiSsm *ssm, FpDevice *dev)
             fpi_ssm_mark_failed (ssm, proto_error (error, "refused to send"));
             return;
           }
-        submit_write (ssm, dev, frame, hs_write_cb);
+        submit_write_until (ssm, dev, frame, hs_write_cb, self->hs_deadline);
       }
       break;
 

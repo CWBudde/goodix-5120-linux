@@ -1,12 +1,15 @@
 # goodix5120: libfprint driver for the Goodix `27c6:5120` behind an ITE EC
 
 This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerprint reader in the Huawei MateBook
-`HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its wire sequence byte for byte.
+`HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its command sequence. Its actual live TLS bytes remain under investigation.
 
 **Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. Run 23's `0xe4` check
 is corrected; Runs 24 and 25 passed the full init but the EC rejected the first TLS server flight with
 `decode_error`. Both keyboards survived. Completed 64-byte OUT writes did not resolve the rejection;
-a successful capture remains pending, and hardware retries are deferred for targeted diagnostics.**
+a successful capture remains pending. The owner reports the original pacing bundle also crashed
+the EC; its final error is not available. The reviewed candidate tests a 60 ms minimum interval between
+TLS records of a host flight, reading IN throughout; it has offline evidence only (docs/protocol.md, "The gap between
+the host's TLS records").**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
@@ -40,6 +43,9 @@ driver is built around that:
   awaited.
 - **Completed 64-byte writes.** Each padded frame is sent one packet at a time, with the next packet submitted
   after completion. Short/zero completions stop the frame; all packets share its original write budget.
+- **Experimental TLS pacing.** Between records of a host flight, a 60 ms interval permits alert reads.
+  Stale input preserves the deadline; fragmented TLS input is completed before more output. The total
+  handshake budget bounds all states and transfers. The original pacing experiment failed live; this reviewed revision has offline evidence only.
 - **No USB reset.** `goodixmoc` resets its device on open; this driver does not, because what a reset does to the EC
   is unknown.
 - **Driver-level redaction:** the driver withholds the PSK, `0xe4`/`0xa6` reply bodies, TLS bodies, and image data.
@@ -275,7 +281,8 @@ exact owner commands, expected log milestones, private output handling, and resu
 The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf`
 with only `goodix5120` enabled after aligning OUT submissions with the Go reference. The candidate
 in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence but reproduced the TLS rejection
-in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix.
+in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix. The record-pacing
+candidate that follows it has no owner bundle yet; it needs review and a rebuild against pinned libfprint first.
 
 As with `--bisect`, the owner runs this with an **external keyboard attached**, after a fresh EC (charger plugged
 in, 40 s power-button hold if the previous session ended badly):

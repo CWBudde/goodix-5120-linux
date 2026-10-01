@@ -74,7 +74,8 @@ throughout, and `0xd0` makes the EC open a TLS handshake.** **5b is done on hard
 the TLS-PSK handshake completes with the PSK unsealed from Windows, and the EC acknowledges `0xd4`.**
 Every state-changing frame is behind its own `--allow-XX` flag
 whose help text says what it does, and `--tls` runs as the tail of a bisect run so the bridge inherits the
-keyboard checks. The runbook has the exact command lines.
+initial health check. Per-step key-press checks were removed on 2026-10-01; passive counters
+do not establish keyboard health or continued EC responsiveness. The runbook has the exact command lines.
 
 - [x] **5a — Finish the init: `96`, `70`, `98`, `90`, then `d0`. Done 2026-09-20 (Run 11).** All ten frames
       went out in one run and **the keyboard stayed alive after every one of them**. `0x96` draws no reply at
@@ -415,6 +416,17 @@ change or arbitrary delay is warranted. See Run 25 in `docs/protocol.md` for lim
       packet path offline. Keep raw transfer tracing disabled, TLS bytes unmodified and secret/
       application payloads withheld. A candidate must address demonstrated evidence; the existing
       owner review/health gate still applies before any future hardware experiment.
+      **2026-10-01:** owner analysis identifies logged inter-record spacing as a timing hypothesis:
+      vendor 61/66 ms, Go ~3 ms (completed), C within adjacent logging milliseconds in Runs 24/25
+      (`decode_error`). These timestamps do not measure USB completion or establish a minimum gap.
+      The candidate enforces a 60 ms interval between host records while reading IN; stale/empty input
+      cannot shorten or restart it. Partial TLS input is completed before more output. Every handshake
+      state, read and frame write respects the remaining total budget. Record counts describe progress
+      when an alert is observed, without assigning causality. Two original and eleven additional regressions
+      cover flight boundaries, immediate/split alerts, noise, elapsed intervals and budget failures.
+      **245 C subtests pass offline.** The owner reports the original pacing bundle crashed the EC;
+      its final error is not available. This reviewed revision has not run on hardware; targeted structure/packet diagnostics
+      above remain open, and the owner review/health gate is unchanged.
 
 ### 6c — Portability, authentication quality, and repeatable checks
 
@@ -430,8 +442,10 @@ change or arbitrary delay is warranted. See Run 25 in `docs/protocol.md` for lim
       (`internal/dpapi/dpapi.go:319`), bound key-stretch work, and reject cyclic / excessively deep registry
       subkey indexes (`internal/winreg/hive.go:155`). Add malformed-input tests and a winreg test suite.
 - [ ] Bound Go bridge socket writes and the background plaintext buffer, so cancellation and size
-      limits apply while I/O is in progress. Exercise backpressure. Keep the keyboard check on the
-      ordinary bisect send / receive error path, as the TLS hook already does.
+      limits apply while I/O is in progress. Exercise backpressure.
+- [ ] Make ordinary Go bisect steps stop when their documented ACK/data reply is missing. Preserve
+      legitimate no-reply (`0x96`) and ACK-only commands; add regressions proving no later step or TLS
+      hook runs after a missing required reply. The initial health check does not cover later failures.
 - [ ] Add repeatable checks for Go tests / race / vet, both opcode tags, C helper tests / sanitizers,
       and compilation against a pinned libfprint revision. Make format checking fail on differences;
       `just fmt-check` currently only prints filenames. Refresh the root README's obsolete stop verdict,

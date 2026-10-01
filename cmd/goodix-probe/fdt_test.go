@@ -150,7 +150,7 @@ func TestSeveralTouchesInOneSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = devnull
-	code := mainBisect(true, true, false, false, allow, allowed, cfg, "a8", logPath, time.Second, time.Second)
+	code := mainBisect(true, false, false, allow, allowed, cfg, "a8", logPath, time.Second)
 	os.Stdout = stdout
 	_ = devnull.Close()
 

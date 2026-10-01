@@ -17,7 +17,7 @@ type replayCounters interface {
 	Unread() int
 }
 
-// runReplay runs a bisect over script's commands, keyboard checks assumed, and
+// runReplay runs a bisect over script's commands and
 // returns its log.
 func runReplay(t *testing.T, script []transport.Exchange) (string, replayCounters) {
 	t.Helper()
@@ -30,7 +30,7 @@ func runReplay(t *testing.T, script []transport.Exchange) (string, replayCounter
 		ops = append(ops, ex.Cmd)
 	}
 	open := func() (transport.Transport, error) { return tr, nil }
-	if err := runBisect(log.New(&buf, "", 0), assumeKeysHost{}, open, ops, 50*time.Millisecond, 0, healthOff, nil); err != nil {
+	if err := runBisect(log.New(&buf, "", 0), offlineHost{}, open, ops, 50*time.Millisecond, healthOff, nil); err != nil {
 		t.Fatalf("runBisect: %v\n%s", err, buf.String())
 	}
 	return buf.String(), tr.(replayCounters)

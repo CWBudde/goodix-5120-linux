@@ -8,18 +8,23 @@ Run 23 stopped at a mis-transcribed `0xe4` reply header. Run 24 passed the corre
 then received fatal TLS `decode_error (50)` after the first server flight; both keyboards worked
 after exit. Run 25 tested the completed 64-byte OUT submissions below and received the same
 fatal alert; both keyboards still worked. A successful C capture remains pending.
-**Do not repeat this bundle as a proposed fix. Hardware retries are deferred until targeted
-diagnostics and review establish the next experiment.** The procedure below is retained as the
-owner capture procedure for a future reviewed candidate; its preparation alone does not clear it.
+The owner also reports an EC crash using `dist/goodix-owner-c-pacing/`; its final error is not
+available. Do not repeat either bundle. The reviewed source tests a 60 ms minimum interval between
+host records while reading IN, preserving that deadline across unrelated input and completing partial
+TLS records before more output. This is an unproven timing hypothesis, not a confirmed vendor requirement.
+**Further hardware attempts remain deferred pending targeted diagnostics and review.** The procedure
+below applies only to a future reviewed build; its preparation alone does not clear the gate.
 
 ## Prepare the build offline
 
-The prepared local capture bundle for driver commit `e8930b4` is
-`dist/goodix-owner-c-packet-writes/` in this repository (ignored by Git, retained across reboot).
-It contains only `goodix5120`, uses the bundled libfprint through its executable RUNPATH,
-and was not installed system-wide. Build logs, `provenance.txt`, and binary `SHA256SUMS` are
-included. The full source/build is in `/tmp/goodix-owner-c-packet-writes/`; that temporary copy
-may be cleared on reboot. The bundle is local, not distributed with the repository.
+The superseded local bundle is `dist/goodix-owner-c-pacing/` in this repository (ignored by
+Git, retained across reboot), built from the original staged record-pacing driver on top of `dbdb6d0`
+(`provenance.txt` records the staged diff's hash). It was built in an `ubuntu:26.04` container to
+match the host. It contains only `goodix5120`, uses the bundled libfprint through its executable
+RUNPATH, and was not installed system-wide. Build logs, `provenance.txt`, and binary `SHA256SUMS`
+are included. It predates the review refinements and must not be used to test the current source.
+The bundle is local, not distributed with the repository. Prepare a new revision-labelled bundle
+after review and record its source revision and checksums.
 
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
 and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
@@ -53,7 +58,7 @@ ldd "$build/examples/img-capture"
 Expect just `27c6:5120` in the USB table, no missing libraries, and `libfprint-2.so.2` resolved
 inside this build. Do not invoke `img-capture` as an offline smoke test: it opens hardware.
 
-## Check the EC and keyboard
+## Check the EC
 
 Attach and test an **external keyboard**, save other work, and follow the
 [bisect runbook](bisect-runbook.md#before). If the preceding session failed, recover first:
@@ -67,9 +72,8 @@ go build -buildvcs=false ./cmd/goodix-probe
 sudo ./goodix-probe --bisect --read-state
 ```
 
-Press Shift on the **internal** keyboard at each prompt. Continue only if the health check
-and every keyboard check pass. A failed health check, keyboard check, or new MCU state means
-stop and follow the runbook's recovery procedure; do not start the C capture.
+The run needs no input. Continue only if the health check passes. A failed health check or a
+new MCU state means stop and follow the runbook's recovery procedure; do not start the C capture.
 
 ## Run exactly one capture
 
@@ -78,7 +82,7 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build="$repo/dist/goodix-owner-c-packet-writes"
+build=/absolute/path/to/the/new-reviewed-bundle
 umask 077
 run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
@@ -96,9 +100,8 @@ the existing key on `fuseblk`; the driver accepts it, but other local users may 
 Leave `FP_DEBUG_TRANSFER` unset: raw transfer tracing can reveal secrets and images.
 
 Watch the log. When `arming 0x32` appears, place one finger. When `arming 0x34` appears, lift it.
-Check that the internal keyboard still types during the wait and after exit. Stop at the first
-unexpected exchange, warning/error other than that known PSK-permission warning, or keyboard
-failure; use Ctrl-C on the external keyboard.
+Stop at the first unexpected exchange or warning/error other than that known PSK-permission
+warning, or keyboard failure (Ctrl-C on the external keyboard). Check typing during the wait and after exit.
 Preserve the log and recover as described above before any further hardware attempt.
 
 ## Judge and record the result

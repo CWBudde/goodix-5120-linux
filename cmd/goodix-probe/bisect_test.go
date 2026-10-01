@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"log"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -15,53 +13,42 @@ import (
 	"goodix5120/internal/transport"
 )
 
-// fakeHost answers keyboard checks from a script: presses[i] is the answer to
-// the i-th check (baseline first). Checks past the end of the script pass.
+// fakeHost records how often the host was logged and what was marked.
 type fakeHost struct {
-	presses []bool
-	checks  int
-	marks   []string
+	snapshots int
+	marks     []string
 }
 
-func (h *fakeHost) WaitKey(time.Duration) (bool, error) {
-	i := h.checks
-	h.checks++
-	if i < len(h.presses) {
-		return h.presses[i], nil
-	}
-	return true, nil
-}
 func (h *fakeHost) SensorPresent() bool { return true }
-func (h *fakeHost) Snapshot() string    { return "fake" }
+func (h *fakeHost) Snapshot() string    { h.snapshots++; return "fake" }
 func (h *fakeHost) Mark(msg string)     { h.marks = append(h.marks, msg) }
 
-// bisectReplay runs bisect over the Run 1 capture with the given key presses,
-// using the default step list.
-func bisectReplay(t *testing.T, presses ...bool) (string, *fakeHost, replayCounters, bool, error) {
+// bisectReplay runs bisect over the Run 1 capture, using the default step list.
+func bisectReplay(t *testing.T) (string, *fakeHost, replayCounters, bool, error) {
 	t.Helper()
-	return bisectReplaySteps(t, defaultBisectSteps(), presses...)
+	return bisectReplaySteps(t, defaultBisectSteps())
 }
 
 // bisectReplaySteps is bisectReplay with an explicit --steps string, for tests
 // that need more steps than the default list has. Repeats are legal, which is
 // how a two-step run is built now that the probe sends exactly one command.
-func bisectReplaySteps(t *testing.T, list string, presses ...bool) (string, *fakeHost, replayCounters, bool, error) {
+func bisectReplaySteps(t *testing.T, list string) (string, *fakeHost, replayCounters, bool, error) {
 	t.Helper()
 	ops, err := parseSteps(list)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	host := &fakeHost{presses: presses}
+	host := &fakeHost{}
 	tr := transport.NewReplay(scriptFor(ops), transport.Options{Ceiling: proto.ClassSafe})
 	opened := false
 	open := func() (transport.Transport, error) { opened = true; return tr, nil }
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthOff, nil)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, healthOff, nil)
 	return buf.String(), host, tr.(replayCounters), opened, err
 }
 
-func TestBisectAllStepsAlive(t *testing.T) {
+func TestBisectAllStepsLogged(t *testing.T) {
 	out, host, rt, _, err := bisectReplay(t)
 	if err != nil {
 		t.Fatalf("runBisect: %v\n%s", err, out)
@@ -70,67 +57,93 @@ func TestBisectAllStepsAlive(t *testing.T) {
 		t.Errorf("remaining=%d unread=%d, want 0/0", rt.Remaining(), rt.Unread())
 	}
 	// baseline + attach + one per step
-	if want := 2 + len(steps); host.checks != want {
-		t.Errorf("%d keyboard checks, want %d", host.checks, want)
+	if want := 2 + len(steps); host.snapshots != want {
+		t.Errorf("%d host log lines, want %d", host.snapshots, want)
 	}
 	if !strings.Contains(out, `as text "GF_ITE_EC_20063"`) {
 		t.Errorf("version string not decoded:\n%s", out)
 	}
-	if !strings.Contains(out, "RESULT: internal keyboard alive after every step") {
+	if !strings.Contains(out, "RESULT: every step completed") {
 		t.Errorf("no final result:\n%s", out)
 	}
-}
-
-// A dead keyboard after a step must stop the run there: nothing further may be
-// sent to the EC.
-func TestBisectStopsAtFirstDeadCheck(t *testing.T) {
-	// Two steps, so there is a second one left to not send. The probe's default
-	// list is a single command now, and a repeat is the cheapest way to get a
-	// second step without naming an opcode the probe would not otherwise send.
-	//
-	// baseline ok, attach ok, step 1 dead.
-	out, host, rt, _, err := bisectReplaySteps(t, "a8,a8", true, true, false)
-	if !errors.Is(err, errKeyboardLost) {
-		t.Fatalf("err = %v, want errKeyboardLost\n%s", err, out)
-	}
-	if !strings.Contains(err.Error(), "firmware_version") {
-		t.Errorf("error does not name the step: %v", err)
-	}
-	if rt.Remaining() != 1 {
-		t.Errorf("remaining=%d, want 1: step 2 must not be sent after the keyboard died", rt.Remaining())
-	}
-	if strings.Contains(out, "step 2 ") {
-		t.Errorf("step 2 was attempted:\n%s", out)
-	}
-	if last := host.marks[len(host.marks)-1]; !strings.HasPrefix(last, "NO KEY after step 1") {
-		t.Errorf("last kernel marker = %q", last)
+	// The run asks nothing of the user.
+	if strings.Contains(out, "press") || strings.Contains(out, ">>>") {
+		t.Errorf("the run still prompts for input:\n%s", out)
 	}
 }
 
-// A keyboard that is dead before anything happens must stop the run before the
-// device is even opened.
-func TestBisectBaselineFailureOpensNothing(t *testing.T) {
-	out, _, rt, opened, err := bisectReplay(t, false)
-	if !errors.Is(err, errBaseline) {
-		t.Fatalf("err = %v, want errBaseline\n%s", err, out)
+// A failed diagnostic transport must stop immediately and preserve its cause.
+type stateFailureTransport struct {
+	transport.Transport
+	failure    error
+	failSend   bool
+	stateSent  bool
+	stateReads int
+}
+
+func (tr *stateFailureTransport) Send(op proto.Opcode, payload []byte) error {
+	if op == opMCUState {
+		tr.stateSent = true
+		if tr.failSend {
+			return tr.failure
+		}
+		return nil
 	}
-	if opened {
-		t.Error("device was opened although the baseline check failed")
+	return tr.Transport.Send(op, payload)
+}
+
+func (tr *stateFailureTransport) Recv(timeout time.Duration) ([]byte, error) {
+	if tr.stateSent {
+		tr.stateReads++
+		return nil, tr.failure
 	}
-	if rt.Remaining() != len(steps) {
-		t.Errorf("remaining=%d, want %d", rt.Remaining(), len(steps))
+	return tr.Transport.Recv(timeout)
+}
+
+func TestReadStatePreservesTransportError(t *testing.T) {
+	for _, failSend := range []bool{true, false} {
+		name := "receive"
+		if failSend {
+			name = "send"
+		}
+		t.Run(name, func(t *testing.T) {
+			failure := errors.New("synthetic diagnostic I/O failure")
+			tr := &stateFailureTransport{
+				Transport: transport.NewReplay([]transport.Exchange{{Cmd: opFirmwareVer}}, transport.Options{Ceiling: proto.ClassSafe}),
+				failure:   failure, failSend: failSend,
+			}
+			var out bytes.Buffer
+			err := runBisect(log.New(&out, "", 0), &fakeHost{}, func() (transport.Transport, error) { return tr, nil },
+				[]proto.Opcode{opFirmwareVer}, 0, healthReadState, nil)
+			if !errors.Is(err, failure) {
+				t.Fatalf("got %v, want diagnostic cause", err)
+			}
+			wantReads := 1
+			if failSend {
+				wantReads = 0
+			}
+			if tr.stateReads != wantReads {
+				t.Fatalf("%d diagnostic reads, want %d; no drain after failure", tr.stateReads, wantReads)
+			}
+			if strings.Contains(out.String(), "--- step 1") {
+				t.Fatal("step sent after failed diagnostic")
+			}
+		})
 	}
 }
 
-// Attach alone killing the keyboard must be reported as step 0, before any
-// command is sent.
-func TestBisectAttachFailure(t *testing.T) {
-	_, _, rt, _, err := bisectReplay(t, true, false)
-	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "step 0 attach") {
-		t.Fatalf("err = %v, want errKeyboardLost after step 0 attach", err)
+func TestBisectFailedTailLogsHostAndPreservesError(t *testing.T) {
+	tr := transport.NewReplay(scriptFor([]proto.Opcode{opFirmwareVer}), transport.Options{Ceiling: proto.ClassSafe})
+	host := &fakeHost{}
+	var out bytes.Buffer
+	failure := errors.New("synthetic TLS tail failure")
+	err := runBisect(log.New(&out, "", 0), host, func() (transport.Transport, error) { return tr, nil },
+		[]proto.Opcode{opFirmwareVer}, 0, healthOff, func(transport.Transport) error { return failure })
+	if !errors.Is(err, failure) {
+		t.Fatalf("got %v, want tail cause", err)
 	}
-	if rt.Remaining() != len(steps) {
-		t.Errorf("remaining=%d: a command was sent after attach failed", rt.Remaining())
+	if host.snapshots != 4 || !strings.Contains(out.String(), "host after the after-steps hook") {
+		t.Fatalf("missing passive host observation after failed tail:\n%s", out.String())
 	}
 }
 
@@ -209,13 +222,10 @@ func TestBisectAllowE4(t *testing.T) {
 		Allow:   []proto.Opcode{opPSKRead},
 	})
 	open := func() (transport.Transport, error) { return tr, nil }
-	// baseline ok, attach ok, 0xe4 dead — what Run 2 saw.
-	host := &fakeHost{presses: []bool{true, true, false}}
-
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthOff, nil)
+	err = runBisect(log.New(&buf, "", 0), &fakeHost{}, open, ops, 0, healthOff, nil)
 	out := buf.String()
-	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "preset_psk_read") {
-		t.Fatalf("err = %v, want errKeyboardLost after preset_psk_read\n%s", err, out)
+	if err != nil {
+		t.Fatalf("runBisect with --allow-e4 = %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "ACK for preset_psk_read (0xe4), status 0x01") {
 		t.Errorf("ACK not decoded:\n%s", out)
@@ -227,8 +237,7 @@ func TestBisectAllowE4(t *testing.T) {
 
 // With --allow-a2, reset reaches the device through the transport's Allow
 // exception while the ceiling stays safe; without it, the transport refuses it.
-// Unlike 0xe4 the reset does not wedge the EC, so the run completes with the
-// keyboard alive after every step.
+// The run completes.
 func TestBisectAllowA2(t *testing.T) {
 	ops, err := parseSteps("a2", opReset)
 	if err != nil {
@@ -246,14 +255,11 @@ func TestBisectAllowA2(t *testing.T) {
 		Allow:   []proto.Opcode{opReset},
 	})
 	open := func() (transport.Transport, error) { return tr, nil }
-	// baseline ok, attach ok, reset ok — the keyboard survives the reset.
-	host := &fakeHost{presses: []bool{true, true, true}}
-
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthOff, nil)
+	err = runBisect(log.New(&buf, "", 0), &fakeHost{}, open, ops, 0, healthOff, nil)
 	if err != nil {
 		t.Fatalf("runBisect with --allow-a2 = %v\n%s", err, buf.String())
 	}
-	if out := buf.String(); !strings.Contains(out, "keyboard alive after step 1 reset (0xa2)") {
+	if out := buf.String(); !strings.Contains(out, "host after step 1 reset (0xa2)") {
 		t.Errorf("reset step not run as expected:\n%s", out)
 	}
 }
@@ -271,59 +277,10 @@ func TestBisectStepsAreSafe(t *testing.T) {
 	}
 }
 
-// inputEvent encodes a struct input_event as the kernel would.
-func inputEvent(typ, code uint16, value int32) []byte {
-	b := make([]byte, inputEventSize)
-	tv := inputEventSize - 8
-	binary.NativeEndian.PutUint16(b[tv:], typ)
-	binary.NativeEndian.PutUint16(b[tv+2:], code)
-	binary.NativeEndian.PutUint32(b[tv+4:], uint32(value))
-	return b
-}
-
-// The evdev reader must count key-down events only, and presses made before
-// WaitKey is called (such as the Enter that started the program) must not
-// count as proof the keyboard is alive.
-func TestLinuxHostKeyEvents(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-	h := &linuxHost{keys: make(chan struct{}, 64), done: make(chan error, 1)}
-	go h.read(r)
-
-	const keyLeftShift = 42
-	// An earlier press, before the prompt.
-	w.Write(inputEvent(1, 28, 1))
-	w.Write(inputEvent(0, 0, 0))
-	time.Sleep(20 * time.Millisecond)
-
-	// Release, autorepeat and sync alone are not a press.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		w.Write(inputEvent(1, 28, 0))
-		w.Write(inputEvent(1, keyLeftShift, 2))
-		w.Write(inputEvent(0, 0, 0))
-	}()
-	if ok, err := h.WaitKey(150 * time.Millisecond); ok || err != nil {
-		t.Fatalf("WaitKey = %t, %v; want no press (stale press, release, repeat, sync only)", ok, err)
-	}
-
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		w.Write(inputEvent(1, keyLeftShift, 1))
-	}()
-	if ok, err := h.WaitKey(time.Second); !ok || err != nil {
-		t.Fatalf("WaitKey = %t, %v; want a press", ok, err)
-	}
-}
-
 // TestHealthCheckStopsBeforeTheFirstStep is Run 12's regression test. That run
 // began with an EC that answered nothing, sent ten frames into it anyway, and
 // lost the internal keyboard at step 8. The health check must stop such a run
-// before the first step, and it must not be reported as a keyboard failure —
-// the keyboard was fine, the EC was not.
+// before the first step.
 func TestHealthCheckStopsBeforeTheFirstStep(t *testing.T) {
 	ops, err := parseSteps("a8,ae")
 	if err != nil {
@@ -337,12 +294,9 @@ func TestHealthCheckStopsBeforeTheFirstStep(t *testing.T) {
 	tr := transport.NewReplay(silent, transport.Options{Ceiling: proto.ClassSafe})
 	open := func() (transport.Transport, error) { return tr, nil }
 
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthCheck, nil)
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, healthCheck, nil)
 	if !errors.Is(err, errECUnresponsive) {
 		t.Fatalf("runBisect with an unresponsive EC = %v, want errECUnresponsive\nlog:\n%s", err, &buf)
-	}
-	if errors.Is(err, errKeyboardLost) {
-		t.Error("an unresponsive EC was reported as a lost keyboard")
 	}
 	if got := buf.String(); !strings.Contains(got, "health check") {
 		t.Errorf("the log does not mention the health check:\n%s", got)
@@ -367,7 +321,7 @@ func TestHealthCheckPassesOnAnAnsweringEC(t *testing.T) {
 	tr := transport.NewReplay(script, transport.Options{Ceiling: proto.ClassSafe})
 	open := func() (transport.Transport, error) { return tr, nil }
 
-	if err := runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthCheck, nil); err != nil {
+	if err := runBisect(log.New(&buf, "", 0), host, open, ops, 0, healthCheck, nil); err != nil {
 		t.Fatalf("runBisect with a healthy EC = %v\nlog:\n%s", err, &buf)
 	}
 	if got := buf.String(); !strings.Contains(got, "the run may proceed") {
@@ -395,7 +349,7 @@ var run12State = []byte{
 
 // runReadState runs a bisect with --read-state against an EC that ignores 0xa8
 // and answers 0xae with state (nil: answers nothing).
-func runReadState(t *testing.T, state []byte, presses ...bool) (string, *fakeHost, error) {
+func runReadState(t *testing.T, state []byte) (string, *fakeHost, error) {
 	t.Helper()
 	ops, err := parseSteps("a8,ae")
 	if err != nil {
@@ -411,14 +365,14 @@ func runReadState(t *testing.T, state []byte, presses ...bool) (string, *fakeHos
 	open := func() (transport.Transport, error) { return tr, nil }
 
 	var buf bytes.Buffer
-	host := &fakeHost{presses: presses}
-	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, time.Second, healthReadState, nil)
+	host := &fakeHost{}
+	err = runBisect(log.New(&buf, "", 0), host, open, ops, 0, healthReadState, nil)
 	return buf.String(), host, err
 }
 
 // TestReadStateOnAStuckEC replays Run 12's EC under --read-state: 0xa8 goes
 // unanswered, exactly one 0xae follows, the verdict names the stuck handshake,
-// the keyboard is checked after it, and the run still stops before any step.
+// the host is logged after it, and the run still stops before any step.
 // The replay script holds only those two exchanges, so any further frame would
 // fail the run with a script error instead of errECUnresponsive.
 func TestReadStateOnAStuckEC(t *testing.T) {
@@ -435,17 +389,8 @@ func TestReadStateOnAStuckEC(t *testing.T) {
 		t.Errorf("a step ran after the health check failed:\n%s", out)
 	}
 	// baseline, attach, read-state.
-	if host.checks != 3 {
-		t.Errorf("keyboard checks = %d, want 3 (baseline, attach, read-state)", host.checks)
-	}
-}
-
-// TestReadStateKeyboardLost: if the keyboard dies after the 0xae, that is what
-// the run reports — it is the more important of the two facts.
-func TestReadStateKeyboardLost(t *testing.T) {
-	out, _, err := runReadState(t, run12State, true, true, false)
-	if !errors.Is(err, errKeyboardLost) || !strings.Contains(err.Error(), "read-state") {
-		t.Fatalf("err = %v, want errKeyboardLost after read-state\n%s", err, out)
+	if host.snapshots != 3 {
+		t.Errorf("host log lines = %d, want 3 (baseline, attach, read-state)", host.snapshots)
 	}
 }
 
@@ -505,7 +450,7 @@ func TestHealthCheckIgnoresUnsolicitedEvents(t *testing.T) {
 	open := func() (transport.Transport, error) { return tr, nil }
 
 	var buf bytes.Buffer
-	err = runBisect(log.New(&buf, "", 0), &fakeHost{}, open, ops, 0, time.Second, healthCheck, nil)
+	err = runBisect(log.New(&buf, "", 0), &fakeHost{}, open, ops, 0, healthCheck, nil)
 	if !errors.Is(err, errECUnresponsive) {
 		t.Fatalf("runBisect with only an unsolicited 0x32 = %v, want errECUnresponsive\nlog:\n%s", err, &buf)
 	}
