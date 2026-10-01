@@ -1321,6 +1321,36 @@ cleared, no image. This confirms the Run 31 hypothesis that the EC loses an OUT 
 pace in `70317c9` stays. The EC is now bit-clear, so the next run of the paced stretch bundle also
 tests a paced session from a bit-clear start, which no C run has done yet.
 
+### Run 34 — 2026-10-02 01:35, paced stretch bundle from the bit-clear state: first saved C image (observed)
+
+The owner ran `dist/goodix-owner-c-stretch/` (commit `17af857`'s driver: every host record pair paced
+60 ms, 10 ms settle, 5 s listen, per-frame contrast stretch) six minutes after Run 33, no EC reset.
+**Result: open → touch → image → minutiae → lift → close, all without error; `img-capture` wrote the
+frame.** This is the first complete C capture.
+
+- **Start state was Run 33's:** pre-handshake `0xae` `02 00 31 03 00 00 01 00 90 63 … 13 13`, byte 1
+  `0x00` — the state every failing C run (27–30, 33) started from.
+- TLS: `0xd0` 13.175, EC ClientHello .189, ServerHello .189, ServerHelloDone .251 (60 ms), EC
+  ClientKeyExchange .252, ChangeCipherSpec .274, Finished .279, host ChangeCipherSpec .279 and
+  Finished .340 (60 ms), settle until .351, `0xd4` .351 (ACK `0x01` .353), listen until 18.354 (EC silent).
+- **Post-listen `0xae`: byte 1 `0x02`, counter `15 15`.** The paced C session set the TLS bit itself.
+  With Runs 32/33 this settles it: a paced session establishes from either start state; an unpaced
+  one never does.
+- `0x32` armed `b8 c5 ab b9 aa b9`; finger-down 5.6 s later (header `02 00 2f 00`, readings
+  `[270 307 298 295 336 293]`). Touch flags `0x2f` leave zone 4 uncovered, so the up arm is
+  `a2 b4 b0 ae 19 ad`: `0x19` is the untouched-zone value, as the shared fixtures expect.
+- `0x20` ACKed in 1 ms; the 7749-byte application-data record arrived 86 ms after the command and
+  decoded to `7693 plaintext bytes, 8-byte header + samples + 5-byte trailer`.
+- **Stretch bounds: `1468..2756`** (1st/99th percentile, 1288 counts; `91..172` after `>> 4`, close
+  to Run 22's Go range of 52–179). NBIS's minutiae scan completed in 21 ms without a failure, and the
+  image was handed to the example; libfprint does not log the minutiae count.
+- `0x34` finger-up 4.7 s later (header `00 02 00 00`, readings `[369 395 343 371 341 371]`, within 1
+  of Run 32's untouched readings); deactivation and close completed; the frame was written.
+
+**Open:** whether the stretch was needed, or whether Run 32's failure was that frame's touch. The
+minutiae count and quality per frame, ridge polarity, and enrollment/verification (Phase 6c) are not
+established by one saved frame.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

@@ -179,8 +179,10 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    bytes), but from a bit-set start state left by Run 31, and NBIS found no minutiae, so nothing
    was saved (`docs/protocol.md`, Run 32). Run 33, the A/B run of the unpaced listen bundle from the
    same bit-set state, got no image and left the bit clear: the final-flight pacing is the fix.
-   Next: `dist/goodix-owner-c-stretch/` from that bit-clear state, which replaces `>> 4` with a
-   per-frame 1st/99th-percentile contrast stretch and logs the two bounds.**
+   Run 34 ran `dist/goodix-owner-c-stretch/` (per-frame 1st/99th-percentile contrast stretch) from
+   that bit-clear state: the session set the bit itself, NBIS accepted the stretched frame (bounds
+   1468..2756) and the image was saved — **the first complete C capture**. Next: Phase 6c
+   (repeated captures, enrollment, verification).**
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
