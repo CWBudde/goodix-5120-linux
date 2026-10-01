@@ -185,7 +185,9 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    (repeated captures, enrollment, verification).** The owner-only enroll/verify procedure is
    [docs/c-driver-enroll-verify.md](docs/c-driver-enroll-verify.md), using `dist/goodix-owner-c-enroll/`.
    Run 35 enrolled the right middle finger in C: 5/5 stages in one TLS session (six touches, one
-   NBIS retry, one base-invalid re-arm), template saved, clean close. Verification is next.
+   NBIS retry, one base-invalid re-arm), template saved, clean close. 
+   Run 36 verified against it: the device path stayed clean (including reopen after a C close), but
+   every Bozorth score was 0, NBIS's value for fewer than 10 minutiae. Matching is the open problem.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

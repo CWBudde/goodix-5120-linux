@@ -1400,6 +1400,43 @@ and close completed without error.**
 Also open: whether the next open behaves the same from an EC left with `0x34` armed. Runs 20–22 reopened
 after Go sessions, not after this C close.
 
+### Run 36 — 2026-10-02 01:56, first C verification: device path clean, every match score 0 (observed)
+
+The owner ran `examples/verify` from `dist/goodix-owner-c-enroll/` against Run 35's template (right
+middle), nine minutes after Run 35, no EC reset. Four attempts ran in one open.
+**Result: no protocol or device error, and no match.** Two attempts found no minutiae, and two scored
+`0/24` against all five enrolled views. The log does not say which finger the owner used for each attempt.
+
+- **Reopen after a C close that left `0x34` armed works.** The first IN read during open delivered the
+  pending `0x34` finger-up event (`00 02 00 00`, readings `[357 387 327 362 336 367]`). The driver
+  dropped it as stale (`finger-detect event while waiting on 0x00`), and init continued normally.
+  Pre-handshake byte 1 `0x02` (counter `17 17`), post-listen `0x02` (`19 19`); the paced handshake was
+  identical to Runs 34/35.
+- Four touch → image → lift rounds, each `0x20` → 7749-byte record 85–86 ms later, `7693 plaintext bytes`:
+
+  | Attempt | Down header / readings | Stretch bounds | Minutiae scan | Outcome |
+  |---|---|---|---|---|
+  | 1 | `3e` `[357 329 253 289 251 250]` | 1316..2795 | 12 ms, **none found** | retry |
+  | 2 | `3f` `[257 265 232 253 192 221]` | 1019..2523 | 8 ms | `score 0/24` ×5, NO MATCH |
+  | 3 | `3f` `[278 282 241 276 231 278]` | 1144..2504 | 10 ms, **none found** | retry |
+  | 4 | `3d` `[239 364 204 239 228 230]` | 920..2780 | 23 ms | `score 0/24` ×5, NO MATCH |
+
+  Touch flags `0x3e`/`0x3d` left zone 0 or 1 uncovered (up threshold `0x19`). That is a partial placement,
+  and zone readings near the untouched level agree.
+- **A score of exactly 0 is NBIS's "too few minutiae" value, not a weak match.** In the pinned libfprint,
+  `bz_match_score()` returns `ZERO_MATCH_SCORE` without comparing whenever the probe or the gallery
+  print has fewer than `MIN_COMPUTABLE_BOZORTH_MINUTIAE` (10) minutiae (`nbis/include/bozorth.h:122`,
+  `bozorth3/bozorth3.c:642`). That this happened against all five enrolled views, on both scored
+  attempts, suggests that the 64×80 frames (enlarged ×3) give fewer than 10 minutiae. The short scans
+  (8–12 ms here against 18–30 ms in Run 35) fit that. libfprint does not log the count, so this is
+  **inferred, not measured**.
+
+**Conclusion:** the C driver's transport, TLS, FDT and capture path is functionally complete across
+open/close cycles. Matching with libfprint's NBIS + Bozorth3 pipeline does not work on these frames as
+they stand. **Next:** measure the minutiae count per frame locally, without sharing images. Then decide
+between image processing (enlargement factor, filtering) and a matcher suited to small-area sensors.
+NBIS cannot do anything with fewer than 10 minutiae.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
