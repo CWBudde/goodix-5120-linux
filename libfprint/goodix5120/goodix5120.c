@@ -42,7 +42,7 @@
  * Wire summary (docs/protocol.md):
  *   open:  drain, 0xa8 (health), 96 a8 ae e4 a2 82 a6 a2 70 98 90,
  *          0xd0 -> TLS-PSK handshake (EC = client, host = server),
- *          0xd4, 0xae
+ *          0xd4, 5 s listen-only read, 0xae
  *   loop:  0x32 arm -> finger-down event -> 0x20 -> image (one TLS
  *          application-data record in a 0xb0 pack) -> 0x34 arm ->
  *          finger-up event -> re-arm 0x32 from the up readings
@@ -95,6 +95,7 @@ struct _FpiDeviceGoodix5120
   gboolean      x_got_ack;
   gboolean      x_got_tls;
   guint         x_reads;
+  gint64        x_listen_until; /* drain only: keep reading until then, 0 = until quiet */
   GByteArray   *x_data;         /* payload of the data reply */
 
   /* The last transfer, classified. */
@@ -494,10 +495,12 @@ xchg_recv_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GErro
       if (is_timeout (error))
         {
           g_error_free (error);
-          if (self->x_reply == G5120_REPLY_NONE)
-            fpi_ssm_mark_completed (ssm);
-          else
+          if (self->x_reply != G5120_REPLY_NONE)
             fpi_ssm_mark_failed (ssm, missing_reply_error (self));
+          else if (self->x_listen_until > g_get_monotonic_time ())
+            fpi_ssm_jump_to_state (ssm, XCHG_RECV);
+          else
+            fpi_ssm_mark_completed (ssm);
           return;
         }
       fpi_ssm_mark_failed (ssm, error);
@@ -573,6 +576,16 @@ xchg_recv_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GErro
             }
           break;
         }
+      if (self->x_listen_until)
+        {
+          /* Dropping it would desynchronise the record sequence numbers. */
+          fpi_ssm_mark_failed (ssm,
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                         "TLS record of %u bytes from the EC after the "
+                                                         "0xd4 ACK, before any request; stopping",
+                                                         self->rx_tls->len));
+          return;
+        }
       fp_warn ("unexpected TLS pack of %u bytes while waiting on 0x%02x; dropped",
                self->rx_tls->len, self->x_cmd);
       break;
@@ -645,6 +658,18 @@ xchg_run_state (FpiSsm *ssm, FpDevice *dev)
           fpi_ssm_mark_completed (ssm);
           return;
         }
+      if (self->x_listen_until)
+        {
+          gint64 remaining = self->x_listen_until - g_get_monotonic_time ();
+
+          if (remaining <= 0)
+            {
+              fpi_ssm_mark_completed (ssm);
+              return;
+            }
+          submit_read (ssm, dev, (guint) ((remaining + 999) / 1000), NULL, xchg_recv_cb);
+          return;
+        }
       submit_read (ssm, dev,
                    self->x_reply == G5120_REPLY_NONE ? G5120_TIMEOUT_QUIET : G5120_TIMEOUT_REPLY,
                    NULL, xchg_recv_cb);
@@ -667,6 +692,7 @@ begin_exchange (FpiSsm              *parent,
                 gsize                payload_len,
                 G5120Reply           reply,
                 gboolean             secret,
+                guint                listen_ms,
                 const char          *purpose)
 {
   g_assert (payload_len <= sizeof (self->x_payload));
@@ -683,6 +709,7 @@ begin_exchange (FpiSsm              *parent,
   self->x_got_ack = FALSE;
   self->x_got_tls = FALSE;
   self->x_reads = 0;
+  self->x_listen_until = listen_ms ? g_get_monotonic_time () + (gint64) listen_ms * 1000 : 0;
   g_byte_array_set_size (self->x_data, 0);
 
   fpi_ssm_start_subsm (parent, fpi_ssm_new (FP_DEVICE (self), xchg_run_state, XCHG_NUM_STATES));
@@ -698,7 +725,7 @@ start_exchange (FpiSsm              *parent,
                 gboolean             secret,
                 const char          *purpose)
 {
-  begin_exchange (parent, self, TRUE, FALSE, cmd, payload, payload_len, reply, secret, purpose);
+  begin_exchange (parent, self, TRUE, FALSE, cmd, payload, payload_len, reply, secret, 0, purpose);
 }
 
 static void
@@ -715,7 +742,7 @@ start_health_check (FpiSsm *parent, FpiDeviceGoodix5120 *self)
   const G5120Step *step = g5120_step_health_check ();
 
   begin_exchange (parent, self, TRUE, TRUE, step->cmd, step->payload, step->payload_len,
-                  step->reply, step->secret_reply, step->purpose);
+                  step->reply, step->secret_reply, 0, step->purpose);
 }
 
 /* Reads until the device is quiet, so no reply is left queued in the EC.
@@ -723,7 +750,15 @@ start_health_check (FpiSsm *parent, FpiDeviceGoodix5120 *self)
 static void
 start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self)
 {
-  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, "drain");
+  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, 0, "drain");
+}
+
+/* Reads IN for a fixed time, quiet or not. Sends nothing. A TLS record in
+ * that window fails the exchange instead of being dropped. */
+static void
+start_listen (FpiSsm *parent, FpiDeviceGoodix5120 *self, guint ms)
+{
+  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, ms, "listen");
 }
 
 /* ---- TLS-PSK handshake ------------------------------------------------------
@@ -734,19 +769,27 @@ start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self)
  * ClientKeyExchange, ChangeCipherSpec and Finished are separate transfers,
  * 22 ms and 5 ms apart. Waiting on the host here stalled Runs 11 and 17.
  *
- * Between two records of the host's own flight there is a bounded read interval
- * (HS_PACE). The vendor's log has 61 ms between ServerHello and
- * ServerHelloDone and 66 ms between ChangeCipherSpec and Finished; the Go
- * probe, which completed Runs 18-22, left ~3 ms. Runs 24 and 25 sent both
- * records within a millisecond and drew decode_error both times. This is a
- * timing hypothesis, not a confirmed fix. Read any complete alert before
- * sending another record; record counts describe progress when it was seen.
+ * Between ServerHello and ServerHelloDone there is a bounded read interval
+ * (HS_PACE). The vendor's log has 61 ms there; the Go probe, which completed
+ * Runs 18-22, left ~3 ms. Runs 24 and 25 sent both records within a
+ * millisecond and drew decode_error both times. This is a timing hypothesis,
+ * not a confirmed fix. Read any complete alert before sending another record;
+ * record counts describe progress when it was seen.
+ *
+ * The final flight (ChangeCipherSpec, Finished) is paced the same way, and
+ * HS_SETTLE then reads for G5120_TIMEOUT_HS_SETTLE before the handshake counts
+ * as complete. Every failing C run had one pair of host writes within ~1 ms
+ * (Runs 24/25 ServerHello/ServerHelloDone, 26/27 Finished/0xd4, 28-30
+ * ChangeCipherSpec/Finished); Go's working runs never went below ~2.5 ms
+ * (Run 31). Also a timing hypothesis. A record the EC sends after the
+ * handshake completed locally (an alert) fails open before 0xd4.
  */
 
 enum {
   HS_READ,
   HS_WRITE,
   HS_PACE,
+  HS_SETTLE,
   HS_NUM_STATES,
 };
 
@@ -776,17 +819,35 @@ handshake_error (FpiDeviceGoodix5120 *self, GError *cause)
   return e;
 }
 
-/* HS_PACE keeps its original deadline across stale/empty reads. Complete a
- * fragmented incoming record before output, even if the interval has expired;
- * the overall handshake budget bounds that additional wait. */
+/* After the handshake, any complete record from the EC is processed now: an
+ * alert fails, and application data before 0xd4 has no place in the protocol. */
+static gboolean
+hs_settle_check (FpiDeviceGoodix5120 *self, GError **error)
+{
+  guint8 buf[64];
+  gssize n;
+
+  if (g5120_tls_has_partial_input (self->tls))
+    return TRUE;
+  n = g5120_tls_read (self->tls, buf, sizeof (buf), error);
+  memset (buf, 0, sizeof (buf));
+  if (n > 0)
+    g_set_error (error, G5120_TLS_ERROR, G5120_TLS_ERROR_FAILED,
+                 "application data from the EC before 0xd4");
+  return n == 0;
+}
+
+/* HS_PACE and HS_SETTLE keep their original deadline across stale/empty reads.
+ * Complete a fragmented incoming record before output, even if the interval has
+ * expired; the overall handshake budget bounds that additional wait. */
 static void
-hs_receive (FpiUsbTransfer *transfer, FpDevice *dev, GError *error, gboolean pacing)
+hs_receive (FpiUsbTransfer *transfer, FpDevice *dev, GError *error, int next)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
   FpiSsm *ssm = transfer->ssm;
   GError *terr = NULL;
   gboolean done = FALSE;
-  int next = pacing ? HS_PACE : HS_READ;
+  gboolean pacing = next == HS_PACE;
 
   if (error)
     {
@@ -803,6 +864,17 @@ hs_receive (FpiUsbTransfer *transfer, FpDevice *dev, GError *error, gboolean pac
   switch (rx_classify (self, transfer->buffer, transfer->actual_length, 0xd0, TRUE))
     {
     case RX_TLS:
+      if (self->hs_done)
+        {
+          if (!g5120_tls_feed (self->tls, self->rx_tls->data, self->rx_tls->len, &terr) ||
+              !hs_settle_check (self, &terr))
+            {
+              fpi_ssm_mark_failed (ssm, handshake_error (self, terr));
+              return;
+            }
+          fpi_ssm_jump_to_state (ssm, next);
+          return;
+        }
       if (!g5120_tls_feed (self->tls, self->rx_tls->data, self->rx_tls->len, &terr) ||
           !g5120_tls_handshake (self->tls, &done, &terr))
         {
@@ -815,7 +887,7 @@ hs_receive (FpiUsbTransfer *transfer, FpDevice *dev, GError *error, gboolean pac
       return;
 
     case RX_EMPTY:
-      if (!pacing)
+      if (next == HS_READ)
         fp_warn ("zero-length transfer inside the handshake: the stalled Runs 11 and 17 "
                  "showed exactly this where the EC's next record should have been");
       break;
@@ -834,13 +906,19 @@ hs_receive (FpiUsbTransfer *transfer, FpDevice *dev, GError *error, gboolean pac
 static void
 hs_read_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
 {
-  hs_receive (transfer, dev, error, FALSE);
+  hs_receive (transfer, dev, error, HS_READ);
 }
 
 static void
 hs_pace_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
 {
-  hs_receive (transfer, dev, error, TRUE);
+  hs_receive (transfer, dev, error, HS_PACE);
+}
+
+static void
+hs_settle_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  hs_receive (transfer, dev, error, HS_SETTLE);
 }
 
 static void
@@ -853,6 +931,7 @@ hs_write_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
+  /* Every pair of host records is paced (see the section comment). */
   if (g5120_tls_has_record (self->tls))
     {
       self->hs_pace_deadline = g_get_monotonic_time () + (gint64) G5120_TIMEOUT_HS_PACE * 1000;
@@ -902,6 +981,23 @@ hs_run_state (FpiSsm *ssm, FpDevice *dev)
       }
       break;
 
+    case HS_SETTLE:
+      {
+        gint64 gap = self->hs_pace_deadline - g_get_monotonic_time ();
+
+        if (gap <= 0 && !g5120_tls_has_partial_input (self->tls))
+          {
+            fp_dbg ("TLS: EC quiet for %d ms after the host's Finished; handshake complete",
+                    G5120_TIMEOUT_HS_SETTLE);
+            fpi_ssm_mark_completed (ssm);
+            return;
+          }
+        if (gap > 0)
+          read_budget = (guint) MIN ((gap + 999) / 1000, read_budget);
+        submit_read (ssm, dev, read_budget, NULL, hs_settle_cb);
+      }
+      break;
+
     case HS_WRITE:
       {
         g_autoptr(GBytes) rec = g5120_tls_pop_record (self->tls);
@@ -913,7 +1009,11 @@ hs_run_state (FpiSsm *ssm, FpDevice *dev)
         if (rec == NULL)
           {
             if (self->hs_done)
-              fpi_ssm_mark_completed (ssm);
+              {
+                self->hs_pace_deadline = g_get_monotonic_time () +
+                                         (gint64) G5120_TIMEOUT_HS_SETTLE * 1000;
+                fpi_ssm_jump_to_state (ssm, HS_SETTLE);
+              }
             else
               fpi_ssm_jump_to_state (ssm, HS_READ);
             return;
@@ -951,6 +1051,7 @@ enum {
   OPEN_REQUEST_TLS,
   OPEN_HANDSHAKE,
   OPEN_TLS_ESTABLISHED,
+  OPEN_LISTEN_AFTER_D4,
   OPEN_MCU_STATE,
   OPEN_LOG_MCU_STATE,
   OPEN_DRAIN_FINAL,
@@ -1076,6 +1177,17 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
                  "(%u record(s) from the EC, %u to it)", from_ec, to_ec);
         start_step (ssm, self, g5120_step_tls_established ());
       }
+      break;
+
+    case OPEN_LISTEN_AFTER_D4:
+      /* Go's collect read IN for its 5 s default timeout after the 0xd4 ACK
+       * and sent nothing, and the next session found the TLS bit set (Run 18
+       * then Run 20). Every C session sent 0xae 1 ms after that ACK and the
+       * bit stayed clear (Runs 26, 27, 29). Untested hypothesis: the EC needs
+       * that time undisturbed to mark the session up. */
+      fp_dbg ("reading IN for %d ms after the 0xd4 ACK before the next command",
+              G5120_TIMEOUT_POST_D4);
+      start_listen (ssm, self, G5120_TIMEOUT_POST_D4);
       break;
 
     case OPEN_MCU_STATE:

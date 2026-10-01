@@ -1151,6 +1151,144 @@ does not issue an immediate post-`0xd4` query. Whether the bit later becomes set
 The literal reply passes synthetic capture/lift/close coverage; rejected statuses and negative ACK
 remain regression-tested. All 251 C subtests pass normally and under ASan/UBSan (leaks disabled).
 
+### Run 27 — 2026-10-01 23:36, corrected C gate reaches `0x20`, no image (observed)
+
+The owner ran `dist/goodix-owner-c-d6a9701/` after a passing `--bisect --read-state` (23:23).
+**Result: open succeeded, the EC reported the touch, `0x20` was ACKed, and no image record followed
+within 2 s.** The driver stopped with `no data reply to mcu_get_image (0x20 …)` and closed without error.
+
+- Health check, full plaintext init and replies matched Run 26. The pre-handshake `0xae` was
+  `02 00 31 03 00 00 01 00 90 63 00 … 05 05`: byte 1 still `0x00` after Run 26's completed C session,
+  where every Go session left `0x02` for the next init (Runs 20–22). The counter went `04` → `05`
+  between the two runs, not the `+2` per `0xd0` seen so far; what added one is unknown.
+- TLS: `0xd0` at 41.323, EC ClientHello at .337, host ServerHello .337 and ServerHelloDone .398 (60 ms
+  pace), EC ClientKeyExchange .400, ChangeCipherSpec .421, Finished .426, host ChangeCipherSpec .427 and
+  Finished .487 (60 ms pace), handshake complete .488. No alert was received.
+- `0xd4` sent at .488, **under 1 ms after the host's Finished**, ACK `0x01` at .489. Immediate `0xae`:
+  `02 00 31 03 00 00 01 00 90 63 00 … 07 07` — byte 1 `0x00` again, accepted by `d6a9701`'s gate.
+- `0x32` armed with `b8 c5 ab b9 aa b9` (ACK 1 ms). Finger-down event 1.09 s later: header `02 00 3f 00`,
+  readings `[264 299 236 265 229 270]`.
+- `0x20` (`01 00`) at 42.783, ACK `0x01` at .785, then **nothing** until the 2 s read timeout at 44.785.
+  Runs 20–22 got the 7753-byte record 88 ms after `0x20`. No `0x34` was sent.
+
+**Hypothesis, not observed:** the EC did not treat the C session as established. Its TLS bit stayed
+clear immediately after `0xd4` and into the next session, and an EC without a session ACKs `0x20` but
+has nothing to encrypt the image with. Two timing differences from the working Go path (Run 18) are
+candidates: the Go bridge sent its ChangeCipherSpec and Finished 3 ms apart (C: 60 ms) and `0xd4` 7 ms
+after the Finished (C: <1 ms). Neither is established as the cause.
+
+**Correction (offline):** the driver now writes the final flight back to back and reads IN for 10 ms
+(`G5120_TIMEOUT_HS_SETTLE`) before the handshake counts as complete, so `0xd4` follows the Go timing.
+A record arriving in that window (alert, close_notify, application data) fails open before `0xd4`.
+The first flight keeps its 60 ms pace. The next run's immediate `0xae` byte 1 shows whether the EC now
+sets its TLS bit. 252 C subtests pass normally and under ASan/UBSan; the three new or changed timing
+tests fail against `d6a9701`.
+
+### Runs 28 and 29 — 2026-10-01 23:53 and 23:58, Go-timed final flight, still no image (observed)
+
+Both used `dist/goodix-owner-c-settle/` after a passing `--bisect --read-state` (23:53).
+
+- **The new timing ran as built.** Run 29: host ChangeCipherSpec .358 and Finished .359, EC quiet for
+  10 ms, `0xd4` at .370, ACK `0x01` at .371. No alert. 4 records each way, as before.
+- **The TLS bit stayed clear.** Pre-handshake `0xae` byte 1 `0x00` in both runs (counter `07 07`, then
+  `09 09`); post-`0xd4` `0xae` byte 1 `0x00` (`09 09`, then `0b 0b`). So the counter is now `+2` per
+  `0xd0` again.
+- Run 28: nobody touched the sensor; no event in 180 s, after which libfprint's temperature model
+  cancelled the capture ("Device disabled to prevent overheating"). The arm stayed live in the EC:
+  Run 29's attach drain read a stale finger-down event (`02 00 3e 00`) and dropped it as designed.
+- Run 29: finger-down 30 ms after the arm (finger already placed), `0x20` ACKed, **no image in 2 s** —
+  Run 27's failure exactly. Close completed without error.
+
+**So the final-flight and `0xd4` timing was not the cause.** Run 18 → Run 20 shows that a Go session
+of handshake plus `0xd4` alone, with no image request, left byte 1 at `0x02` for the next init. After
+`0xd4` the Go probe kept reading IN for `transport.DefaultTimeout` (5 s) before sending anything
+else; every C run so far sent `0xae` about 1 ms after the `0xd4` ACK. **Hypothesis, not observed:**
+a command that arrives while the EC is still finishing `0xd4` keeps it from marking the session up.
+
+**Offline follow-up (2026-10-02, not run):** the C driver now reads IN for 5 s after the `0xd4` ACK and
+sends nothing, then sends `0xae` as before (`dist/goodix-owner-c-listen/`). If the hypothesis holds,
+that `0xae` should show byte 1 `0x02` before any touch, and `0x20` should draw an image.
+
+### Run 30 — 2026-10-02 00:19, 5 s listen after `0xd4`, still no image (observed)
+
+`dist/goodix-owner-c-listen/`. Init and handshake as in Run 29 (4 records each way, 60 ms first-flight
+pace, 10 ms settle). `0xd4` ACK `0x01` at 01.039.
+
+- **The listen ran as built and the EC sent nothing in it:** one read, 5000 ms, timed out; `0xae` at 06.039.
+- **The TLS bit stayed clear:** pre-handshake byte 1 `0x00` (counter `0b 0b`), post-listen byte 1 `0x00`
+  (`0d 0d`). Byte 8 `0x90` both times.
+- Finger-down 330 ms after the arm, `0x20` ACKed in 1 ms, **no image in 2 s**. Close without error.
+
+**So post-`0xd4` timing is ruled out too.** Re-reading Runs 18–22: every Go session that drew an image
+(Runs 20, 21, 22) *started* with byte 1 `0x02`, left by the previous Go session. The only Go session that
+started from `0x00` (Run 18, fresh after a reset) requested no image. Every C session started from `0x00`.
+No Go `--tls` session has run since the EC resets around Runs 24/25. So the evidence cannot yet tell
+"the C session differs from Go's" from "a session that starts with the bit clear does not get images,
+whoever runs it". A Go capture now, from this `0x00` state, separates the two.
+
+### Run 31 — 2026-10-02 00:24, Go capture from the bit-clear state: image (observed)
+
+Run 22's `--wait-finger` command with the current Go probe (in-process OpenSSL 3.5.5 endpoint), five
+minutes after Run 30, no EC reset. **Result: a frame.** Health check, full init and handshake passed; the
+keyboard counters stayed flat.
+
+- **The start state was Run 30's:** pre-handshake `0xae` `02 00 31 03 00 00 01 00 90 63 … 0d 0d`, byte 1
+  `0x00`. So a session that starts with the TLS bit clear does get images; the EC state is not the cause,
+  and something in the C session is.
+- Handshake: ClientHello 47-byte body, ServerHello 81 + ServerHelloDone 4, ClientKeyExchange
+  `Client_identity`, EC ChangeCipherSpec 22 ms later and Finished (80) 5 ms after that, host
+  ChangeCipherSpec + Finished (80). Same shapes and sizes as every C run.
+- `0xd4` ACK `0x01`, 5 s quiet, `0x32` armed; finger-down 1.2 s later; `0x20` ACK in 3 ms and the
+  7753-byte image pack 88 ms after the command; 7693 plaintext bytes, 8-byte header + 5-byte trailer;
+  `0x34`, finger-up. No `0xae` after `0xd4`.
+
+**Timing of consecutive host writes** (TX log lines; Go's gaps are its logging overhead):
+
+| gap | Go (Run 31) | C Runs 24/25 | C Runs 26/27 | C Runs 28–30 |
+|---|---|---|---|---|
+| ServerHello → ServerHelloDone | 3.2 ms | ≤1 ms → **decode_error** | 60 ms | 60 ms |
+| ChangeCipherSpec → Finished | 2.5 ms | — | 60 ms | **<1 ms** |
+| Finished → `0xd4` | 7 ms | — | **≤1 ms** | 10 ms |
+| outcome | image | alert | no TLS bit, no image | no TLS bit, no image |
+
+Every failing C run has one pair of host writes within about 1 ms of each other; Go never does.
+**Hypothesis, not observed:** the EC loses or garbles an OUT pack that arrives within about a
+millisecond of the previous one. A garbled ServerHello draws `decode_error`. A lost or garbled Finished
+leaves the EC's handshake unfinished without an alert: mbedTLS sends no alert for a bad record MAC
+unless it is built with `MBEDTLS_SSL_ALL_ALERT_MESSAGES`. A `0xd4` straight after Finished may displace
+it the same way. This would explain why the bit never set although the host's handshake completed.
+
+**Follow-up (offline):** the driver paces ChangeCipherSpec/Finished by 60 ms again, as Runs 26/27 did,
+keeping the 10 ms settle before `0xd4` and the 5 s listen after its ACK. No two host writes are then
+closer than 10 ms, and each gap has been run on hardware without being the failing pair.
+Bundle: `dist/goodix-owner-c-gaps/`. The next C run's first `0xae` also shows whether Run 31 left
+byte 1 at `0x02`.
+
+### Run 32 — 2026-10-02 00:36, paced final flight: first C image, minutiae detection fails (observed)
+
+The owner ran `dist/goodix-owner-c-gaps/` (60 ms pace between every pair of host records, 10 ms settle
+before `0xd4`, 5 s listen after its ACK). **Result: `0x20` drew an image for the first time in C.**
+libfprint then found no minutiae, so `img-capture` saved no file; close completed without error.
+
+- **Start state was Run 31's, not Runs 27–30's:** pre-handshake `0xae`
+  `02 02 31 03 00 00 01 00 90 63 … 0f 0f`, byte 1 **`0x02`** (left by Run 31's Go session).
+  Every failing C run started from byte 1 `0x00`. This run changed two variables at once.
+- TLS (all host gaps ≥10 ms): `0xd0` 25.694, EC ClientHello .708, ServerHello .708, ServerHelloDone .769,
+  EC ClientKeyExchange .771, ChangeCipherSpec .793, Finished .798, host ChangeCipherSpec .798 and
+  Finished .859, settle until .870, `0xd4` .870 (ACK `0x01` .871), listen until 30.871 (EC silent).
+  Post-listen `0xae`: byte 1 `0x02`, counter `11 11` (+2).
+- `0x32` armed with `b8 c5 ab b9 aa b9`; finger-down at 35.423 (header `02 00 3f 00`, readings
+  `[268 301 254 250 233 251]`). `0x20` ACKed at .424; a 7749-byte application-data record arrived
+  85 ms later and decoded to `7693 plaintext bytes, 8-byte header + samples + 5-byte trailer`.
+- `0x34` armed with `a1 b1 9a 98 8f 98`; finger-up 0.5 s later (header `00 02 00 00`, readings
+  `[369 395 344 372 342 372]`).
+- `Failed to detect minutiae: No minutiae found` → `FP_DEVICE_RETRY_GENERAL`; no image saved.
+
+**Open:** whether the pacing or the bit-set start state made the difference. An A/B run of the
+listen bundle (unpaced final flight) from this bit-set state separates the two. The minutiae failure
+is a separate image-quality question: the driver maps 12-bit samples to 8 bits with a plain `>> 4`,
+with no calibration frame or contrast stretch.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

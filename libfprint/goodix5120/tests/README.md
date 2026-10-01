@@ -70,16 +70,20 @@ ordering, based on [GUsb 0.4.9](https://github.com/hughsie/libgusb/blob/0.4.9/gu
 Tests require matching binding flags on close and rollback, and no release before successful claim. Injected
 release and attachment failures preserve errors and block reopening that device object without new USB work.
 These checks exercise the driver's GUsb calls; they do not run actual detach/attach operations.
-Handshake-pacing regressions require an IN interval between host records, normal reads after a flight's
-last record, and immediate alerts to stop further output. Further cases measure elapsed virtual time
+Handshake-pacing regressions require an IN interval between ServerHello and ServerHelloDone, normal reads
+after that flight, the same interval between ChangeCipherSpec and Finished, and a 10 ms settle read
+before `0xd4` (Run 31). An encrypted close_notify in the settle window fails open with no `0xd4`.
+After the `0xd4` ACK, `0xae` waits for a 5 s listen-only read that a stale event neither shortens
+nor restarts; a TLS record in that window fails open with no further `0xae` (Runs 28/29).
+Immediate alerts stop further output. Further cases measure elapsed virtual time
 across stale ACK/FDT/zero reads, deliver an alert at all six splits with its suffix after the interval,
-expire the total budget in both host flights, complete the first ServerHello packet at its deadline,
-and exhaust the budget during allocation before the first OUT submission.
+expire the total budget in the first flight's interval and the settle window, complete the first
+ServerHello packet at its deadline, and exhaust the budget during allocation before the first OUT submission.
 Noise cannot shorten/restart the interval; fragments cannot bypass alert handling; no further write or
 successful open may follow budget exhaustion. These exercise the driver, not the EC's firmware timing.
 
-The driver suite contains 167 subtests; the protocol and TLS helpers add 43. Shared protocol checks add 39,
-and corpus-reader checks add two (251 total).
+The driver suite contains 170 subtests; the protocol and TLS helpers add 43. Shared protocol checks add 39,
+and corpus-reader checks add two (254 total).
 
 ## Shared independent fixtures
 

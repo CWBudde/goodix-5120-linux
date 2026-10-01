@@ -164,7 +164,20 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    `goodix5120` image driver. It compiles in a libfprint tree, and its framing, send gate, FDT
    thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
    vectors. **Run 26 completed authenticated C TLS and `0xd4`, then the immediate MCU status `0x00`
-   exposed an overly strict local gate. That gate is corrected and verified offline; live capture is pending.**
+   exposed an overly strict local gate. That gate is corrected and verified offline. Run 27 (`d6a9701`)
+   then reached the touch and an ACKed `0x20`, but no image record came; the EC's TLS bit stayed clear,
+   so it likely never treated the C session as established (`docs/protocol.md`, Run 27). The final TLS
+   flight and `0xd4` now follow the Go timing of Run 18; Runs 28/29 ran that and still got no image.
+   Remaining Go difference: Go read IN for 5 s after the `0xd4` ACK; C sent `0xae` within 1 ms. The
+   driver now listens 5 s there too; Run 30 ran that and still got no image, bit still clear. Every Go
+   session that drew an image started with the bit already set; next: a Go capture from today's
+   bit-clear state, to tell a C difference from an EC-state one (`docs/protocol.md`, Run 30). Run 31,
+   that Go capture, got an image from the same state: the C session is at fault. Every failing C run
+   has two host writes within ~1 ms; Go's are ≥2.5 ms apart (Run 31's timing table). The driver now
+   paces ChangeCipherSpec/Finished by 60 ms too, so no two host writes are under 10 ms apart; next:
+   one C capture with `dist/goodix-owner-c-gaps/`. Run 32 ran it: first C image (decrypted, 7693
+   bytes), but from a bit-set start state left by Run 31, and NBIS found no minutiae, so nothing
+   was saved (`docs/protocol.md`, Run 32).**
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

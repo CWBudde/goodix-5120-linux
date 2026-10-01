@@ -17,6 +17,17 @@ Run 26 used reviewed driver `2b77542`: authenticated TLS completed, `0xd4` ACKed
 was requested. The corrected gate permits exactly that immediate status after authentication and
 positive ACK; other bit-clear states remain errors. The earlier bundles are superseded.
 The timing cause/minimum remains unproven; targeted diagnostics are follow-up evidence.
+Run 27 used `d6a9701`: open succeeded and the touch was reported, but `0x20` drew no image and the
+EC's TLS bit stayed clear. The current source sends the final TLS flight back to back and `0xd4`
+after a 10 ms settle read, matching the Go timing of Run 18 (`docs/protocol.md`, Run 27).
+Runs 28/29 used that settle build and reproduced Run 27. The current source also reads IN for 5 s
+after the `0xd4` ACK before sending `0xae`, as Go's probe did after `0xd4` in Run 18; open therefore
+pauses about 5 s after the TLS-complete log line. Run 30 ran it: no image, TLS bit still clear.
+Run 31, a Go capture from the same bit-clear state, got an image. Every failing C run had one pair of
+host writes within ~1 ms; the current source paces ChangeCipherSpec/Finished by 60 ms again while keeping
+the settle and listen windows, so no two host writes are closer than 10 ms (`docs/protocol.md`, Run 31).
+Run 32 ran that bundle from Run 31's bit-set state: `0x20` drew and decrypted an image, then libfprint
+found no minutiae and saved no file (`docs/protocol.md`, Run 32).
 
 ## Prepare the build offline
 
@@ -37,12 +48,24 @@ the bundle's library without missing dependencies, and the driver table lists on
 is recorded as Run 26. This bundle predates the immediate MCU-state fix; do not reuse it for capture.
 The capture executable was not invoked by agents, and no hardware was accessed during preparation.
 
-**Corrected bundle, 2026-10-01:** use `dist/goodix-owner-c-d6a9701/`, from exact driver commit
+**Superseded by Run 27:** `dist/goodix-owner-c-d6a9701/`, from exact driver commit
 `d6a9701af7355e31d67cce3066f490fec0278fa2`, with the same pinned upstream. All 251 C tests pass normally
 and under ASan/UBSan (leak detection disabled); `just check` passes with existing formatting listings.
 The pinned build has no compiler warnings. Source/fixture hashes match the commit, host linkage resolves
 the bundled library without missing dependencies, and the driver table lists only `27c6:5120`.
 Provenance, build/test logs and `SHA256SUMS` are included. No agent accessed hardware.
+
+**Superseded by Runs 28/29:** `dist/goodix-owner-c-settle/`, built offline from the working
+tree on `8cb3957` (driver diff hash in its `provenance.txt`). 252 C subtests pass normally and under
+ASan/UBSan; no compiler warnings; host linkage and the driver table check out. No agent accessed hardware.
+
+**Superseded by Run 30:** `dist/goodix-owner-c-listen/`, the settle change plus the 5 s listen after
+the `0xd4` ACK, built from the working tree on `8cb3957`.
+
+**Paced-gaps bundle, 2026-10-02:** use `dist/goodix-owner-c-gaps/`, built offline from the working tree
+on `8cb3957` (driver diff hash in its `provenance.txt`). It adds the 60 ms pace between ChangeCipherSpec
+and Finished to the listen bundle. 254 C subtests pass normally and under ASan/UBSan; no compiler
+warnings; host linkage and the driver table check out. No agent accessed hardware.
 
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
 and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
@@ -64,7 +87,7 @@ meson compile -C build
 build="$PWD/build"
 ```
 
-For the prepared bundle, set `build="$repo/dist/goodix-owner-c-d6a9701"` instead.
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-gaps"` instead.
 Do not install the library or change fprintd/PAM configuration for this run. The following tool
 reads compiled driver ID tables without opening USB:
 
@@ -101,7 +124,7 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build="$repo/dist/goodix-owner-c-d6a9701"
+build="$repo/dist/goodix-owner-c-gaps"
 umask 077
 run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \

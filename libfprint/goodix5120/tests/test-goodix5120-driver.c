@@ -28,6 +28,7 @@ typedef struct {
   gboolean no_hello, corrupt_image;
   gboolean wrong_key;
   gboolean alert_after_hello; /* answer ServerHello alone with decode_error */
+  gboolean close_after_finished; /* answer the host's Finished with close_notify */
   guint tls_fault; /* synthetic image: 1 = bad record type, 2 = bad ciphertext */
   guint image_parts;
   const char *cancel_machine;
@@ -219,6 +220,11 @@ peer_frame (const guint8 *buf, gsize len, gpointer data)
         }
       g_assert_cmpint (BIO_write (SSL_get_rbio (f->client), payload, payload_len), ==, payload_len);
       client_step (f);
+      if (f->close_after_finished && SSL_is_init_finished (f->client))
+        {
+          SSL_shutdown (f->client);
+          collect_client_records (f);
+        }
       return;
     }
   g_assert_cmphex (flags, ==, 0xa0);
@@ -535,7 +541,8 @@ test_tls_pacing_fragmented_alert (Fixture *f, gconstpointer data)
 }
 
 /* Pacing cannot send another record or report success after the total budget.
- * Check both host flights, including one ending with an already completed SSL. */
+ * Check the first flight's interval and the settle window after the final
+ * flight, where the SSL has already completed. */
 static void
 test_tls_pacing_budget (Fixture *f, gconstpointer data)
 {
@@ -601,15 +608,15 @@ test_tls_write_budget (Fixture *f, gconstpointer data)
   g_assert_false (f->usb.claimed);
 }
 
-/* Between two records of one host flight the driver reads during a minimum
- * interval, as the vendor's logged gaps suggest; after a flight's last record it waits for the
- * EC as before. Runs 24/25 sent ServerHelloDone right behind ServerHello. */
+/* Every pair of host records is separated by a minimum read interval, as the
+ * vendor's logged gap suggests, and 0xd4 follows only after a settle read. Each
+ * failing run had one pair of host writes within ~1 ms: ServerHello/ServerHelloDone
+ * (Runs 24/25), Finished/0xd4 (26/27), ChangeCipherSpec/Finished (28-30). */
 static void
 test_tls_pacing (Fixture *f, gconstpointer data)
 {
-  /* ServerHello, ServerHelloDone, ChangeCipherSpec, Finished. */
-  static const guint want[] = { G5120_TIMEOUT_HS_PACE, G5120_TIMEOUT_HS_READ, G5120_TIMEOUT_HS_PACE };
   guint seen = 0, steps = 0;
+  gint64 finished_at = 0, ccs_at = 0;
 
   (void) data;
   FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
@@ -621,18 +628,130 @@ test_tls_pacing (Fixture *f, gconstpointer data)
         continue;
       g_assert_cmpuint (tls_frames_sent (f), ==, seen + 1);
       g_assert_nonnull (f->usb.pending);
-      if (seen < G_N_ELEMENTS (want))
+      switch (seen)
         {
+        case 0: /* ServerHello: pace before ServerHelloDone */
           g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
-          g_assert_cmpuint (f->usb.timeout, ==, want[seen]);
+          g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_HS_PACE);
+          break;
+        case 1: /* ServerHelloDone: wait for the EC's flight */
+          g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+          g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_HS_READ);
+          break;
+        case 2: /* ChangeCipherSpec: pace before Finished */
+          g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+          g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_HS_PACE);
+          ccs_at = g_get_monotonic_time ();
+          break;
+        default: /* Finished: settle read, not yet 0xd4 */
+          g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+          g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_HS_SETTLE);
+          finished_at = g_get_monotonic_time ();
+          g_assert_cmpint (finished_at - ccs_at, >=, G5120_TIMEOUT_HS_PACE * 1000);
+          break;
         }
-      else
-        g_assert_cmphex (pending_command (f), ==, 0xd4);
       seen++;
     }
+  g_assert_true (fake_usb_step (&f->usb)); /* the settle window expires */
+  g_assert_cmphex (pending_command (f), ==, 0xd4);
+  g_assert_cmpint (g_get_monotonic_time () - finished_at, ==, G5120_TIMEOUT_HS_SETTLE * 1000);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+static guint
+commands_sent (Fixture *f, guint8 cmd)
+{
+  guint n = 0;
+  for (guint i = 0; i < f->sent_frames->len; i++)
+    {
+      gsize len;
+      const guint8 *b = g_bytes_get_data (g_ptr_array_index (f->sent_frames, i), &len);
+      if (len > 4 && b[0] == 0xa0 && b[4] == cmd)
+        n++;
+    }
+  return n;
+}
+
+static gboolean
+command_sent (Fixture *f, guint8 cmd)
+{
+  return commands_sent (f, cmd) > 0;
+}
+
+/* A record the EC sends after the host's Finished is read in the settle window
+ * and fails open before 0xd4; here it is an encrypted close_notify. */
+static void
+test_tls_record_before_d4 (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  f->close_after_finished = TRUE;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  pump (f);
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_nonnull (strstr (f->usb.notify.error->message, "close_notify"));
+  g_assert_cmpuint (tls_frames_sent (f), ==, 4);
+  g_assert_false (command_sent (f, 0xd4));
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_false (f->usb.claimed);
+}
+
+static void before_command (Fixture *f, guint8 cmd);
+
+/* After the 0xd4 ACK the driver reads IN for G5120_TIMEOUT_POST_D4 before 0xae,
+ * as Go's collect did after 0xd4 in Run 18. Input in that window, here a stale
+ * finger-down event, neither shortens nor restarts it. */
+static void
+test_listen_after_d4 (Fixture *f, gconstpointer data)
+{
+  gint64 acked_at;
+  guint ae;
+
+  (void) data;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  before_command (f, 0xd4);
+  ae = commands_sent (f, 0xae);
+  g_assert_true (fake_usb_step (&f->usb)); /* 0xd4 goes out */
+  g_assert_true (fake_usb_step (&f->usb)); /* its ACK */
+  acked_at = g_get_monotonic_time ();
+  g_assert_nonnull (f->usb.pending);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_POST_D4);
+  queue_event (f, 0x32);
+  fake_advance_time (1000000);
+  g_assert_true (fake_usb_step (&f->usb));
+  g_assert_cmpuint (commands_sent (f, 0xae), ==, ae);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_POST_D4 - 1000);
+  g_assert_true (fake_usb_step (&f->usb)); /* the window expires */
+  g_assert_cmphex (pending_command (f), ==, 0xae);
+  g_assert_cmpint (g_get_monotonic_time () - acked_at, ==, G5120_TIMEOUT_POST_D4 * 1000);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+/* A TLS record in the listen window cannot be dropped without desynchronising
+ * the record sequence; open fails before 0xae. Here an encrypted close_notify. */
+static void
+test_tls_record_after_d4 (Fixture *f, gconstpointer data)
+{
+  guint ae;
+
+  (void) data;
+  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  before_command (f, 0xd4);
+  ae = commands_sent (f, 0xae);
+  g_assert_true (fake_usb_step (&f->usb)); /* 0xd4 goes out; its ACK is queued */
+  SSL_shutdown (f->client);
+  collect_client_records (f);
+  pump (f);
+  g_assert_nonnull (f->usb.notify.error);
+  g_assert_nonnull (strstr (f->usb.notify.error->message, "after the 0xd4 ACK"));
+  g_assert_cmpuint (commands_sent (f, 0xae), ==, ae);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_false (f->usb.claimed);
 }
 
 /* A synthetic alert after ServerHello alone is read before ServerHelloDone goes
@@ -1779,8 +1898,14 @@ main (int argc, char **argv)
     }
   g_test_add ("/goodix5120/driver/tls-pacing-budget/first-flight", Fixture,
               GUINT_TO_POINTER (1), setup, test_tls_pacing_budget, teardown);
-  g_test_add ("/goodix5120/driver/tls-pacing-budget/final-flight", Fixture,
-              GUINT_TO_POINTER (3), setup, test_tls_pacing_budget, teardown);
+  g_test_add ("/goodix5120/driver/tls-pacing-budget/settle", Fixture,
+              GUINT_TO_POINTER (4), setup, test_tls_pacing_budget, teardown);
+  g_test_add ("/goodix5120/driver/tls-record-before-d4", Fixture, NULL, setup,
+              test_tls_record_before_d4, teardown);
+  g_test_add ("/goodix5120/driver/listen-after-d4", Fixture, NULL, setup,
+              test_listen_after_d4, teardown);
+  g_test_add ("/goodix5120/driver/tls-record-after-d4", Fixture, NULL, setup,
+              test_tls_record_after_d4, teardown);
   g_test_add ("/goodix5120/driver/tls-write-budget", Fixture, NULL, setup,
               test_tls_write_budget, teardown);
   g_test_add ("/goodix5120/driver/tls-write-budget-before-submit", Fixture,

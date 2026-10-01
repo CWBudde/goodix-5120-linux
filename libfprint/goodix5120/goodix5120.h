@@ -36,7 +36,9 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FPI,
 #define G5120_TIMEOUT_QUIET       200  /* "nothing more is coming" */
 #define G5120_TIMEOUT_OUT        2000  /* complete padded OUT frame, across its 64-byte writes */
 #define G5120_TIMEOUT_HS_READ    1000  /* one read during the handshake */
-#define G5120_TIMEOUT_HS_PACE      60  /* read between two records of one flight */
+#define G5120_TIMEOUT_HS_PACE      60  /* read between two records of the first host flight */
+#define G5120_TIMEOUT_HS_SETTLE    10  /* read after the host's Finished, before 0xd4 */
+#define G5120_TIMEOUT_POST_D4    5000  /* listen-only read after the 0xd4 ACK, before 0xae (Go: Run 18) */
 #define G5120_HANDSHAKE_BUDGET   5000  /* the vendor's own budget is 1100 */
 #define G5120_TIMEOUT_IMAGE      2000  /* the image pack arrives ~88 ms after 0x20 */
 

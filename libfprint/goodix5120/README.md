@@ -10,7 +10,9 @@ a successful capture remains pending. The original pacing bundle also crashed th
 is unavailable. Run 26's reviewed `2b77542` bundle completed authenticated TLS with 60 ms host-record
 intervals, then stopped at an overly strict immediate MCU-state gate. Both keyboards worked.
 The corrected gate accepts the observed status `0x00` after authentication and positive `0xd4` ACK;
-251 offline tests pass, but the corrected image path has not run live.**
+Run 27 then reached the touch, but `0x20` drew no image and the TLS bit stayed clear; the final
+flight and `0xd4` follow the Go timing, which Runs 28/29 showed was not enough. The current source
+also listens 5 s after the `0xd4` ACK before `0xae` (254 offline tests). The image path has not worked live.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
@@ -44,10 +46,16 @@ driver is built around that:
   awaited.
 - **Completed 64-byte writes.** Each padded frame is sent one packet at a time, with the next packet submitted
   after completion. Short/zero completions stop the frame; all packets share its original write budget.
-- **Experimental TLS pacing.** Between records of a host flight, a 60 ms interval permits alert reads.
-  Stale input preserves the deadline; fragmented TLS input is completed before more output. The total
-  handshake budget bounds all states and transfers. Run 26 completed TLS with these intervals;
-  their causal role and the required minimum remain unknown.
+- **Experimental TLS pacing.** Between every pair of host TLS records (ServerHello/ServerHelloDone and
+  ChangeCipherSpec/Finished), a 60 ms interval permits alert reads. Stale input preserves the deadline;
+  fragmented TLS input is completed before more output. A 10 ms settle read precedes `0xd4`; a record
+  arriving after the local handshake completed fails open. The total handshake budget bounds all states
+  and transfers. Every failing run had one pair of host writes within ~1 ms (Runs 24/25 the first flight,
+  26/27 Finished/`0xd4`, 28–30 ChangeCipherSpec/Finished); Go's working Run 31 never went below ~2.5 ms.
+- **Listen after `0xd4`.** After the `0xd4` ACK the driver reads IN for 5 s and sends nothing, as Go's
+  `collect` did after `0xd4` in Run 18, whose session set the TLS bit; C sent `0xae` 1 ms after the ACK.
+  A stale event does not end the window; a TLS record in it fails open. The causal role of any of these
+  timings remains unknown.
 - **Immediate MCU state.** After authenticated TLS, completed host records and a positive `0xd4` ACK,
   the final reply must be 20 bytes and have the TLS bit set or exactly status `0x00` (Run 26).
   This exception does not reinterpret the clear bit. Other bit-clear states, including stuck `0x08`, stop open.
@@ -289,7 +297,9 @@ in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence but reprodu
 in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix. The record-pacing
 bundle `dist/goodix-owner-c-pacing/` also failed with an owner-reported EC crash; its final error
 is unavailable. The reviewed minimum-interval driver `2b77542` completed TLS in Run 26 but rejected
-the immediate status `0x00`; retain that bundle for diagnosis. The corrected gate has 251 passing
+the immediate status `0x00`; retain that bundle for diagnosis. `d6a9701` (Run 27) reached `0x20` but got
+no image, as did the Go-timed settle build (Runs 28/29). The current source, which adds a 5 s
+listen after the `0xd4` ACK, has 254 passing
 standalone C tests normally and under ASan/UBSan (leak detection disabled). Use the new revision
 prepared in the capture runbook. No successful live C capture is established yet.
 
