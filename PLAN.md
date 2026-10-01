@@ -163,8 +163,8 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    *Started (2026-09-30):* [`libfprint/goodix5120/`](libfprint/goodix5120/README.md) is a first
    `goodix5120` image driver. It compiles in a libfprint tree, and its framing, send gate, FDT
    thresholds, 12-bit decode and in-process TLS-PSK server are unit-tested offline against this repo's
-   vectors. **Runs 24 and 25 passed the full C init but their first TLS flights drew `decode_error`;
-   completed 64-byte OUT writes did not resolve it, and capture is pending.**
+   vectors. **Run 26 completed authenticated C TLS and `0xd4`, then the immediate MCU status `0x00`
+   exposed an overly strict local gate. That gate is corrected and verified offline; live capture is pending.**
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
@@ -455,6 +455,12 @@ capture → lift → close regression; four rejected-status cases and a negative
 All 251 C subtests pass normally and under ASan/UBSan (leak detection disabled); `just check` passes
 with existing formatting listings. Actual C image capture and Phase 6c remain unverified.
 
+**Corrected owner bundle prepared:** `dist/goodix-owner-c-d6a9701/` contains exact fix commit
+`d6a9701af7355e31d67cce3066f490fec0278fa2` and the same pinned libfprint. The real integration compiles
+without compiler warnings. Verified committed source/fixture hashes, host library resolution, the sole
+`27c6:5120` driver ID and binary checksums are recorded with build/test logs. No agent ran hardware.
+The [capture runbook](docs/c-driver-first-capture.md) uses this revision; one real C capture remains next.
+
 ### 6c — Portability, authentication quality, and repeatable checks
 
 - [ ] Derive DAC settings and FDT delta from OTP, or explicitly restrict this prototype to a supported
@@ -483,8 +489,8 @@ with existing formatting listings. Actual C image capture and Phase 6c remain un
 ## Recommended order
 
 1. ~~**Phase 6, layer 1** — `--touches` live: several frames in one session.~~ Done (Run 22).
-2. **Phase 6 review, 6a and 6b** — offline secret handling, TLS fixes, response validation, and
-   actual-driver lifecycle tests. These precede the first C-driver hardware run.
+2. ~~**Phase 6 review, 6a and 6b** — offline secret handling, TLS fixes, response validation, and
+   actual-driver lifecycle tests.~~ Complete; the Run 26 gate correction is also verified offline.
 3. **Phase 6, layer 2** — owner runs one C-driver capture, then validates repeated lifecycle and
    enrollment / matching behavior under 6c. PAM comes after matching validation.
 4. **Phase 2** — owner reviews the publication checklist and posts the drafts; this can proceed in

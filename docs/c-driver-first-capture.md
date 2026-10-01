@@ -37,6 +37,13 @@ the bundle's library without missing dependencies, and the driver table lists on
 is recorded as Run 26. This bundle predates the immediate MCU-state fix; do not reuse it for capture.
 The capture executable was not invoked by agents, and no hardware was accessed during preparation.
 
+**Corrected bundle, 2026-10-01:** use `dist/goodix-owner-c-d6a9701/`, from exact driver commit
+`d6a9701af7355e31d67cce3066f490fec0278fa2`, with the same pinned upstream. All 251 C tests pass normally
+and under ASan/UBSan (leak detection disabled); `just check` passes with existing formatting listings.
+The pinned build has no compiler warnings. Source/fixture hashes match the commit, host linkage resolves
+the bundled library without missing dependencies, and the driver table lists only `27c6:5120`.
+Provenance, build/test logs and `SHA256SUMS` are included. No agent accessed hardware.
+
 To reproduce in a **new** libfprint checkout, with a C/C++ toolchain, Meson, Ninja, pkg-config,
 and GLib, GUsb, libusb, OpenSSL ≥ 3, and pixman development packages:
 
@@ -46,7 +53,7 @@ git clone https://gitlab.freedesktop.org/libfprint/libfprint.git /tmp/goodix-own
 cd /tmp/goodix-owner-libfprint
 git checkout --detach 6f9479c3d55f847c1b3769f28ceb99227f9858cf
 driver_source=$(mktemp -d /tmp/goodix-owner-driver-XXXXXX)
-git -C "$repo" archive 2b77542ea3c8cc8c951123d6637f7a877deb5694 libfprint/goodix5120 \
+git -C "$repo" archive d6a9701af7355e31d67cce3066f490fec0278fa2 libfprint/goodix5120 \
   | tar -x -C "$driver_source"
 mkdir -p libfprint/drivers/goodix5120
 cp "$driver_source"/libfprint/goodix5120/goodix5120*.[ch] libfprint/drivers/goodix5120/
@@ -57,7 +64,7 @@ meson compile -C build
 build="$PWD/build"
 ```
 
-For the prepared bundle, set `build="$repo/dist/goodix-owner-c-2b77542"` instead.
+For the prepared bundle, set `build="$repo/dist/goodix-owner-c-d6a9701"` instead.
 Do not install the library or change fprintd/PAM configuration for this run. The following tool
 reads compiled driver ID tables without opening USB:
 
@@ -94,7 +101,7 @@ absolute path:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
-build="$repo/dist/goodix-owner-c-2b77542"
+build="$repo/dist/goodix-owner-c-d6a9701"
 umask 077
 run=$(mktemp -d "$HOME/goodix-c-first-XXXXXX")
 sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
