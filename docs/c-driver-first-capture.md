@@ -28,7 +28,9 @@ host writes within ~1 ms; the current source paces ChangeCipherSpec/Finished by 
 the settle and listen windows, so no two host writes are closer than 10 ms (`docs/protocol.md`, Run 31).
 Run 32 ran that bundle from Run 31's bit-set state: `0x20` drew and decrypted an image, then libfprint
 found no minutiae and saved no file (`docs/protocol.md`, Run 32). The current source replaces the
-`>> 4` grey mapping with a per-frame contrast stretch and logs its bounds.
+`>> 4` grey mapping with a per-frame contrast stretch and logs its bounds. Run 33 reran the unpaced
+listen bundle from the same bit-set state: no image, bit cleared — the pacing, not the start state,
+made Run 32 work. Do not reuse the listen bundle.
 
 ## Prepare the build offline
 

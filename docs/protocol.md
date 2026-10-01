@@ -1295,6 +1295,32 @@ to 0..255 before the ×3 resize, and logs the two bounds (not pixels) as
 so the stretch roughly doubles the contrast NBIS sees. It is not a calibration; whether NBIS then finds
 minutiae, and whether ridge polarity needs `FPI_IMAGE_COLORS_INVERTED`, are hardware questions.
 
+### Run 33 — 2026-10-02 01:29, A/B: unpaced final flight from the bit-set state: no image (observed)
+
+The owner ran `dist/goodix-owner-c-listen/` (ServerHello/ServerHelloDone paced 60 ms, ChangeCipherSpec
+and Finished back to back, 10 ms settle, 5 s listen) straight after Run 32, no EC reset. **Result:
+`0x20` ACKed `0x01`, then no data reply for 2 s**; the driver stopped, close completed without error.
+
+- **Start state was Run 32's:** pre-handshake `0xae` `02 02 31 03 00 00 01 00 90 63 … 11 11`, byte 1
+  `0x02` — the same start state as Run 32. Only the final-flight pacing differs between the two runs.
+- TLS: `0xd0` 41.413, EC ClientHello .427, ServerHello .427, ServerHelloDone .489 (60 ms), EC
+  ClientKeyExchange .490, ChangeCipherSpec .512, Finished .518, host ChangeCipherSpec **.518 and
+  Finished .518 (<1 ms apart)**, settle until .530, `0xd4` .530 (ACK `0x01` .531), listen until 46.532
+  (EC silent).
+- **Post-listen `0xae`: byte 1 `0x00`, counter `13 13`.** The unpaced session cleared the bit that the
+  previous paced C session (Run 32) and Go session (Run 31) had left set.
+- `0x32` armed with `b8 c5 ab b9 aa b9`; finger-down 30 ms after arming (header `02 00 3f 00`, readings
+  `[262 275 210 237 228 259]`), so the finger was probably already on the sensor. `0x20` ACK at .768, then
+  silence until the 2 s timeout — the Runs 27–30 signature. The touch is not the cause: the EC answers
+  `0x20` with a frame whatever is on the sensor once the session is established (Runs 22, 31, 32).
+
+**Conclusion:** with the start state held fixed, pacing ChangeCipherSpec/Finished decides whether the
+EC treats the session as established: paced (Run 32) → bit kept, image; back to back (Run 33) → bit
+cleared, no image. This confirms the Run 31 hypothesis that the EC loses an OUT pack arriving within
+~1 ms of the previous one; the exact minimum gap is still unmeasured (Go's 2.5 ms worked). The 60 ms
+pace in `70317c9` stays. The EC is now bit-clear, so the next run of the paced stretch bundle also
+tests a paced session from a bit-clear start, which no C run has done yet.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

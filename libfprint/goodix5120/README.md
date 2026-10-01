@@ -12,7 +12,8 @@ intervals, then stopped at an overly strict immediate MCU-state gate. Both keybo
 The corrected gate accepts the observed status `0x00` after authentication and positive `0xd4` ACK;
 Run 27 then reached the touch, but `0x20` drew no image and the TLS bit stayed clear; the final
 flight and `0xd4` follow the Go timing, which Runs 28/29 showed was not enough. The current source
-also listens 5 s after the `0xd4` ACK before `0xae` and paces every pair of host records. Run 32 drew and
+also listens 5 s after the `0xd4` ACK before `0xae` and paces every pair of host records; Run 33 confirmed
+that pacing is what lets `0x20` answer (an unpaced final flight from the same EC state drew nothing). Run 32 drew and
 decrypted the first C image, but NBIS found no minutiae in its `>> 4` frame; the current source stretches each
 frame's contrast instead (257 offline tests). No C image has passed minutiae detection yet.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
