@@ -1,5 +1,5 @@
 #pragma once
-#include "fpi-image-device.h"
+#include "fpi-device.h"
 #include "fpi-ssm.h"
 
 /* Keep diagnostics nonfatal in tests, including deliberately malformed replies. */

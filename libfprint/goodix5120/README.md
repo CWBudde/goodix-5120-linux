@@ -1,6 +1,6 @@
 # goodix5120: libfprint driver for the Goodix `27c6:5120` behind an ITE EC
 
-This is PLAN.md Phase 6, layer 2: a libfprint image driver in C for the fingerprint reader in the Huawei MateBook
+This is PLAN.md Phase 6, layer 2: a libfprint driver in C for the fingerprint reader in the Huawei MateBook
 `HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its command sequence.
 
 **Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. Run 23's `0xe4` check
@@ -20,7 +20,10 @@ complete C capture, with the stretched frame passing minutiae detection and save
 finger with libfprint's `enroll` example (5/5 stages, one retry, in one session). Run 36's verify
 scored 0 on every attempt, and Run 37 measured at most 5 minutiae per frame at any scale. NBIS needs 10,
 so matching needs a different matcher. Runs 38–40 tried SIGFM offline: with a 14-view template, 14/15
-genuine attempts matched, and no true impostor scored above 9 (threshold 24). SIGFM integration is next.**
+genuine attempts matched, and no true impostor scored above 9 (threshold 24). The driver now matches with SIGFM
+itself: it is a plain `FpDevice` with its own enroll (15 stages), verify, identify and capture, and the wire
+sequence is unchanged ([Matching](#matching-sigfm)). It passes the offline tests (280 with OpenCV); the first
+live enroll and verify with it are next.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
@@ -78,12 +81,17 @@ driver is built around that:
 
 | File | What it is |
 |---|---|
-| `goodix5120.c`, `goodix5120.h` | The libfprint driver: `FpImageDevice`, `FpiSsm` state machines, USB |
+| `goodix5120.c`, `goodix5120.h` | The libfprint driver: an `FpDevice` with its own enroll/verify/identify/capture loop, `FpiSsm` state machines, USB |
+| `goodix5120_match.c/.h` | The stored template (a GVariant of SIGFM views), validated in full before use. GLib only |
+| `goodix5120_sigfm.cpp` | The SIGFM view backend: extraction, scoring, conversion to and from the template. Keeps C++ exceptions out of the driver |
+| `sigfm/` | SIGFM from the `goodixtls` fork, vendored unmodified, LGPL-2.1+ ([its README](sigfm/README.md)) |
 | `goodix5120_proto.c/.h` | Pure framing, the send gate, the vendor sequence, TLS record splitting, FDT arm/event codec and threshold rules, 12-bit unpacking. GLib only |
 | `goodix5120_tls.c/.h` | TLS 1.2 PSK server on OpenSSL memory BIOs: no socket, no thread, no subprocess. GLib and OpenSSL only |
 | `tests/test-goodix5120-proto.c` | Unit tests. The vectors come from the Go tests or from bytes observed on the wire |
 | `tests/test-goodix5120-tls.c` | Offline rehearsal. An in-process OpenSSL PSK client stands in for the EC |
-| `tests/test-goodix5120-driver.c`, `tests/fake-libfprint/` | Actual driver compiled against a test-only libfprint/USB adapter; synthetic lifecycle and failure scenarios |
+| `tests/test-goodix5120-driver.c`, `tests/fake-libfprint/`, `tests/fake-matcher.c` | Actual driver compiled against a test-only libfprint/USB adapter and a fake SIGFM backend; synthetic lifecycle, matching and failure scenarios |
+| `tests/test-goodix5120-match.c` | The template format: round trip and every refused shape |
+| `tests/test-goodix5120-sigfm.cpp` | Real SIGFM on synthetic patterns: extraction, and that storing a view changes no score (built only with OpenCV) |
 | `meson.build` | Standalone helper and driver tests, without linking libfprint or USB |
 | `libfprint-register.patch` | Registers the driver in a libfprint tree |
 
@@ -92,7 +100,8 @@ driver is built around that:
 ```sh
 cd libfprint                                  # a libfprint source checkout
 mkdir -p libfprint/drivers/goodix5120
-cp /path/to/this/dir/goodix5120*.[ch] libfprint/drivers/goodix5120/
+cp /path/to/this/dir/goodix5120*.[ch] /path/to/this/dir/goodix5120_sigfm.cpp libfprint/drivers/goodix5120/
+cp -r /path/to/this/dir/sigfm libfprint/drivers/goodix5120/
 patch -p1 < /path/to/this/dir/libfprint-register.patch
 meson setup build -Ddrivers=goodix5120 -Dintrospection=false -Ddoc=false
 ninja -C build
@@ -102,16 +111,20 @@ ninja -C build
 (TLS-PSK)`. That tool reads the drivers' id tables and does not open a device.
 
 The driver is registered as **optional**, so only `-Ddrivers=...,goodix5120` builds it. Neither `default` nor
-`all` includes it. It uses two existing libfprint helpers, and **libfprint gains no new dependency**:
+`all` includes it. It uses two existing libfprint helpers and adds one:
 
 - `openssl` (≥ 3.0) is already required by `uru4000`. It is used here for the TLS-PSK server.
 - `pixman` is already required by the `aes3k` family. It is used here to enlarge the image (see below).
+- `opencv` (≥ 4.4, `opencv4.pc`) is **new**: SIGFM uses OpenCV's SIFT and brute-force matcher. It also adds C++
+  sources to libfprint, whose meson project already declares C++. Upstream libfprint has no such dependency, so this
+  build stays local until matching is settled (PLAN.md Phase 6c).
 
 `27c6:5120` is still in libfprint's generated "known unsupported" list. The patch leaves it there while the driver
 is optional, and the hwdb tool warns about the overlap.
 
-Tested against libfprint master `6f9479c`. The patch was dry-run against a clean checkout, and the whole library was
-built with `-Ddrivers=goodix5120,goodixmoc` with no warnings from this driver under libfprint's warning flags.
+Tested against libfprint master `6f9479c`. The patch applies to a clean checkout, and the whole library builds with
+`-Ddrivers=goodix5120` in `goodix-offline-build-opencv:26.04` (OpenCV 4.10) with no warnings from this driver under
+libfprint's warning flags.
 
 ## The PSK
 
@@ -140,7 +153,7 @@ made with upstream:
 
 ## What goes on the wire
 
-Open (`img_open`). This is the vendor's `vendorInit` from `cmd/goodix-probe/vendor.go`, in the order Runs 18 and 20
+Open. This is the vendor's `vendorInit` from `cmd/goodix-probe/vendor.go`, in the order Runs 18 and 20
 ran it live:
 
 ```
@@ -173,16 +186,22 @@ There is a short drain (200 ms of quiet) after each init step, never after `0xd0
 ServerKeyExchange, and the vendor's flight has none either. Records are forwarded verbatim. An alert the host side
 generates is **not** sent to the EC; the Go bridge does the same.
 
-Capture loop. Libfprint's image-device states drive it:
+Touch. Every action is one touch (enroll: one per stage), and a touch is the same three steps the image-device
+class drove before Phase 6c:
 
 ```
-AWAIT_FINGER_ON   32 0c 01 (80 t)x6 <u16 ms>   ACK, then wait (no timeout) for the 0x32 event
+finger down       32 0c 01 (80 t)x6 <u16 ms>   ACK, then wait (no timeout) for the 0x32 event
                   0x32 80 00 00 00 "base invalid" -> re-arm 0x32 from its readings >> 1
                   0x32 02 00 <flags> 00 finger down -> up thresholds from its readings
-CAPTURE           20 01 00                      ACK, then one 0xb0 pack: one TLS application-data record
-AWAIT_FINGER_OFF  34 0e 01 (80 t)x6             ACK, then wait for 0x34 00 02 00 00 finger up
+capture           20 01 00                      ACK, then one 0xb0 pack: one TLS application-data record
+finger up         34 0e 01 (80 t)x6             ACK, then wait for 0x34 00 02 00 00 finger up
                                                 -> next down thresholds = its readings >> 1
 ```
+
+Every touch, the last enroll stage included, waits for the finger-up event before the action reports, so an action
+always ends with nothing outstanding. (The image-device class ended an enrollment during the last lift: in Run 35
+it cancelled the up wait and left the EC armed with `0x34`.) Cancellation finishes a command in flight and cancels a
+wait for the finger; the session stays usable. Close sends nothing.
 
 Threshold rules (Phase 5d, from `dump.pcapng` and the vendor debug log):
 
@@ -199,6 +218,40 @@ the 1st and 99th percentile become 0 and 255, values between map linearly and ou
 (`g5120_samples_to_gray8_stretched`; a flat frame falls back to the Go reference's `>> 4`). The debug log reports
 the two bounds, never pixels. The frame is then enlarged ×3 to 192 × 240 with pixman, as `aes4000` does for its small press sensor.
 
+## Matching (SIGFM)
+
+NBIS finds at most 5 minutiae per frame on this sensor (Run 37) and Bozorth3 needs 10, so the driver does not use
+libfprint's image-device class, which always matches with NBIS. It is a plain `FpDevice` and runs SIGFM, the
+SIFT-based matcher of the `goodixtls` fork ([`sigfm/`](sigfm/README.md)), on the driver's 192 × 240 image:
+
+- **Enroll:** 15 touches (`G5120_ENROLL_STAGES`), each one view. Run 39 rejected 3 of 6 genuine attempts against 5
+  views; Run 40 accepted 14 of 15 against 14. A touch with fewer than 25 SIFT keypoints is a retry stage
+  ("press the finger flat"), as in the fork.
+- **Verify / identify:** one touch, scored against every stored view; the best score must reach 24, the fork's
+  threshold. In Run 40 genuine attempts scored at least 3 526 (64 × 80) and 6 643 (192 × 240), other fingers at
+  most 9 and 2. The log shows the best score per print (`best SIGFM score N, threshold 24`), a number, not
+  biometric data.
+- **Capture** still returns the image and runs no matcher.
+
+The print is a libfprint raw print (`FPI_PRINT_RAW`), so fprintd and the examples store it like any other.
+Its data is `(yqqa(a(qq)ay))`: format version 1, the image size the views came from, and per view the keypoint
+positions (rounded to pixels) and the 128-byte SIFT descriptors. SIGFM uses positions only as integer points and
+OpenCV's SIFT descriptors are whole numbers 0..255, so this changes no score (`/goodix5120/sigfm/round-trip-scores`).
+A 15-view template is roughly 200 KB. It is biometric data: SIFT features describe the ridge pattern. Stored data
+is checked in full (type, normal form, version, image size, view and keypoint counts, descriptor lengths,
+positions inside the image) before SIGFM sees it; anything else fails the action with `DATA_INVALID` before a byte
+goes to the device. SIGFM's own binary deserialiser does not bound its reads and is not used.
+
+libfprint's heat model is switched off (`temp_hot_seconds = -1`, as the match-on-chip drivers do): by default it fails
+an action after about 4 minutes of use, which a slow 15-touch enroll can reach, and this sensor images only on a
+touch.
+
+Not validated: other days, other fingers, dry or wet skin, and a stored template read back across sessions. The
+fork also subtracts a no-finger background frame; this driver does not (that needs a new live step).
+`tools/g5120-minutiae.c` and `tools/g5120-sigfm.cpp` were written for the image-device build: against this one,
+captures no longer pass through NBIS, so the minutiae tool's `driver` column and the SIGFM tool's discard retries
+no longer apply.
+
 ## Tests (offline, no device)
 
 ```sh
@@ -208,7 +261,8 @@ meson test -C build-c -v
 meson setup build-c-asan libfprint/goodix5120 -Db_sanitize=address,undefined && meson test -C build-c-asan
 ```
 
-Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
+Needs GLib/GObject/GIO and OpenSSL development headers; with OpenCV 4 the real SIGFM test is built too. These
+tests cover:
 
 - **framing:** the golden frames from `internal/proto/packet_test.go`, the checksum wrap cases, round trips with USB
   padding, and four replies **observed from this device** whose checksums must verify (the `0xa8` version reply, two
@@ -231,14 +285,17 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 - **shared reference:** Go and C independently check all 14 init payloads, every config byte, reply expectations,
   FDT vectors and complete synthetic images against [one committed corpus](../../internal/testfixtures/testdata/README.md).
   The actual driver's additional health check and all init writes are checked during a real synthetic TLS session.
-- **actual driver:** open, activation, five synthetic enrollment stages in one TLS session, processing before/after
-  lift, final-stage deactivation during lift, cancellation in every FDT/capture state and USB yield, unplug at every
-  open transfer, read/write failures, short writes, timeouts, wrong ACKs, stale/unexpected messages, base-invalid
-  rearming/exhaustion, close/reopen, and strict init reply lengths/status/chip ID/final TLS state. Rejected replies
+- **matching:** the template round trip through serialised bytes, refusal of every malformed shape, and with
+  OpenCV the real SIGFM backend: extraction and identical scores before and after storing a view.
+- **actual driver:** open, 15 synthetic enrollment stages in one TLS session with retry stages, verify and identify
+  (match, no match, retry), malformed stored templates refused before any I/O, capture, cancellation in every
+  FDT/capture state, at every USB yield and between enroll stages, unplug at every open transfer, read/write
+  failures, short writes, timeouts, wrong ACKs, stale/unexpected messages, base-invalid rearming/exhaustion,
+  close/reopen, and strict init reply lengths/status/chip ID/final TLS state. Rejected replies
   must stop further writes; positive cases keep secret and undocumented fields opaque. The adapter preserves
   synchronous state-machine callbacks and asynchronous
   USB completion; no device discovery or USB library is linked. See [the harness guide](tests/README.md) for its
-  boundaries. These tests do not establish timing on hardware, matching quality, or real libfprint/GUsb integration.
+  boundaries. These tests do not establish timing on hardware, matching accuracy, or real libfprint/GUsb integration.
 
 ## What is not done, or stubbed
 
@@ -259,9 +316,9 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
 
 ## Open questions and risks for the live bring-up
 
-1. **Matching quality.** 64 × 80 is about 3.3 × 4 mm at the usual 50.8 µm pitch. NBIS may find too few minutiae even
-   after ×3 enlargement. The community `goodixtls` fork (80 × 88 parts) moved to the SIGFM matcher for this reason.
-   `G5120_ENLARGE_FACTOR`, `G5120_BZ3_THRESHOLD` (24) and the default 5 enrol stages are unvalidated guesses.
+1. **Matching quality.** 64 × 80 is about 3.3 × 4 mm at the usual 50.8 µm pitch. NBIS finds too few minutiae
+   (Run 37), so the driver matches with SIGFM ([Matching](#matching-sigfm)). Its threshold (24) and 15 enroll
+   stages rest on one session with two fingers (Runs 38–40).
 2. **Ridge polarity and contrast.** Unknown whether ridges are dark. If they are not, set
    `FPI_IMAGE_COLORS_INVERTED`. `>> 4` uses half the range: Run 22's three frames span 52–179 after it, with a
    standard deviation of about 23, and Run 32's `>> 4` frame yielded no minutiae. The per-frame stretch is not a
@@ -273,7 +330,7 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
    between that drain and the first arm is dropped as stale before the arm's ACK.
 5. **Base invalid with zeros.** Tonight's reading is that a base-invalid event carries current readings. The older
    note in `internal/proto/fdt.go` says zeroes. If it is zeroes, the driver keeps its previous thresholds, and gives
-   up after 8 in a row. Each activation resets that retry budget, including after cancellation or close/reopen;
+   up after 8 in a row. Each action resets that retry budget, including after cancellation or close/reopen;
    rearming within an operation keeps the count. No live run has seen the event yet: Runs 21 and 22 armed down
    four times without one.
 6. **ACK status.** Only `0x01` has ever been seen, and anything else stops the driver. That may be too strict.
@@ -281,8 +338,8 @@ Needs GLib/GObject/GIO and OpenSSL development headers. These tests cover:
    The driver says so and sends nothing more; the next open's health check then refuses. Sending a TLS fatal alert
    to unstick it is untested ("Recovering the EC", item 4) and deliberately not done.
    After an image, TLS or transport failure during an operation, the driver discards its TLS session and refuses
-   activation until close/reopen. Late capture/FDT state changes send nothing. This also applies to unrelated
-   errors during deactivation; normal cancellation of a healthy operation remains reusable. Reopening repeats
+   every action until close/reopen, sending nothing. This also applies to unrelated errors while cancelling;
+   normal cancellation of a healthy operation remains reusable. Reopening repeats
    the health check and full init, but recovery after a failed operation has only been tested with a synthetic EC.
 8. **Autosuspend.** The hwdb gives this device `ID_AUTOSUSPEND=1` (already true today through the unsupported list).
    Whether USB autosuspend between sessions upsets the EC is unknown.

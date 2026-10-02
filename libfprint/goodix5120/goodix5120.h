@@ -18,11 +18,15 @@
 
 #pragma once
 
-#include "fpi-image-device.h"
+#include "fpi-device.h"
 #include "fpi-ssm.h"
 
+/* A plain FpDevice, not an FpImageDevice: libfprint's image-device class
+ * matches with NBIS, which cannot work on this sensor (Run 37), so the driver
+ * runs its own enroll/verify/identify loop and matches with SIGFM
+ * (goodix5120_match.h). Capture still returns the image. */
 G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FPI,
-                      DEVICE_GOODIX5120, FpImageDevice)
+                      DEVICE_GOODIX5120, FpDevice)
 
 /* USB: interface 1 is the CDC-Data interface with the bulk pair. */
 #define G5120_INTERFACE 1
@@ -53,8 +57,12 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FPI,
 #define G5120_PSK_ENV          "GOODIX5120_PSK_FILE"
 #define G5120_PSK_DEFAULT_PATH "/var/lib/fprint/goodix5120/psk.bin"
 
-/* Image handed to libfprint: the 64 x 80 frame, enlarged like aes4000 does
- * for its small press sensor, so NBIS has something to work with. The factor
- * is a guess until real enrolments have been tried (README.md). */
+/* The 64 x 80 frame is enlarged x3 (Pixman bilinear), as aes4000 does for its
+ * small press sensor. SIGFM features are extracted from this 192 x 240 image,
+ * the size Runs 38-40 measured; templates record it (goodix5120_match.h). */
 #define G5120_ENLARGE_FACTOR 3
-#define G5120_BZ3_THRESHOLD  24
+
+/* Each touch images about 3 x 4 mm of the finger: Run 39 rejected 3 of 6
+ * genuine attempts against 5 views, Run 40 accepted 14 of 15 against 14.
+ * The goodixtls fork enrolls 20 views for its 64 x 80 goodix511. */
+#define G5120_ENROLL_STAGES 15

@@ -1,7 +1,9 @@
 # Offline driver lifecycle tests
 
-The standalone Meson build compiles the production `goodix5120.c` as a separate translation unit. Tests call its
-registered image-device vfuncs. Its protocol helpers, TLS server, send gate and image decoder are the real code.
+The standalone Meson build compiles the production `goodix5120.c` as a separate translation unit. Tests start
+libfprint actions (open, close, enroll, verify, identify, capture, cancel) through its registered device vfuncs, as
+libfprint's core does. Its protocol helpers, TLS server, send gate, image decoder and template format
+(`goodix5120_match.c`) are the real code; only the SIGFM view backend is a fake (`fake-matcher.c`).
 All keys, replies and images are synthetic; this executable links no USB implementation and cannot discover devices.
 
 ## Run
@@ -10,20 +12,25 @@ All keys, replies and images are synthetic; this executable links no USB impleme
 meson setup /tmp/goodix-build-c libfprint/goodix5120
 meson test -C /tmp/goodix-build-c --print-errorlogs
 # Run one driver scenario after building:
-/tmp/goodix-build-c/test-goodix5120-driver -p /goodix5120/driver/enrollment
+/tmp/goodix-build-c/test-goodix5120-driver -p /goodix5120/driver/enroll/complete
 
 meson setup /tmp/goodix-build-c-asan libfprint/goodix5120 -Db_sanitize=address,undefined
 meson test -C /tmp/goodix-build-c-asan --print-errorlogs
 ```
 
-Dependencies: GLib/GObject/GIO >= 2.68 and OpenSSL >= 3 development headers, Meson and Ninja.
+Dependencies: GLib/GObject/GIO >= 2.68 and OpenSSL >= 3 development headers, Meson and Ninja. With OpenCV 4
+development files and a C++17 compiler, `test-goodix5120-sigfm` is built too (the offline container
+`goodix-offline-build-opencv:26.04` has both); without them it is skipped.
 Under ptrace, LeakSanitizer cannot run; use `ASAN_OPTIONS=detect_leaks=0` there and report that limitation.
 
 ## Adapter contract
 
 `fake-libfprint/` implements only the internal API used by this driver, based on libfprint
-`6f9479c3d55f847c1b3769f28ceb99227f9858cf`. SSM transitions and completion callbacks run synchronously,
-including child completion that advances and frees its parent. Errors and images transfer ownership.
+`6f9479c3d55f847c1b3769f28ceb99227f9858cf`. It holds one current action at a time with its own cancellable, as
+libfprint's core does, and asserts upstream's completion rules: a completion matches the current action, retry
+errors go only to progress/report calls, verify and identify report before they complete, and an enrolled print has
+a type. SSM transitions and completion callbacks run synchronously,
+including child completion that advances and frees its parent. Errors, images and prints transfer ownership.
 USB completion runs only when the test steps the pending transfer; callbacks may submit its successor.
 The adapter asserts one outstanding transfer and tracks live machines. Fixture teardown requires both to be gone.
 
@@ -38,10 +45,13 @@ An aggregate-deadline case requires a shrinking timeout and forbids the next pac
 Pinned libfprint's `short_is_error` excludes zero completions, so the driver checks their length itself;
 the fake preserves that upstream behavior rather than concealing the production guard.
 
-Enrollment processing completion is separately controllable. Intermediate stages require processing and lift;
-the final processing completion deactivates immediately. Tests cover both orders and completion after cancellation.
-Sweeps inject unplug at every open transfer and unplug, I/O failure or deactivation at all ten operation transfers
-with a two-piece image. State-entry hooks also cancel both FDT states in each direction and all three capture states.
+Enroll runs all 15 stages in one session, each a full touch (arm, image, lift), and stores 15 views that the real
+template parser reads back; the fake records which pixels SIGFM was given (the stretched 192 x 240 image). A touch
+with too few keypoints or a failed extraction is a retry stage. Verify and identify match, miss and retry; malformed
+stored templates (six shapes, for verify and inside an identify gallery) fail the action before any USB submission
+and leave the session usable. Sweeps inject unplug at every open transfer and unplug, I/O failure or cancellation
+at all ten capture transfers with a two-piece image; after a cancellation the next action needs no handshake.
+State-entry hooks also cancel both FDT states in each direction and all three capture states, during an enroll.
 
 Init regressions inject empty, truncated and oversized data at every init exchange, including both firmware/reset
 replies and the final MCU state. They change each documented status/header byte, chip ID and invalid MCU statuses,
@@ -55,14 +65,14 @@ statuses `0x08`, `0x01`, `0x10`, `0x11` and a negative `0xd4` ACK without furthe
 does not change the TLS-bit decoder or establish when that bit will become set.
 
 Session-failure regressions cover invalid image layout, timeout/read-budget exhaustion, malformed TLS records,
-corrupt ciphertext, OUT/IN errors and I/O failure during deactivation. Repeated activation must fail without
-a USB submission or handshake; late capture/FDT transitions cannot consume a queued synthetic encrypted image.
+corrupt ciphertext, OUT/IN errors and I/O failure while cancelling (reported as the cancellation). Any later action
+must fail without a USB submission or handshake, and cannot consume a queued synthetic encrypted image.
 Close/reopen with a healthy fake EC restores operation. Cancellation of FDT waiting or capture remains reusable
 without a new handshake.
 
 Capture-budget regressions complete a TLS record on the fourth additional read, validate the decoded image,
 and reject a wrong layout after decrypting on that same boundary. Six-fragment images still exhaust the budget
-with the final fragment unread. FDT retries get eight fresh rearms after cancellation/reactivation or failed
+with the final fragment unread. FDT retries get eight fresh rearms in a new action after cancellation or after a failed
 operation/close/reopen; the existing exhaustion case guards the limit within one operation.
 
 The USB adapter models a previously bound kernel driver and GUsb's detach-before-claim / release-before-attach
@@ -82,8 +92,9 @@ ServerHello packet at its deadline, and exhaust the budget during allocation bef
 Noise cannot shorten/restart the interval; fragments cannot bypass alert handling; no further write or
 successful open may follow budget exhaustion. These exercise the driver, not the EC's firmware timing.
 
-The driver suite contains 170 subtests; the protocol and TLS helpers add 46. Shared protocol checks add 39,
-and corpus-reader checks add two (257 total).
+The driver suite contains 187 subtests; the protocol and TLS helpers add 46. Shared protocol checks add 39,
+corpus-reader checks add two, and the template format adds four (278 total). With OpenCV, the real SIGFM backend
+adds two: extraction, and that storing views changes no score (280).
 
 ## Shared independent fixtures
 
@@ -107,9 +118,10 @@ utilities; it is absent from shipped command dependencies.
 
 ## Limits and next regression targets
 
-This adapter does not run libfprint's action framework, GUsb, libusb, Pixman or NBIS. Fake resizing preserves ownership
-and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. It cannot validate
-enrollment quality, matching, timing, suspend or EC recovery.
+This adapter does not run libfprint's action framework, GUsb, libusb or Pixman. Fake resizing preserves ownership
+and dimensions using nearest-neighbour sampling; production uses Pixman bilinear interpolation. The fake matcher
+scores identical images high and all others 0. Nothing here validates matching accuracy (Runs 38-40 measured SIGFM
+on the sensor), timing, suspend or EC recovery.
 Packet assembly models the wire contract, not the EC firmware's receive buffers or scheduling;
 passing packet tests does not establish why the real EC sent Run 24's TLS `decode_error`.
 

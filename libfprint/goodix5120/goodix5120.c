@@ -43,9 +43,14 @@
  *   open:  drain, 0xa8 (health), 96 a8 ae e4 a2 82 a6 a2 70 98 90,
  *          0xd0 -> TLS-PSK handshake (EC = client, host = server),
  *          0xd4, 5 s listen-only read, 0xae
- *   loop:  0x32 arm -> finger-down event -> 0x20 -> image (one TLS
+ *   touch: 0x32 arm -> finger-down event -> 0x20 -> image (one TLS
  *          application-data record in a 0xb0 pack) -> 0x34 arm ->
  *          finger-up event -> re-arm 0x32 from the up readings
+ *   close: nothing is sent
+ *
+ * Enroll, verify, identify and capture are this driver's own actions, one
+ * touch each (enroll: one per stage), matched with SIGFM rather than NBIS
+ * (goodix5120_match.h). Matching never sends anything.
  *
  * Never logged: the PSK, the 0xe4 reply (a hash of the PSK), the 0xa6 reply
  * (OTP), TLS record bodies, and image data.
@@ -57,6 +62,7 @@
 
 #include "drivers_api.h"
 #include "goodix5120.h"
+#include "goodix5120_match.h"
 #include "goodix5120_proto.h"
 #include "goodix5120_tls.h"
 
@@ -78,7 +84,7 @@ typedef enum {
 
 struct _FpiDeviceGoodix5120
 {
-  FpImageDevice parent;
+  FpDevice      parent;
 
   G5120Tls     *tls;
   gboolean      session_valid; /* only a successful open permits operations */
@@ -124,14 +130,23 @@ struct _FpiDeviceGoodix5120
   guint8        fdt_delta;
   guint         base_invalid;
 
-  /* Activation. */
+  /* Matching (goodix5120_match.h). */
+  G5120View    *probe;          /* this touch's features */
+  GError       *probe_retry;    /* or why this touch cannot be used (FP_DEVICE_RETRY) */
+  GPtrArray    *enroll_views;   /* enroll: G5120View * so far */
+  GPtrArray    *gallery;        /* verify/identify: per print, a GPtrArray of its views */
+
+  /* The action's touch loop. */
   FpiSsm       *ssm;            /* the one running session machine, if any */
   G5120Result   result;
   GCancellable *fdt_cancel;
-  gboolean      deactivating;
+  gboolean      cancelling;
 };
 
-G_DEFINE_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FP_TYPE_IMAGE_DEVICE)
+G_DEFINE_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FP_TYPE_DEVICE)
+
+static void session_done (FpiSsm *ssm, FpDevice *dev, GError *error);
+static void matching_clear (FpiDeviceGoodix5120 *self);
 
 /* ---- Helpers ------------------------------------------------------------- */
 
@@ -1250,11 +1265,11 @@ open_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       g_clear_pointer (&self->tls, g5120_tls_free);
     }
 
-  fpi_image_device_open_complete (FP_IMAGE_DEVICE (dev), error);
+  fpi_device_open_complete (dev, error);
 }
 
 static void
-dev_open (FpImageDevice *dev)
+dev_open (FpDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
   FpiSsm *ssm;
@@ -1262,18 +1277,18 @@ dev_open (FpImageDevice *dev)
   self->session_valid = FALSE;
   if (self->interface_cleanup_failed)
     {
-      fpi_image_device_open_complete (dev,
-                                      fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                                "Previous interface cleanup failed; recreate "
-                                                                "the device before reopening"));
+      fpi_device_open_complete (dev,
+                                fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                          "Previous interface cleanup failed; recreate "
+                                                          "the device before reopening"));
       return;
     }
-  ssm = fpi_ssm_new (FP_DEVICE (dev), open_run_state, OPEN_NUM_STATES);
+  ssm = fpi_ssm_new (dev, open_run_state, OPEN_NUM_STATES);
   fpi_ssm_start (ssm, open_done);
 }
 
 static void
-dev_close (FpImageDevice *dev)
+dev_close (FpDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
   GError *error = NULL;
@@ -1283,9 +1298,10 @@ dev_close (FpImageDevice *dev)
    * a later open repeats the full init and handshake, which Runs 20-22 showed
    * works after a completed handshake, four times with no EC reset. */
   self->session_valid = FALSE;
+  matching_clear (self);
   g_clear_pointer (&self->tls, g5120_tls_free);
   release_interface (self, &error);
-  fpi_image_device_close_complete (dev, error);
+  fpi_device_close_complete (dev, error);
 }
 
 /* ---- Finger detection -----------------------------------------------------
@@ -1375,7 +1391,7 @@ fdt_wait_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError
 
   if (error)
     {
-      if (self->deactivating && g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+      if (self->cancelling && g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
         {
           g_error_free (error);
           fpi_ssm_mark_completed (ssm);
@@ -1399,7 +1415,7 @@ fdt_run_state (FpiSsm *ssm, FpDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
 
-  if (self->deactivating)
+  if (self->cancelling)
     {
       fpi_ssm_mark_completed (ssm);
       return;
@@ -1482,7 +1498,7 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
   switch (fpi_ssm_get_cur_state (ssm))
     {
     case CAP_REQUEST:
-      if (self->deactivating)
+      if (self->cancelling)
         {
           fpi_ssm_mark_completed (ssm);
           return;
@@ -1562,68 +1578,47 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
     }
 }
 
-/* ---- Activation and the session loop ------------------------------------ */
+/* ---- Actions: the touch loop ---------------------------------------------
+ *
+ * Every action is one touch or more, and a touch is three machines in turn,
+ * one at a time (half duplex):
+ *
+ *   FDT down (arm 0x32, wait) -> capture (0x20, image) -> FDT up (arm 0x34, wait)
+ *
+ * SIGFM features are extracted between capture and lift, and the result is
+ * reported after the lift, so an action always ends with the finger off and
+ * nothing outstanding, as the image-device class did. Enroll repeats the touch
+ * until G5120_ENROLL_STAGES views are usable. Nothing new goes on the wire:
+ * the frames are those of Runs 34-40.
+ */
+
+#define G5120_TEMPLATE_WIDTH  (G5120_IMG_WIDTH * G5120_ENLARGE_FACTOR)
+#define G5120_TEMPLATE_HEIGHT (G5120_IMG_HEIGHT * G5120_ENLARGE_FACTOR)
 
 static void
-session_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+clear_captured (FpiDeviceGoodix5120 *self)
 {
-  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
-  FpImageDevice *img_dev = FP_IMAGE_DEVICE (dev);
-  G5120Result result = self->result;
+  if (self->captured)
+    memset (self->captured->data, 0, self->captured->width * self->captured->height);
+  g_clear_object (&self->captured);
+}
 
-  self->ssm = NULL;
-  self->result = RESULT_NONE;
-  g_clear_object (&self->fdt_cancel);
+static void
+matching_clear (FpiDeviceGoodix5120 *self)
+{
+  g_clear_pointer (&self->probe, g5120_view_free);
+  g_clear_error (&self->probe_retry);
+  g_clear_pointer (&self->enroll_views, g_ptr_array_unref);
+  g_clear_pointer (&self->gallery, g_ptr_array_unref);
+  clear_captured (self);
+}
 
-  if (error)
-    {
-      /* Neither TLS nor the EC's state is trustworthy after a failed exchange.
-       * Invalidate before notifying libfprint, whose callbacks may re-enter.
-       * This also applies to errors suppressed during deactivation. Expected
-       * cancellation of an FDT wait completes without an error. */
-      self->session_valid = FALSE;
-      g_clear_pointer (&self->tls, g5120_tls_free);
-      if (self->plain->len)
-        memset (self->plain->data, 0, self->plain->len);
-      g_byte_array_set_size (self->plain, 0);
-      g_byte_array_set_size (self->rx_tls, 0);
-    }
-
-  if (self->deactivating)
-    {
-      if (error)
-        fp_dbg ("session ended while deactivating: %s", error->message);
-      g_clear_error (&error);
-      g_clear_object (&self->captured);
-      self->deactivating = FALSE;
-      fpi_image_device_deactivate_complete (img_dev, NULL);
-      return;
-    }
-
-  if (error)
-    {
-      g_clear_object (&self->captured);
-      fpi_image_device_session_error (img_dev, error);
-      return;
-    }
-
-  switch (result)
-    {
-    case RESULT_FINGER_DOWN:
-      fpi_image_device_report_finger_status (img_dev, TRUE);
-      break;
-
-    case RESULT_FINGER_UP:
-      fpi_image_device_report_finger_status (img_dev, FALSE);
-      break;
-
-    case RESULT_IMAGE:
-      fpi_image_device_image_captured (img_dev, g_steal_pointer (&self->captured));
-      break;
-
-    case RESULT_NONE:
-      break;
-    }
+/* Ends the action with @error (owned), which is never a retry error. */
+static void
+action_fail (FpiDeviceGoodix5120 *self, GError *error)
+{
+  matching_clear (self);
+  fpi_device_action_error (FP_DEVICE (self), error);
 }
 
 static void
@@ -1641,71 +1636,372 @@ start_session (FpiDeviceGoodix5120 *self, FpiSsmHandlerCallback handler, int nr_
 }
 
 static void
-dev_change_state (FpImageDevice *dev, FpiImageDeviceState state)
+start_touch (FpiDeviceGoodix5120 *self)
 {
-  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  fpi_device_report_finger_status_changes (FP_DEVICE (self), FP_FINGER_STATUS_NEEDED, FP_FINGER_STATUS_NONE);
+  self->fdt_mode = G5120_CMD_FDT_DOWN;
+  start_session (self, fdt_run_state, FDT_NUM_STATES);
+}
 
-  if (self->deactivating || !self->session_valid)
-    return;
+/* The captured image becomes this touch's probe, or the reason to touch again. */
+static void
+extract_probe (FpiDeviceGoodix5120 *self)
+{
+  g_autoptr(GError) error = NULL;
+  FpImage *img = self->captured;
+  guint keypoints;
 
-  switch (state)
+  g_clear_pointer (&self->probe, g5120_view_free);
+  g_clear_error (&self->probe_retry);
+  self->probe = g5120_view_extract (img->data, img->width, img->height, &error);
+  clear_captured (self);
+  if (self->probe == NULL)
     {
-    case FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON:
-      self->fdt_mode = G5120_CMD_FDT_DOWN;
-      start_session (self, fdt_run_state, FDT_NUM_STATES);
+      fp_warn ("%s", error->message);
+      self->probe_retry = fpi_device_retry_new_msg (FP_DEVICE_RETRY_GENERAL,
+                                                    "This touch could not be read, please try again");
+      return;
+    }
+
+  keypoints = g5120_view_keypoints (self->probe);
+  fp_dbg ("SIGFM: %u keypoints", keypoints);
+  if (keypoints < G5120_MATCH_MIN_KEYPOINTS)
+    {
+      g_clear_pointer (&self->probe, g5120_view_free);
+      self->probe_retry = fpi_device_retry_new_msg (FP_DEVICE_RETRY_CENTER_FINGER,
+                                                    "Too few features in this touch (%u < %u); "
+                                                    "press the finger flat on the sensor",
+                                                    keypoints, G5120_MATCH_MIN_KEYPOINTS);
+    }
+}
+
+static void
+enroll_touch_done (FpiDeviceGoodix5120 *self)
+{
+  FpDevice *dev = FP_DEVICE (self);
+  FpPrint *print = NULL;
+  GVariant *data;
+
+  if (self->probe_retry)
+    {
+      fpi_device_enroll_progress (dev, self->enroll_views->len, NULL, g_steal_pointer (&self->probe_retry));
+      start_touch (self);
+      return;
+    }
+
+  /* A number, not biometric data: how much this view overlaps the others. */
+  if (self->enroll_views->len > 0)
+    fp_dbg ("enroll view %u: best SIGFM score against the earlier views %d", self->enroll_views->len + 1,
+            g5120_template_best_score (self->enroll_views, self->probe, NULL));
+  g_ptr_array_add (self->enroll_views, g_steal_pointer (&self->probe));
+  fpi_device_enroll_progress (dev, self->enroll_views->len, NULL, NULL);
+  if (self->enroll_views->len < G5120_ENROLL_STAGES)
+    {
+      start_touch (self);
+      return;
+    }
+
+  fpi_device_get_enroll_data (dev, &print);
+  data = g5120_template_new (self->enroll_views, G5120_TEMPLATE_WIDTH, G5120_TEMPLATE_HEIGHT);
+  fpi_print_set_type (print, FPI_PRINT_RAW);
+  g_object_set (print, "fpi-data", data, NULL);
+  matching_clear (self);
+  fpi_device_enroll_complete (dev, g_object_ref (print), NULL);
+}
+
+/* The best score of the probe against each print of the gallery, logged. */
+static gint
+gallery_score (FpiDeviceGoodix5120 *self, guint print)
+{
+  gint score = g5120_template_best_score (g_ptr_array_index (self->gallery, print), self->probe, NULL);
+
+  if (score < 0)
+    fp_warn ("SIGFM failed to compare against print %u; treating it as no match", print);
+  fp_info ("print %u: best SIGFM score %d, threshold %d", print, score, G5120_MATCH_THRESHOLD);
+  return score;
+}
+
+static void
+verify_touch_done (FpiDeviceGoodix5120 *self)
+{
+  FpDevice *dev = FP_DEVICE (self);
+  FpiMatchResult result;
+
+  if (self->probe_retry)
+    {
+      fpi_device_verify_report (dev, FPI_MATCH_ERROR, NULL, g_steal_pointer (&self->probe_retry));
+      matching_clear (self);
+      fpi_device_verify_complete (dev, NULL);
+      return;
+    }
+
+  result = gallery_score (self, 0) >= G5120_MATCH_THRESHOLD ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL;
+  matching_clear (self);
+  /* No scanned print: a raw print is compared by its data, which a one-view
+   * probe never equals, so libfprint would discard it with a warning. */
+  fpi_device_verify_report (dev, result, NULL, NULL);
+  fpi_device_verify_complete (dev, NULL);
+}
+
+static void
+identify_touch_done (FpiDeviceGoodix5120 *self)
+{
+  FpDevice *dev = FP_DEVICE (self);
+  GPtrArray *prints = NULL;
+  FpPrint *match = NULL;
+  gint best = -1;
+
+  if (self->probe_retry)
+    {
+      fpi_device_identify_report (dev, NULL, NULL, g_steal_pointer (&self->probe_retry));
+      matching_clear (self);
+      fpi_device_identify_complete (dev, NULL);
+      return;
+    }
+
+  fpi_device_get_identify_data (dev, &prints);
+  for (guint i = 0; i < self->gallery->len; i++)
+    {
+      gint score = gallery_score (self, i);
+
+      if (score >= G5120_MATCH_THRESHOLD && score > best)
+        {
+          best = score;
+          match = g_ptr_array_index (prints, i);
+        }
+    }
+  matching_clear (self);
+  fpi_device_identify_report (dev, match, NULL, NULL);
+  fpi_device_identify_complete (dev, NULL);
+}
+
+static void
+touch_done (FpiDeviceGoodix5120 *self)
+{
+  FpDevice *dev = FP_DEVICE (self);
+
+  switch (fpi_device_get_current_action (dev))
+    {
+    case FPI_DEVICE_ACTION_ENROLL:
+      enroll_touch_done (self);
       break;
 
-    case FPI_IMAGE_DEVICE_STATE_CAPTURE:
+    case FPI_DEVICE_ACTION_VERIFY:
+      verify_touch_done (self);
+      break;
+
+    case FPI_DEVICE_ACTION_IDENTIFY:
+      identify_touch_done (self);
+      break;
+
+    case FPI_DEVICE_ACTION_CAPTURE:
+      {
+        FpImage *image = g_steal_pointer (&self->captured);
+
+        matching_clear (self);
+        fpi_device_capture_complete (dev, image, NULL);
+      }
+      break;
+
+    case FPI_DEVICE_ACTION_NONE:
+    case FPI_DEVICE_ACTION_PROBE:
+    case FPI_DEVICE_ACTION_OPEN:
+    case FPI_DEVICE_ACTION_CLOSE:
+    case FPI_DEVICE_ACTION_LIST:
+    case FPI_DEVICE_ACTION_DELETE:
+    case FPI_DEVICE_ACTION_CLEAR_STORAGE:
+    default:
+      action_fail (self, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL, "touch finished outside an action"));
+    }
+}
+
+static void
+session_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  G5120Result result = self->result;
+
+  self->ssm = NULL;
+  self->result = RESULT_NONE;
+  g_clear_object (&self->fdt_cancel);
+
+  if (error)
+    {
+      /* Neither TLS nor the EC's state is trustworthy after a failed exchange.
+       * Invalidate before notifying libfprint, whose callbacks may re-enter.
+       * This also applies to errors suppressed while cancelling. Expected
+       * cancellation of an FDT wait completes without an error. */
+      self->session_valid = FALSE;
+      g_clear_pointer (&self->tls, g5120_tls_free);
+      if (self->plain->len)
+        memset (self->plain->data, 0, self->plain->len);
+      g_byte_array_set_size (self->plain, 0);
+      g_byte_array_set_size (self->rx_tls, 0);
+    }
+
+  if (self->cancelling)
+    {
+      if (error)
+        fp_dbg ("session ended while cancelling: %s", error->message);
+      g_clear_error (&error);
+      self->cancelling = FALSE;
+      action_fail (self, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Operation was cancelled"));
+      return;
+    }
+
+  if (error)
+    {
+      action_fail (self, error);
+      return;
+    }
+
+  switch (result)
+    {
+    case RESULT_FINGER_DOWN:
+      fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_PRESENT, FP_FINGER_STATUS_NEEDED);
       start_session (self, cap_run_state, CAP_NUM_STATES);
       break;
 
-    case FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF:
+    case RESULT_IMAGE:
+      if (fpi_device_get_current_action (dev) != FPI_DEVICE_ACTION_CAPTURE)
+        extract_probe (self);
       self->fdt_mode = G5120_CMD_FDT_UP;
       start_session (self, fdt_run_state, FDT_NUM_STATES);
       break;
 
-    case FPI_IMAGE_DEVICE_STATE_INACTIVE:
-    case FPI_IMAGE_DEVICE_STATE_ACTIVATING:
-    case FPI_IMAGE_DEVICE_STATE_DEACTIVATING:
-    case FPI_IMAGE_DEVICE_STATE_IDLE:
+    case RESULT_FINGER_UP:
+      fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NONE, FP_FINGER_STATUS_PRESENT);
+      touch_done (self);
+      break;
+
+    case RESULT_NONE:
+      action_fail (self, fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL, "touch ended without a result"));
       break;
     }
 }
 
-static void
-dev_activate (FpImageDevice *dev)
+/* Common to every action: refuse without a valid session, before any I/O. */
+static gboolean
+action_begin (FpiDeviceGoodix5120 *self)
 {
-  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
-
-  if (!self->session_valid)
+  if (!self->session_valid || self->ssm != NULL)
     {
-      fpi_image_device_activate_complete (dev,
-                                          fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
-                                                                    "Session unavailable; close and reopen "
-                                                                    "the device before another operation"));
-      return;
+      fpi_device_action_error (FP_DEVICE (self),
+                               fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                                         "Session unavailable; close and reopen "
+                                                         "the device before another operation"));
+      return FALSE;
     }
 
   /* The TLS session was set up at open; there is nothing to send here. */
   self->base_invalid = 0; /* a fresh operation, including after cancellation */
-  self->deactivating = FALSE;
-  fpi_image_device_activate_complete (dev, NULL);
+  self->cancelling = FALSE;
+  return TRUE;
+}
+
+/* The views stored in @print, or NULL with a DATA_INVALID @error. */
+static GPtrArray *
+print_views (FpPrint *print, GError **error)
+{
+  g_autoptr(GVariant) data = NULL;
+  g_autoptr(GError) local = NULL;
+  GPtrArray *views;
+
+  g_object_get (print, "fpi-data", &data, NULL);
+  views = g5120_template_parse (data, G5120_TEMPLATE_WIDTH, G5120_TEMPLATE_HEIGHT, &local);
+  if (views == NULL)
+    g_propagate_error (error, fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID, "%s", local->message));
+  return views;
 }
 
 static void
-dev_deactivate (FpImageDevice *dev)
+dev_enroll (FpDevice *dev)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+
+  if (!action_begin (self))
+    return;
+  self->enroll_views = g_ptr_array_new_with_free_func ((GDestroyNotify) g5120_view_free);
+  start_touch (self);
+}
+
+static void
+dev_verify (FpDevice *dev)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  FpPrint *print = NULL;
+  GPtrArray *views;
+  GError *error = NULL;
+
+  if (!action_begin (self))
+    return;
+  fpi_device_get_verify_data (dev, &print);
+  views = print_views (print, &error);
+  if (views == NULL)
+    {
+      action_fail (self, error);
+      return;
+    }
+  self->gallery = g_ptr_array_new_with_free_func ((GDestroyNotify) g_ptr_array_unref);
+  g_ptr_array_add (self->gallery, views);
+  start_touch (self);
+}
+
+static void
+dev_identify (FpDevice *dev)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  GPtrArray *prints = NULL;
+
+  if (!action_begin (self))
+    return;
+  fpi_device_get_identify_data (dev, &prints);
+  self->gallery = g_ptr_array_new_with_free_func ((GDestroyNotify) g_ptr_array_unref);
+  for (guint i = 0; i < prints->len; i++)
+    {
+      GError *error = NULL;
+      GPtrArray *views = print_views (g_ptr_array_index (prints, i), &error);
+
+      if (views == NULL)
+        {
+          g_prefix_error (&error, "Print %u: ", i);
+          action_fail (self, error);
+          return;
+        }
+      g_ptr_array_add (self->gallery, views);
+    }
+  start_touch (self);
+}
+
+static void
+dev_capture (FpDevice *dev)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  gboolean wait_for_finger = FALSE;
+
+  fpi_device_get_capture_data (dev, &wait_for_finger);
+  if (!wait_for_finger)
+    {
+      /* An image is only requested after a finger-down event. */
+      fpi_device_action_error (dev, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+      return;
+    }
+  if (!action_begin (self))
+    return;
+  start_touch (self);
+}
+
+static void
+dev_cancel (FpDevice *dev)
 {
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
 
   if (self->ssm == NULL)
-    {
-      fpi_image_device_deactivate_complete (dev, NULL);
-      return;
-    }
+    return;
 
   /* A command in flight finishes first (the machines check the flag at each
    * state); a wait for a finger is cancelled. The EC stays armed. */
-  self->deactivating = TRUE;
+  self->cancelling = TRUE;
   if (self->fdt_cancel)
     g_cancellable_cancel (self->fdt_cancel);
 }
@@ -1735,7 +2031,7 @@ fpi_device_goodix5120_finalize (GObject *object)
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (object);
 
   g_clear_pointer (&self->tls, g5120_tls_free);
-  g_clear_object (&self->captured);
+  matching_clear (self);
   g_clear_object (&self->fdt_cancel);
   if (self->plain->len)
     memset (self->plain->data, 0, self->plain->len);
@@ -1751,7 +2047,6 @@ fpi_device_goodix5120_class_init (FpiDeviceGoodix5120Class *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
   FpDeviceClass *dev_class = FP_DEVICE_CLASS (klass);
-  FpImageDeviceClass *img_class = FP_IMAGE_DEVICE_CLASS (klass);
 
   object_class->finalize = fpi_device_goodix5120_finalize;
 
@@ -1760,14 +2055,19 @@ fpi_device_goodix5120_class_init (FpiDeviceGoodix5120Class *klass)
   dev_class->type = FP_DEVICE_TYPE_USB;
   dev_class->id_table = id_table;
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
+  dev_class->nr_enroll_stages = G5120_ENROLL_STAGES;
+  /* libfprint's default heat model fails an action after ~4 min of use, which
+   * a slow 15-touch enroll can reach. The sensor images only on a touch and
+   * otherwise waits in finger detection, which Windows leaves armed. */
+  dev_class->temp_hot_seconds = -1;
 
-  img_class->img_open = dev_open;
-  img_class->img_close = dev_close;
-  img_class->activate = dev_activate;
-  img_class->deactivate = dev_deactivate;
-  img_class->change_state = dev_change_state;
+  dev_class->open = dev_open;
+  dev_class->close = dev_close;
+  dev_class->enroll = dev_enroll;
+  dev_class->verify = dev_verify;
+  dev_class->identify = dev_identify;
+  dev_class->capture = dev_capture;
+  dev_class->cancel = dev_cancel;
 
-  img_class->img_width = G5120_IMG_WIDTH * G5120_ENLARGE_FACTOR;
-  img_class->img_height = G5120_IMG_HEIGHT * G5120_ENLARGE_FACTOR;
-  img_class->bz3_threshold = G5120_BZ3_THRESHOLD;
+  fpi_device_class_auto_initialize_features (dev_class);
 }

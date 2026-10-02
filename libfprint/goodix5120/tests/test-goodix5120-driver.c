@@ -1,13 +1,16 @@
 /*
- * Exercise the actual driver through its registered image-device vfuncs.
- * Only libfprint/USB boundaries are faked; framing, TLS and image decode are real.
+ * Exercise the actual driver through its registered device vfuncs, one
+ * libfprint action at a time. Only libfprint/USB boundaries and the SIGFM view
+ * backend are faked; framing, TLS, image decode and the template format are real.
  * All key material and images are synthetic. This binary cannot access USB.
  */
 #include <unistd.h>
 #include <glib/gstdio.h>
 #include <openssl/ssl.h>
 #include "fake-libfprint.h"
+#include "fake-matcher.h"
 #include "goodix5120.h"
+#include "goodix5120_match.h"
 #include "goodix5120_proto.h"
 #include "goodix5120_tls.h"
 #include "shared-fixtures.h"
@@ -16,7 +19,7 @@ static GKeyFile *corpus;
 
 typedef struct {
   FakeUsb usb;
-  FpImageDevice *dev;
+  FpDevice *dev;
   gchar *key_path;
   SSL_CTX *ctx;
   SSL *client;
@@ -31,9 +34,10 @@ typedef struct {
   gboolean close_after_finished; /* answer the host's Finished with close_notify */
   guint tls_fault; /* synthetic image: 1 = bad record type, 2 = bad ciphertext */
   guint image_parts;
+  guint pattern; /* which synthetic image the fake EC sends: a different "finger" */
   const char *cancel_machine;
   gint cancel_state;
-  FpiImageDeviceState cancel_phase;
+  guint cancel_phase;
   guint cancel_hits;
   GByteArray *out_frame;
   GPtrArray *sent_frames;
@@ -187,9 +191,14 @@ static void
 queue_image (Fixture *f)
 {
   guint8 frame[7693] = { 0 };
-  const guint8 pattern[] = { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc };
+  const guint8 patterns[][6] = {
+    { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc },
+    { 0x21, 0x43, 0x65, 0x87, 0xa9, 0xcb },
+    { 0x55, 0x05, 0x50, 0x0a, 0xa0, 0xaa },
+  };
+  g_assert_cmpuint (f->pattern, <, G_N_ELEMENTS (patterns));
   for (gsize i = 8; i < 7688; i += 6)
-    memcpy (frame + i, pattern, 6);
+    memcpy (frame + i, patterns[f->pattern], 6);
   g_assert_true (SSL_is_init_finished (f->client));
   g_assert_cmpint (SSL_write (f->client, frame, f->corrupt_image ? 17 : sizeof (frame)),
                    ==, f->corrupt_image ? 17 : sizeof (frame));
@@ -340,6 +349,7 @@ setup (Fixture *f, gconstpointer data)
   g_assert_true (g_file_set_contents (f->key_path, (char *) f->key, sizeof (f->key), &error));
   g_assert_no_error (error);
   g_setenv (G5120_PSK_ENV, f->key_path, TRUE);
+  fake_matcher_reset ();
   f->dev = g_object_new (fpi_device_goodix5120_get_type (), NULL);
   f->out_frame = g_byte_array_new ();
   f->sent_frames = g_ptr_array_new_with_free_func ((GDestroyNotify) g_bytes_unref);
@@ -354,9 +364,11 @@ teardown (Fixture *f, gconstpointer data)
   (void) data;
   g_assert_null (f->usb.pending);
   g_assert_cmpuint (f->usb.machines, ==, 0);
+  g_assert_cmpint (f->usb.action, ==, FPI_DEVICE_ACTION_NONE);
   if (f->usb.claimed)
-    FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+    fake_close (&f->usb);
   g_object_unref (f->dev);
+  fake_matcher_reset ();
   fake_clear (&f->usb);
   g_byte_array_unref (f->out_frame);
   g_ptr_array_unref (f->sent_frames);
@@ -367,36 +379,68 @@ teardown (Fixture *f, gconstpointer data)
   g_unsetenv (G5120_PSK_ENV);
 }
 
+static FpPrint *
+new_print (void)
+{
+  return g_object_new (fp_print_get_type (), NULL);
+}
+
+/* The views a completed enrollment stored, through the real template parser. */
+static GPtrArray *
+stored_views (FpPrint *print)
+{
+  g_autoptr(GError) error = NULL;
+  GPtrArray *views = g5120_template_parse (print->data, 192, 240, &error);
+  g_assert_no_error (error);
+  return views;
+}
+
 static void
 test_enrollment (Fixture *f, gconstpointer data)
 {
+  g_autoptr(FpPrint) print = new_print ();
+  g_autoptr(GPtrArray) views = NULL;
+
   (void) data;
   f->auto_events = TRUE;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
   g_assert_cmpuint (f->handshakes, ==, 1);
+  g_assert_cmpint (FP_DEVICE_GET_CLASS (f->dev)->nr_enroll_stages, ==, 15);
+  g_assert_cmphex (FP_DEVICE_GET_CLASS (f->dev)->features, ==,
+                   FP_DEVICE_FEATURE_CAPTURE | FP_DEVICE_FEATURE_IDENTIFY | FP_DEVICE_FEATURE_VERIFY |
+                   FP_DEVICE_FEATURE_ALWAYS_ON);
 
-  f->usb.notify.automatic = TRUE;
-  f->usb.notify.target_images = 5;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
+  fake_enroll (&f->usb, print);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
-  g_assert_cmpuint (f->usb.notify.activations, ==, 1);
-  g_assert_cmpuint (f->usb.notify.images, ==, 5);
-  g_assert_cmpuint (f->usb.notify.fingers_on, ==, 5);
-  /* The final processing completion ends enrollment without waiting for lift. */
-  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 4);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
+  g_assert_true (f->usb.notify.enrolled == print);
+  g_assert_cmpuint (f->usb.notify.progress, ==, 15);
+  g_assert_cmpint (f->usb.notify.stage, ==, 15);
+  g_assert_cmpuint (f->usb.notify.retries, ==, 0);
+  /* Every stage is a full touch, the last one included: arm, image, lift. */
+  g_assert_cmpuint (f->usb.notify.needed, ==, 15);
+  g_assert_cmpuint (f->usb.notify.fingers_on, ==, 15);
+  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 15);
+  g_assert_cmpuint (f->frames, ==, 15);
   g_assert_cmpuint (f->handshakes, ==, 1);
-  g_assert_cmpuint (f->usb.notify.last_image->width, ==, 192);
-  g_assert_cmpuint (f->usb.notify.last_image->height, ==, 240);
-  /* Literal expectations for samples 0x234 0x781 0xc56 0x9ab after the
-   * per-frame stretch (bounds 0x234..0xc56), carried through fake resize. */
+  g_assert_null (f->usb.pending);
+
+  g_assert_cmpint (print->type, ==, FPI_PRINT_RAW);
+  views = stored_views (print);
+  g_assert_cmpuint (views->len, ==, 15);
+  /* SIGFM saw the driver's 192 x 240 image. Literal expectations for samples
+   * 0x234 0x781 0xc56 0x9ab after the per-frame stretch (bounds 0x234..0xc56),
+   * carried through fake resize. */
+  g_assert_cmpuint (fake_matcher.extractions, ==, 15);
+  g_assert_cmpuint (fake_matcher.width, ==, 192);
+  g_assert_cmpuint (fake_matcher.height, ==, 240);
   const guint8 want[] = { 0x00, 0x85, 0xff, 0xbc };
   for (guint i = 0; i < 4; i++)
-    g_assert_cmphex (f->usb.notify.last_image->data[i * 3], ==, want[i]);
+    g_assert_cmphex (fake_matcher.pixels[i * 3], ==, want[i]);
 }
 
 static void
@@ -407,7 +451,7 @@ open_driver (Fixture *f)
     0xd0, 0xd4, 0xae,
   };
   guint command = 0;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
@@ -471,7 +515,7 @@ open_to_server_hello (Fixture *f)
 {
   guint steps = 0;
 
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   while (tls_frames_sent (f) == 0)
     {
       g_assert_true (fake_usb_step (&f->usb));
@@ -550,7 +594,7 @@ test_tls_pacing_budget (Fixture *f, gconstpointer data)
   guint target = GPOINTER_TO_UINT (data);
   guint steps = 0, writes;
 
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   while (tls_frames_sent (f) < target)
     {
       g_assert_true (fake_usb_step (&f->usb));
@@ -575,7 +619,7 @@ test_tls_write_budget (Fixture *f, gconstpointer data)
   guint steps = 0, writes;
   gboolean allocation_expires = GPOINTER_TO_UINT (data);
 
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   while (!f->client)
     {
       g_assert_true (fake_usb_step (&f->usb));
@@ -620,7 +664,7 @@ test_tls_pacing (Fixture *f, gconstpointer data)
   gint64 finished_at = 0, ccs_at = 0;
 
   (void) data;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   while (seen < 4)
     {
       g_assert_true (fake_usb_step (&f->usb));
@@ -688,7 +732,7 @@ test_tls_record_before_d4 (Fixture *f, gconstpointer data)
 {
   (void) data;
   f->close_after_finished = TRUE;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_nonnull (f->usb.notify.error);
   g_assert_nonnull (strstr (f->usb.notify.error->message, "close_notify"));
@@ -710,7 +754,7 @@ test_listen_after_d4 (Fixture *f, gconstpointer data)
   guint ae;
 
   (void) data;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0xd4);
   ae = commands_sent (f, 0xae);
   g_assert_true (fake_usb_step (&f->usb)); /* 0xd4 goes out */
@@ -741,7 +785,7 @@ test_tls_record_after_d4 (Fixture *f, gconstpointer data)
   guint ae;
 
   (void) data;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0xd4);
   ae = commands_sent (f, 0xae);
   g_assert_true (fake_usb_step (&f->usb)); /* 0xd4 goes out; its ACK is queued */
@@ -762,7 +806,7 @@ test_tls_alert_after_hello (Fixture *f, gconstpointer data)
 {
   (void) data;
   f->alert_after_hello = TRUE;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_nonnull (f->usb.notify.error);
   g_assert_nonnull (strstr (f->usb.notify.error->message, "decode_error (50)"));
@@ -782,36 +826,39 @@ before_command (Fixture *f, guint8 cmd)
     }
 }
 
+/* One capture action with automatic finger events: down, image, lift. */
 static void
 start_operation (Fixture *f)
 {
   f->auto_events = TRUE;
   f->image_parts = 2; /* include the additional-image-read boundary */
-  f->usb.notify.automatic = TRUE;
-  f->usb.notify.target_images = 1;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
+  fake_capture (&f->usb, TRUE);
 }
 
+/* With auto_events off: one finger-down, the image and the lift. */
 static void
-test_processing_after_lift (Fixture *f, gconstpointer data)
+touch (Fixture *f)
 {
-  (void) data;
-  open_driver (f);
-  f->usb.notify.defer_processing = TRUE;
-  start_operation (f);
-  f->usb.notify.target_images = 3;
-  for (guint i = 1; i <= 3; i++)
-    {
-      pump (f);
-      g_assert_no_error (f->usb.notify.error);
-      g_assert_cmpuint (f->usb.notify.images, ==, i);
-      g_assert_cmpuint (f->usb.notify.fingers_off, ==, i);
-      g_assert_null (f->usb.pending);
-      /* Processing completion may synchronously start a new machine. */
-      fake_processing_complete (&f->usb);
-    }
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
-  g_assert_cmpuint (f->handshakes, ==, 1);
+  queue_event (f, 0x32);
+  pump (f);
+  queue_event (f, 0x34);
+  pump (f);
+}
+
+/* Enroll with the current pattern on an open device; the print is returned. */
+static FpPrint *
+enroll_print (Fixture *f)
+{
+  FpPrint *print = new_print ();
+  guint completions = f->usb.notify.completions;
+
+  f->auto_events = TRUE;
+  fake_enroll (&f->usb, print);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.completions, ==, completions + 1);
+  g_assert_true (f->usb.notify.enrolled == print);
+  return print;
 }
 
 static void
@@ -821,13 +868,14 @@ test_reopen (Fixture *f, gconstpointer data)
   open_driver (f);
   start_operation (f);
   pump (f);
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+  fake_close (&f->usb);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.closes, ==, 1);
   g_assert_false (f->usb.claimed);
   guint writes = f->usb.writes->len;
   f->auto_events = FALSE;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 2);
@@ -851,7 +899,7 @@ test_open_unplug_sweep (void)
     {
       Fixture f = { 0 };
       setup (&f, NULL);
-      FP_IMAGE_DEVICE_GET_CLASS (f.dev)->img_open (f.dev);
+      fake_open (&f.usb);
       for (guint i = 0; i < fault; i++)
         g_assert_true (fake_usb_step (&f.usb));
       guint writes = f.usb.writes->len;
@@ -869,15 +917,14 @@ test_open_unplug_sweep (void)
 static void
 test_operation_sweep (gconstpointer data)
 {
-  guint mode = GPOINTER_TO_UINT (data); /* unplug, generic I/O, or deactivation */
+  guint mode = GPOINTER_TO_UINT (data); /* unplug, generic I/O, or cancellation */
   Fixture baseline = { 0 };
   setup (&baseline, NULL);
   open_driver (&baseline);
   guint start = baseline.usb.completions;
-  baseline.usb.notify.defer_processing = TRUE;
   start_operation (&baseline);
   pump (&baseline);
-  fake_processing_complete (&baseline.usb);
+  g_assert_cmpuint (baseline.usb.notify.images, ==, 1);
   guint count = baseline.usb.completions - start;
   teardown (&baseline, NULL);
   g_assert_cmpuint (count, ==, 10); /* arm/ACK/event, capture/ACK/2 fragments, lift/ACK/event */
@@ -886,32 +933,50 @@ test_operation_sweep (gconstpointer data)
       Fixture f = { 0 };
       setup (&f, NULL);
       open_driver (&f);
-      f.usb.notify.defer_processing = TRUE;
       start_operation (&f);
       for (guint i = 0; i < fault; i++)
         g_assert_true (fake_usb_step (&f.usb));
       guint writes = f.usb.writes->len;
-      guint images = f.usb.notify.images;
       if (mode == 2)
         {
-          fake_deactivate (&f.usb);
+          fake_cancel (&f.usb);
           pump (&f);
-          g_assert_no_error (f.usb.notify.error);
-          g_assert_cmpuint (f.usb.notify.images, ==, images);
-          g_assert_cmpuint (f.usb.notify.session_errors, ==, 0);
+          g_assert_error (f.usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
         }
       else
         {
           fake_usb_complete (&f.usb, NULL, 0, g_error_new_literal (G_USB_DEVICE_ERROR,
                              mode ? G_USB_DEVICE_ERROR_FAILED : G_USB_DEVICE_ERROR_NO_DEVICE, "I/O failure"));
           g_assert_nonnull (f.usb.notify.error);
-          g_assert_cmpuint (f.usb.notify.session_errors, ==, 1);
+          g_assert_false (g_error_matches (f.usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED));
         }
-      g_assert_cmpuint (f.usb.notify.deactivations, ==, 1);
+      g_assert_cmpuint (f.usb.notify.completions, ==, 1);
+      g_assert_cmpuint (f.usb.notify.action_errors, ==, 1);
+      g_assert_cmpuint (f.usb.notify.images, ==, 0);
       g_assert_null (f.usb.pending);
       g_assert_cmpuint (f.usb.writes->len, ==, writes);
+      if (mode == 2)
+        {
+          /* Cancellation keeps the session: the next action needs no handshake,
+           * and an event the cancelled wait left behind is ignored. */
+          g_clear_error (&f.usb.notify.error);
+          start_operation (&f);
+          pump (&f);
+          g_assert_no_error (f.usb.notify.error);
+          g_assert_cmpuint (f.usb.notify.images, ==, 1);
+          g_assert_cmpuint (f.handshakes, ==, 1);
+        }
       teardown (&f, NULL);
     }
+}
+
+/* Phases of one enroll touch, told apart by what the driver has reported. */
+static guint
+touch_phase (Fixture *f)
+{
+  if (f->usb.notify.fingers_on == 0)
+    return 0;                                   /* waiting for the finger */
+  return fake_matcher.extractions == 0 ? 1 : 2; /* capturing; then lifting */
 }
 
 static void
@@ -919,39 +984,48 @@ cancel_state_hook (FpDevice *dev, const char *machine, int state, gpointer data)
 {
   Fixture *f = data;
   if (g_strcmp0 (machine, f->cancel_machine) || state != f->cancel_state ||
-      f->usb.notify.state != f->cancel_phase || f->cancel_hits)
+      touch_phase (f) != f->cancel_phase || f->cancel_hits)
     return;
   f->cancel_hits++;
-  fake_deactivate (fpi_device_get_usb_device (dev));
+  fake_cancel (fpi_device_get_usb_device (dev));
 }
 
 static void
 test_cancel_synchronous_state (Fixture *f, gconstpointer data)
 {
   /* These are the driver's CAP/FDT enum positions, not a substitute machine. */
-  static const struct { FpiImageDeviceState phase; int state; } cases[] = {
-    { FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON, 0 },
-    { FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON, 1 },
-    { FPI_IMAGE_DEVICE_STATE_CAPTURE, 0 }, { FPI_IMAGE_DEVICE_STATE_CAPTURE, 1 },
-    { FPI_IMAGE_DEVICE_STATE_CAPTURE, 2 },
-    { FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF, 0 },
-    { FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF, 1 },
+  static const struct { guint phase; int state; } cases[] = {
+    { 0, 0 }, { 0, 1 },
+    { 1, 0 }, { 1, 1 }, { 1, 2 },
+    { 2, 0 }, { 2, 1 },
   };
   guint index = GPOINTER_TO_UINT (data);
+  g_autoptr(FpPrint) print = new_print ();
   open_driver (f);
   /* start_session passes the nr_states argument to upstream's name macro. */
   f->cancel_machine = "nr_states";
   f->cancel_state = cases[index].state;
   f->cancel_phase = cases[index].phase;
   f->usb.state_hook = cancel_state_hook;
-  f->usb.notify.defer_processing = TRUE;
-  start_operation (f);
+  f->usb.hook_data = f;
+  f->auto_events = TRUE;
+  f->image_parts = 2;
+  fake_enroll (&f->usb, print);
   pump (f);
   g_assert_cmpuint (f->cancel_hits, ==, 1);
-  g_assert_cmpuint (f->usb.notify.images, ==, index >= 5 ? 1 : 0);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
-  g_assert_cmpuint (f->usb.notify.session_errors, ==, 0);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
+  g_assert_error (f->usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  g_assert_cmpuint (f->usb.notify.progress, ==, 0);
+  g_assert_null (f->usb.notify.enrolled);
+  g_assert_null (f->usb.pending);
+  /* Cancellation keeps the session. */
+  f->usb.state_hook = NULL;
+  g_clear_error (&f->usb.notify.error);
+  start_operation (f);
+  pump (f);
   g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
 }
 
 static void
@@ -969,7 +1043,7 @@ test_open_failure (Fixture *f, gconstpointer data)
     f->no_hello = TRUE;
   else if (mode == 9)
     f->wrong_key = TRUE;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   if (mode >= 4 && mode <= 8)
     {
       before_command (f, 0xa8);
@@ -1014,7 +1088,7 @@ test_open_failure (Fixture *f, gconstpointer data)
   g_clear_error (&f->usb.notify.error);
   g_assert_true (g_file_set_contents (f->key_path, (char *) f->key, 32, NULL));
   g_assert_cmpint (g_chmod (f->key_path, 0600), ==, 0);
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 2);
@@ -1024,7 +1098,7 @@ static void
 test_unexpected_messages (Fixture *f, gconstpointer data)
 {
   (void) data;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0xa8);
   g_assert_true (fake_usb_step (&f->usb));
   fake_drop_replies (&f->usb);
@@ -1035,7 +1109,7 @@ test_unexpected_messages (Fixture *f, gconstpointer data)
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   /* Stale FDT before the new arm's ACK must not deliver finger-on. */
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+  fake_capture (&f->usb, TRUE);
   g_assert_true (fake_usb_step (&f->usb));
   fake_drop_replies (&f->usb);
   queue_event (f, 0x32);
@@ -1049,6 +1123,10 @@ test_unexpected_messages (Fixture *f, gconstpointer data)
   pump (f);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, 1);
   g_assert_no_error (f->usb.notify.error);
+  queue_event (f, 0x34);
+  pump (f);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+  g_assert_no_error (f->usb.notify.error);
 }
 
 static void
@@ -1056,45 +1134,38 @@ assert_session_invalid (Fixture *f)
 {
   guint writes = f->usb.writes->len;
   guint images = f->usb.notify.images;
-  guint errors = f->usb.notify.session_errors;
-  guint activations = f->usb.notify.activations;
+  guint completions = f->usb.notify.completions;
   guint handshakes = f->handshakes;
+  guint extractions = fake_matcher.extractions;
+  g_autoptr(FpPrint) print = new_print ();
 
-  /* Clearing the framework's error or requesting activation is not recovery. */
+  /* Clearing the framework's error or starting another action is not recovery. */
   for (guint i = 0; i < 2; i++)
     {
       g_clear_error (&f->usb.notify.error);
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
+      fake_capture (&f->usb, TRUE);
       g_assert_nonnull (f->usb.notify.error);
       g_assert_nonnull (strstr (f->usb.notify.error->message, "close and reopen"));
-      g_assert_cmpuint (f->usb.notify.activations, ==, activations + i + 1);
+      g_assert_cmpuint (f->usb.notify.completions, ==, completions + i + 1);
       g_assert_cmpuint (f->usb.writes->len, ==, writes);
       g_assert_null (f->usb.pending);
     }
 
   /* A real encrypted synthetic image can arrive after the failed operation.
-   * Stale framework transitions and processing completion must leave it unread. */
+   * No later action may read it. */
   f->corrupt_image = FALSE;
   f->tls_fault = 0;
   f->image_parts = 1;
   queue_image (f);
-  const FpiImageDeviceState states[] = {
-    FPI_IMAGE_DEVICE_STATE_CAPTURE,
-    FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON,
-    FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF,
-  };
-  for (guint i = 0; i < G_N_ELEMENTS (states); i++)
-    {
-      fake_change_state (&f->usb, states[i]);
-      fake_processing_complete (&f->usb);
-      g_assert_null (f->usb.pending);
-      g_assert_cmpuint (f->usb.writes->len, ==, writes);
-    }
+  g_clear_error (&f->usb.notify.error);
+  fake_enroll (&f->usb, print);
+  g_assert_nonnull (strstr (f->usb.notify.error->message, "close and reopen"));
+  g_assert_null (f->usb.pending);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
   g_assert_cmpuint (f->usb.machines, ==, 0);
   g_assert_cmpuint (f->usb.notify.images, ==, images);
-  g_assert_cmpuint (f->usb.notify.session_errors, ==, errors);
+  g_assert_cmpuint (fake_matcher.extractions, ==, extractions);
   g_assert_cmpuint (f->handshakes, ==, handshakes);
-  fake_deactivate (&f->usb);
 }
 
 static void
@@ -1105,7 +1176,7 @@ test_kernel_restore (Fixture *f, gconstpointer data)
   if (rollback)
     {
       f->no_hello = TRUE;
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+      fake_open (&f->usb);
       pump (f);
       g_assert_nonnull (f->usb.notify.error);
     }
@@ -1114,7 +1185,7 @@ test_kernel_restore (Fixture *f, gconstpointer data)
       open_driver (f);
       g_assert_false (f->usb.kernel_bound);
       g_assert_true (f->usb.claimed);
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+      fake_close (&f->usb);
       g_assert_no_error (f->usb.notify.error);
     }
   g_assert_false (f->usb.claimed);
@@ -1135,13 +1206,13 @@ test_kernel_cleanup_failure (Fixture *f, gconstpointer data)
   if (rollback)
     {
       f->no_hello = TRUE;
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+      fake_open (&f->usb);
       pump (f);
     }
   else
     {
       open_driver (f);
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+      fake_close (&f->usb);
     }
   g_assert_nonnull (f->usb.notify.error);
   g_assert_nonnull (strstr (f->usb.notify.error->message, attach ? "attach failed" : "release failed"));
@@ -1159,7 +1230,7 @@ test_kernel_cleanup_failure (Fixture *f, gconstpointer data)
   g_clear_error (&f->usb.notify.error);
   f->no_hello = FALSE;
   f->usb.release_fails = f->usb.attach_fails = FALSE;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_nonnull (f->usb.notify.error);
   g_assert_nonnull (strstr (f->usb.notify.error->message, "cleanup"));
@@ -1173,10 +1244,8 @@ test_kernel_cleanup_failure (Fixture *f, gconstpointer data)
     {
       /* This open never completed a handshake, so it cannot encrypt a late image. */
       g_clear_error (&f->usb.notify.error);
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
+      fake_capture (&f->usb, TRUE);
       g_assert_nonnull (f->usb.notify.error);
-      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
-      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
       g_assert_null (f->usb.pending);
       g_assert_cmpuint (f->usb.writes->len, ==, writes);
       g_assert_cmpuint (f->usb.notify.images, ==, 0);
@@ -1190,29 +1259,35 @@ test_image_final_read (Fixture *f, gconstpointer data)
 {
   gboolean corrupt = GPOINTER_TO_UINT (data);
   open_driver (f);
+  f->auto_events = TRUE;
   f->image_parts = 5; /* request's first fragment plus four additional reads */
   f->corrupt_image = corrupt;
+  fake_capture (&f->usb, TRUE);
+  before_command (f, 0x20);
   guint completions = f->usb.completions;
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
   pump (f);
   g_assert_null (f->usb.pending);
-  g_assert_cmpuint (f->usb.completions - completions, ==, 7); /* OUT, ACK, five fragments */
   g_assert_true (g_queue_is_empty (&f->usb.replies));
   if (corrupt)
     {
+      g_assert_cmpuint (f->usb.completions - completions, ==, 7); /* OUT, ACK, five fragments */
       g_assert_nonnull (f->usb.notify.error);
       g_assert_nonnull (strstr (f->usb.notify.error->message, "image:"));
-      g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
+      g_assert_cmpuint (f->usb.notify.action_errors, ==, 1);
       g_assert_cmpuint (f->usb.notify.images, ==, 0);
     }
   else
     {
+      g_assert_cmpuint (f->usb.completions - completions, ==, 10); /* and the lift's OUT, ACK, event */
       g_assert_no_error (f->usb.notify.error);
-      g_assert_cmpuint (f->usb.notify.session_errors, ==, 0);
       g_assert_cmpuint (f->usb.notify.images, ==, 1);
+      g_assert_cmpuint (f->usb.notify.last_image->width, ==, 192);
+      g_assert_cmpuint (f->usb.notify.last_image->height, ==, 240);
       const guint8 want[] = { 0x00, 0x85, 0xff, 0xbc }; /* stretched */
       for (guint i = 0; i < G_N_ELEMENTS (want); i++)
         g_assert_cmphex (f->usb.notify.last_image->data[i * 3], ==, want[i]);
+      /* A capture action returns the image and matches nothing. */
+      g_assert_cmpuint (fake_matcher.extractions, ==, 0);
     }
 }
 
@@ -1221,11 +1296,13 @@ test_image_failure (Fixture *f, gconstpointer data)
 {
   guint mode = GPOINTER_TO_UINT (data);
   open_driver (f);
+  f->auto_events = TRUE;
   f->corrupt_image = mode == 0;
   f->image_parts = mode == 2 ? 6 : 1;
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+  fake_capture (&f->usb, TRUE);
   if (mode == 1)
     {
+      before_command (f, 0x20);
       g_assert_true (fake_usb_step (&f->usb)); /* request image */
       fake_drop_replies (&f->usb);
       queue_ack (f, 0x20, 1);
@@ -1235,7 +1312,7 @@ test_image_failure (Fixture *f, gconstpointer data)
     }
   pump (f);
   g_assert_nonnull (f->usb.notify.error);
-  g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
+  g_assert_cmpuint (f->usb.notify.action_errors, ==, 1);
   g_assert_cmpuint (f->usb.notify.images, ==, 0);
   if (mode == 2)
     {
@@ -1246,12 +1323,12 @@ test_image_failure (Fixture *f, gconstpointer data)
     }
   assert_session_invalid (f);
   /* Recovery is tested only across an explicit close/reopen. */
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+  fake_close (&f->usb);
   fake_drop_replies (&f->usb);
   g_clear_error (&f->usb.notify.error);
   f->corrupt_image = FALSE;
   f->image_parts = 1;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   start_operation (f);
@@ -1260,24 +1337,21 @@ test_image_failure (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.notify.images, ==, 1);
 }
 
-/* Mutation targets: retaining a failed TLS session, successful reactivation,
- * writes from late state transitions, and errors hidden by deactivation. */
+/* Mutation targets: retaining a failed TLS session, a successful next action,
+ * writes from a late action, and errors hidden by cancellation. */
 static void
 test_failed_session (Fixture *f, gconstpointer data)
 {
   guint mode = GPOINTER_TO_UINT (data);
   open_driver (f);
-  f->usb.notify.automatic = TRUE;
   f->tls_fault = mode < 2 ? mode + 1 : 0;
   f->image_parts = 2;
-  if (mode == 3)
+  fake_capture (&f->usb, TRUE);
+  pump (f); /* arm, ACK, cancellable indefinite FDT read */
+  if (mode != 3)
     {
-      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
-      pump (f); /* cancellable indefinite FDT read */
-    }
-  else
-    {
-      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+      queue_event (f, 0x32);
+      before_command (f, 0x20);
       if (mode != 2)
         {
           g_assert_true (fake_usb_step (&f->usb)); /* image request */
@@ -1288,7 +1362,7 @@ test_failed_session (Fixture *f, gconstpointer data)
   if (mode >= 2)
     {
       if (mode == 5)
-        fake_deactivate (&f->usb); /* an unrelated I/O error still invalidates */
+        fake_cancel (&f->usb); /* an unrelated I/O error still invalidates */
       fake_usb_complete (&f->usb, NULL, 0,
                          g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED,
                                               "synthetic session I/O failure"));
@@ -1296,20 +1370,22 @@ test_failed_session (Fixture *f, gconstpointer data)
   pump (f);
   g_assert_null (f->usb.pending);
   g_assert_cmpuint (f->usb.notify.images, ==, 0);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
-  g_assert_cmpuint (f->usb.notify.session_errors, ==, mode == 5 ? 0 : 1);
-  if (mode != 5)
-    g_assert_nonnull (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
+  g_assert_cmpuint (f->usb.notify.action_errors, ==, 1);
+  g_assert_nonnull (f->usb.notify.error);
+  /* A cancelled action reports the cancellation, not the I/O error. */
+  g_assert_cmpint (g_error_matches (f->usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED), ==, mode == 5);
   assert_session_invalid (f);
 
   /* Only a fresh successful open with a healthy fake EC restores usability. */
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+  fake_close (&f->usb);
   fake_drop_replies (&f->usb);
   g_clear_error (&f->usb.notify.error);
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->handshakes, ==, 2);
+  f->tls_fault = 0;
   start_operation (f);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
@@ -1321,14 +1397,17 @@ test_late_image_after_failure (Fixture *f, gconstpointer data)
 {
   (void) data;
   open_driver (f);
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+  f->auto_events = TRUE;
+  fake_capture (&f->usb, TRUE);
+  before_command (f, 0x20);
   fake_usb_complete (&f->usb, NULL, 0,
                      g_error_new_literal (G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_FAILED,
                                           "synthetic failed request"));
-  g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
+  g_assert_cmpuint (f->usb.notify.action_errors, ==, 1);
   guint writes = f->usb.writes->len;
   queue_image (f);
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+  fake_capture (&f->usb, TRUE);
+  g_assert_cmpuint (f->usb.notify.action_errors, ==, 2);
   g_assert_cmpuint (f->usb.writes->len, ==, writes);
   g_assert_null (f->usb.pending);
   g_assert_cmpuint (f->usb.notify.images, ==, 0);
@@ -1341,22 +1420,24 @@ test_cancel_reactivation (Fixture *f, gconstpointer data)
   open_driver (f);
   if (capture)
     {
+      f->auto_events = TRUE;
       f->image_parts = 2;
-      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_CAPTURE);
+      fake_capture (&f->usb, TRUE);
+      before_command (f, 0x20);
       for (guint i = 0; i < 3; i++)
         g_assert_true (fake_usb_step (&f->usb));
     }
   else
     {
-      fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+      fake_capture (&f->usb, TRUE);
       pump (f);
     }
-  fake_deactivate (&f->usb);
+  fake_cancel (&f->usb);
   pump (f);
-  g_assert_no_error (f->usb.notify.error);
+  g_assert_error (f->usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
   g_assert_cmpuint (f->usb.notify.images, ==, 0);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
-  g_assert_cmpuint (f->usb.notify.session_errors, ==, 0);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
+  g_clear_error (&f->usb.notify.error);
   start_operation (f);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
@@ -1371,7 +1452,7 @@ test_base_invalid (Fixture *f, gconstpointer data)
   guint8 base[16] = { 0x80 };
   const guint8 want[] = { 0x40, 0x41, 0x42, 0x43, 0x44, 0x45 };
   open_driver (f);
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+  fake_capture (&f->usb, TRUE);
   pump (f); /* arm ACK, held cancellable finger read */
   for (guint i = 0; i < (exhaust ? 9 : 2); i++)
     {
@@ -1392,7 +1473,7 @@ test_base_invalid (Fixture *f, gconstpointer data)
   if (exhaust)
     {
       g_assert_nonnull (f->usb.notify.error);
-      g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
+      g_assert_cmpuint (f->usb.notify.action_errors, ==, 1);
       g_assert_null (f->usb.pending);
     }
   else
@@ -1403,6 +1484,9 @@ test_base_invalid (Fixture *f, gconstpointer data)
       pump (f);
       g_assert_no_error (f->usb.notify.error);
       g_assert_cmpuint (f->usb.notify.fingers_on, ==, 1);
+      queue_event (f, 0x34);
+      pump (f);
+      g_assert_cmpuint (f->usb.notify.images, ==, 1);
     }
 }
 
@@ -1412,8 +1496,7 @@ test_base_invalid_retry (Fixture *f, gconstpointer data)
   gboolean exhausted = GPOINTER_TO_UINT (data);
   guint8 base[16] = { 0x80 };
   open_driver (f);
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+  fake_capture (&f->usb, TRUE);
   pump (f);
   for (guint i = 0; i < (exhausted ? 9 : 8); i++)
     {
@@ -1423,26 +1506,27 @@ test_base_invalid_retry (Fixture *f, gconstpointer data)
   if (exhausted)
     {
       g_assert_nonnull (f->usb.notify.error);
-      g_assert_cmpuint (f->usb.notify.session_errors, ==, 1);
+      g_assert_cmpuint (f->usb.notify.action_errors, ==, 1);
       g_assert_null (f->usb.pending);
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+      fake_close (&f->usb);
       g_clear_error (&f->usb.notify.error);
-      FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+      fake_open (&f->usb);
       pump (f);
       g_assert_no_error (f->usb.notify.error);
     }
   else
     {
       g_assert_no_error (f->usb.notify.error);
-      fake_deactivate (&f->usb);
+      fake_cancel (&f->usb);
       pump (f);
       g_assert_null (f->usb.pending);
+      g_assert_error (f->usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+      g_clear_error (&f->usb.notify.error);
     }
 
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->activate (f->dev);
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+  fake_capture (&f->usb, TRUE);
   pump (f);
-  /* A new activation gets the full budget; rearming within it does not. */
+  /* A new action gets the full budget; rearming within it does not. */
   for (guint i = 0; i < 8; i++)
     {
       queue_message (f, 0x32, base, sizeof (base));
@@ -1455,6 +1539,9 @@ test_base_invalid_retry (Fixture *f, gconstpointer data)
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, 1);
+  queue_event (f, 0x34);
+  pump (f);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
   g_assert_null (f->usb.pending);
   g_assert_cmpuint (f->handshakes, ==, exhausted ? 2 : 1);
 }
@@ -1464,15 +1551,16 @@ test_completion_wins_cancel (Fixture *f, gconstpointer data)
 {
   (void) data;
   open_driver (f);
-  fake_change_state (&f->usb, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+  fake_capture (&f->usb, TRUE);
   pump (f);
   g_assert_nonnull (f->usb.cancel);
   guint writes = f->usb.writes->len;
-  fake_deactivate (&f->usb);
+  fake_cancel (&f->usb);
   /* A USB success already dispatched can beat the cancellable. Complete the
-   * empty read directly: the driver must still finish deactivation exactly once. */
+   * empty read directly: the driver must still end the action exactly once. */
   fake_usb_complete (&f->usb, NULL, 0, NULL);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
+  g_assert_error (f->usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, 0);
   g_assert_cmpuint (f->usb.writes->len, ==, writes);
   g_assert_null (f->usb.pending);
@@ -1482,7 +1570,7 @@ static void
 test_short_write (Fixture *f, gconstpointer data)
 {
   (void) data;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0xa8);
   fake_usb_complete (&f->usb, NULL, 1, NULL);
   g_assert_nonnull (f->usb.notify.error);
@@ -1496,7 +1584,7 @@ test_init_reply_failure (Fixture *f, gconstpointer data)
 {
   guint mode = GPOINTER_TO_UINT (data);
   const guint8 reply[] = { 1, 0, 8 };
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0xa2);
   g_assert_true (fake_usb_step (&f->usb));
   fake_drop_replies (&f->usb);
@@ -1513,25 +1601,6 @@ test_init_reply_failure (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
   g_assert_cmpuint (f->usb.writes->len, ==, writes);
   g_assert_false (f->usb.claimed);
-}
-
-static void
-test_late_processing_after_cancel (Fixture *f, gconstpointer data)
-{
-  (void) data;
-  open_driver (f);
-  f->usb.notify.defer_processing = TRUE;
-  start_operation (f);
-  f->usb.notify.target_images = 3;
-  pump (f);
-  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 1);
-  fake_deactivate (&f->usb);
-  guint writes = f->usb.writes->len;
-  fake_processing_complete (&f->usb);
-  g_assert_null (f->usb.pending);
-  g_assert_cmpuint (f->usb.writes->len, ==, writes);
-  g_assert_cmpuint (f->usb.notify.state, ==, FPI_IMAGE_DEVICE_STATE_INACTIVE);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
 }
 
 /* Literal documented reply shapes, independent of production validation.
@@ -1576,7 +1645,7 @@ test_shared_init (Fixture *f, gconstpointer data)
 static void
 replace_init_reply (Fixture *f, const InitReply *reply, const guint8 *bytes, gsize len)
 {
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   for (guint i = 0; i < reply->occurrence; i++)
     {
       before_command (f, reply->cmd);
@@ -1611,7 +1680,7 @@ test_packet_failure (Fixture *f, gconstpointer data)
 {
   guint index = GPOINTER_TO_UINT (data);
   guint packet = index / 4, mode = index % 4;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0x90);
   for (guint i = 0; i < packet; i++)
     g_assert_true (fake_usb_step (&f->usb));
@@ -1632,7 +1701,7 @@ test_packet_failure (Fixture *f, gconstpointer data)
 static void
 test_packet_budget (Fixture *f, gconstpointer data)
 {
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0x90);
   guint writes = f->usb.writes->len;
   fake_advance_time (1000 * 1000);
@@ -1737,17 +1806,15 @@ test_immediate_mcu_zero_status (Fixture *f, gconstpointer data)
   g_assert_true (SSL_is_init_finished (f->client));
   g_assert_null (f->usb.pending);
 
-  f->usb.notify.defer_processing = TRUE;
   start_operation (f);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.images, ==, 1);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, 1);
   g_assert_cmpuint (f->usb.notify.fingers_off, ==, 1);
-  fake_processing_complete (&f->usb);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
   g_assert_cmpuint (f->handshakes, ==, 1);
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_close (f->dev);
+  fake_close (&f->usb);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.closes, ==, 1);
   g_assert_false (f->usb.claimed);
@@ -1769,7 +1836,7 @@ static void
 test_tls_established_negative_ack (Fixture *f, gconstpointer data)
 {
   (void) data;
-  FP_IMAGE_DEVICE_GET_CLASS (f->dev)->img_open (f->dev);
+  fake_open (&f->usb);
   before_command (f, 0xd4);
   g_assert_true (fake_usb_step (&f->usb));
   fake_drop_replies (&f->usb);
@@ -1820,24 +1887,239 @@ test_init_reply_opaque (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->handshakes, ==, 1);
 }
 
+/* A touch SIGFM cannot use is a retry stage, not a view and not an error. */
 static void
-test_final_processing_during_lift (Fixture *f, gconstpointer data)
+test_enroll_retry (Fixture *f, gconstpointer data)
 {
-  guint boundary = GPOINTER_TO_UINT (data);
+  gboolean failure = GPOINTER_TO_UINT (data);
+  g_autoptr(FpPrint) print = NULL;
+  g_autoptr(GPtrArray) views = NULL;
+
   open_driver (f);
-  f->usb.notify.defer_processing = TRUE;
-  start_operation (f);
-  before_command (f, 0x34);
-  for (guint i = 0; i < boundary; i++)
-    g_assert_true (fake_usb_step (&f->usb)); /* lift write, ACK, indefinite wait */
-  g_assert_cmpuint (f->usb.notify.images, ==, 1);
-  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 0);
-  fake_processing_complete (&f->usb);
-  g_assert_cmpuint (f->usb.notify.state, ==, FPI_IMAGE_DEVICE_STATE_DEACTIVATING);
+  if (failure)
+    fake_matcher.fail_extract = 1;
+  else
+    fake_matcher.low_keypoints = 1;
+  print = enroll_print (f);
+  g_assert_cmpuint (f->usb.notify.progress, ==, 16);
+  g_assert_cmpuint (f->usb.notify.retries, ==, 1);
+  FpDeviceRetry code = failure ? FP_DEVICE_RETRY_GENERAL : FP_DEVICE_RETRY_CENTER_FINGER;
+  g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, (gint) code);
+  g_assert_cmpuint (f->usb.notify.fingers_on, ==, 16);
+  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 16);
+  views = stored_views (print);
+  g_assert_cmpuint (views->len, ==, 15);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+}
+
+/* Cancelling between stages keeps the session and returns no print. */
+static void
+test_enroll_cancel (Fixture *f, gconstpointer data)
+{
+  g_autoptr(FpPrint) print = new_print ();
+
+  (void) data;
+  open_driver (f);
+  fake_enroll (&f->usb, print);
+  pump (f); /* first arm, held wait */
+  for (guint i = 0; i < 3; i++)
+    touch (f);
+  g_assert_cmpuint (f->usb.notify.progress, ==, 3);
+  g_assert_nonnull (f->usb.pending);
+  fake_cancel (&f->usb);
   pump (f);
-  g_assert_cmpuint (f->usb.notify.deactivations, ==, 1);
-  g_assert_cmpuint (f->usb.notify.fingers_off, ==, 0);
+  g_assert_error (f->usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 1);
+  g_assert_null (f->usb.notify.enrolled);
+  g_assert_null (print->data);
+  g_assert_null (f->usb.pending);
+  g_clear_error (&f->usb.notify.error);
+  start_operation (f);
+  pump (f);
   g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+}
+
+/* Verify is one touch against the stored views: the same synthetic image
+ * matches, another does not, an unusable touch is a retry result. */
+static void
+test_verify (Fixture *f, gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT (data); /* match, no match, retry */
+  g_autoptr(FpPrint) print = NULL;
+  guint fingers;
+
+  open_driver (f);
+  print = enroll_print (f);
+  fingers = f->usb.notify.fingers_on;
+  if (mode == 1)
+    f->pattern = 1;
+  else if (mode == 2)
+    fake_matcher.low_keypoints = 1;
+  fake_verify (&f->usb, print);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 2);
+  g_assert_true (f->usb.notify.reported);
+  g_assert_cmpuint (f->usb.notify.fingers_on, ==, fingers + 1);
+  g_assert_cmpuint (f->usb.notify.fingers_off, ==, fingers + 1);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+  g_assert_null (f->usb.pending);
+  if (mode == 2)
+    {
+      g_assert_cmpint (f->usb.notify.result, ==, FPI_MATCH_ERROR);
+      g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, FP_DEVICE_RETRY_CENTER_FINGER);
+    }
+  else
+    g_assert_cmpint (f->usb.notify.result, ==, mode == 0 ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL);
+}
+
+/* Identify reports the gallery print that matched, or none. */
+static void
+test_identify (Fixture *f, gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT (data); /* match the second print, no match, retry */
+  g_autoptr(FpPrint) other = NULL;
+  g_autoptr(FpPrint) mine = NULL;
+  g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
+
+  open_driver (f);
+  f->pattern = 1;
+  other = enroll_print (f);
+  f->pattern = 0;
+  mine = enroll_print (f);
+  g_ptr_array_add (gallery, other);
+  g_ptr_array_add (gallery, mine);
+  if (mode == 1)
+    f->pattern = 2;
+  else if (mode == 2)
+    fake_matcher.low_keypoints = 1;
+  fake_identify (&f->usb, gallery);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.completions, ==, 3);
+  g_assert_true (f->usb.notify.reported);
+  g_assert_true (f->usb.notify.match == (mode == 0 ? mine : NULL));
+  if (mode == 2)
+    g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, FP_DEVICE_RETRY_CENTER_FINGER);
+  g_assert_cmpuint (f->handshakes, ==, 1);
+  g_assert_null (f->usb.pending);
+}
+
+/* Stored data that is not a template for this driver fails the action before
+ * anything is sent, for verify and for any print of an identify gallery. */
+static void
+test_invalid_template (Fixture *f, gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT (data);
+  gboolean identify = mode >= 6;
+  g_autoptr(FpPrint) good = NULL;
+  g_autoptr(FpPrint) bad = new_print ();
+  g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
+  g_autoptr(GPtrArray) views = NULL;
+  g_autoptr(GVariant) good_data = NULL;
+  guint8 version;
+  guint16 w, h;
+
+  open_driver (f);
+  good = enroll_print (f);
+  good_data = g_variant_ref (good->data);
+  switch (identify ? mode - 6 : mode)
+    {
+    case 0: /* no data */
+      break;
+    case 1: /* another driver's data type */
+      bad->data = g_variant_ref_sink (g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE, "raw", 3, 1));
+      break;
+    case 2: /* another format version */
+    case 3: /* extracted at another image size */
+    case 4: /* no views */
+      {
+        GVariant *list;
+        g_variant_get (good_data, "(yqq@a" G5120_VIEW_TYPE_STRING ")", &version, &w, &h, &list);
+        if (mode % 6 == 2)
+          version++;
+        else if (mode % 6 == 3)
+          w = 64;
+        else
+          {
+            g_variant_unref (list);
+            list = g_variant_new_array (G5120_VIEW_TYPE, NULL, 0);
+          }
+        bad->data = g_variant_ref_sink (g_variant_new ("(yqq@a" G5120_VIEW_TYPE_STRING ")", version, w, h, list));
+        if (mode % 6 != 4)
+          g_variant_unref (list);
+      }
+      break;
+    case 5: /* one keypoint less than its descriptors */
+      {
+        g_autoptr(GVariant) list = NULL;
+        g_autoptr(GVariant) view = NULL;
+        g_autoptr(GVariant) points = NULL;
+        g_autoptr(GVariant) bytes = NULL;
+        GVariantBuilder short_points;
+        g_variant_get (good_data, "(yqq@a" G5120_VIEW_TYPE_STRING ")", &version, &w, &h, &list);
+        view = g_variant_get_child_value (list, 0);
+        g_variant_get (view, "(@a(qq)@ay)", &points, &bytes);
+        g_variant_builder_init (&short_points, G_VARIANT_TYPE ("a(qq)"));
+        for (gsize i = 1; i < g_variant_n_children (points); i++)
+          {
+            g_autoptr(GVariant) point = g_variant_get_child_value (points, i);
+            g_variant_builder_add_value (&short_points, point);
+          }
+        bad->data = g_variant_ref_sink (g_variant_new ("(yqq@a" G5120_VIEW_TYPE_STRING ")", version, w, h,
+                                                       g_variant_new_array (G5120_VIEW_TYPE, (GVariant *[]) {
+                                                         g_variant_new ("(a(qq)@ay)", &short_points, bytes) }, 1)));
+      }
+      break;
+    }
+
+  guint writes = f->usb.writes->len;
+  guint completions = f->usb.notify.completions;
+  if (identify)
+    {
+      g_ptr_array_add (gallery, good);
+      g_ptr_array_add (gallery, bad);
+      fake_identify (&f->usb, gallery);
+    }
+  else
+    fake_verify (&f->usb, bad);
+  g_assert_error (f->usb.notify.error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID);
+  if (identify)
+    g_assert_nonnull (strstr (f->usb.notify.error->message, "Print 1: "));
+  g_assert_cmpuint (f->usb.notify.completions, ==, completions + 1);
+  g_assert_false (f->usb.notify.reported);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_null (f->usb.pending);
+  g_assert_cmpuint (f->usb.machines, ==, 0);
+
+  /* The session is untouched: the good print still verifies. */
+  g_clear_error (&f->usb.notify.error);
+  fake_verify (&f->usb, good);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpint (f->usb.notify.result, ==, FPI_MATCH_SUCCESS);
+  views = stored_views (good);
+  g_assert_cmpuint (views->len, ==, 15);
+}
+
+/* The image is requested only after a finger-down event. */
+static void
+test_capture_without_finger (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  open_driver (f);
+  guint writes = f->usb.writes->len;
+  fake_capture (&f->usb, FALSE);
+  g_assert_error (f->usb.notify.error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
+  g_assert_cmpuint (f->usb.writes->len, ==, writes);
+  g_assert_null (f->usb.pending);
+  g_clear_error (&f->usb.notify.error);
+  start_operation (f);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.images, ==, 1);
 }
 
 int
@@ -1885,7 +2167,29 @@ main (int argc, char **argv)
               test_psk_reply_run8, teardown);
   g_test_add ("/goodix5120/driver/psk-reply/request-echo", Fixture, NULL, setup,
               test_psk_reply_request_echo, teardown);
-  g_test_add ("/goodix5120/driver/enrollment", Fixture, NULL, setup, test_enrollment, teardown);
+  g_test_add ("/goodix5120/driver/enroll/complete", Fixture, NULL, setup, test_enrollment, teardown);
+  g_test_add ("/goodix5120/driver/enroll/retry-keypoints", Fixture, NULL, setup, test_enroll_retry, teardown);
+  g_test_add ("/goodix5120/driver/enroll/retry-extraction", Fixture, GUINT_TO_POINTER (1), setup,
+              test_enroll_retry, teardown);
+  g_test_add ("/goodix5120/driver/enroll/cancel", Fixture, NULL, setup, test_enroll_cancel, teardown);
+  const char *verify_names[] = { "match", "no-match", "retry" };
+  for (guint i = 0; i < G_N_ELEMENTS (verify_names); i++)
+    {
+      g_autofree gchar *vname = g_strdup_printf ("/goodix5120/driver/verify/%s", verify_names[i]);
+      g_autofree gchar *iname = g_strdup_printf ("/goodix5120/driver/identify/%s", verify_names[i]);
+      g_test_add (vname, Fixture, GUINT_TO_POINTER (i), setup, test_verify, teardown);
+      g_test_add (iname, Fixture, GUINT_TO_POINTER (i), setup, test_identify, teardown);
+    }
+  const char *template_names[] = { "no-data", "wrong-type", "version", "image-size", "no-views",
+                                   "descriptor-count" };
+  for (guint i = 0; i < 2 * G_N_ELEMENTS (template_names); i++)
+    {
+      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/invalid-template/%s/%s",
+                                               i < 6 ? "verify" : "identify", template_names[i % 6]);
+      g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_invalid_template, teardown);
+    }
+  g_test_add ("/goodix5120/driver/capture-without-finger", Fixture, NULL, setup,
+              test_capture_without_finger, teardown);
   g_test_add ("/goodix5120/driver/tls-pacing", Fixture, NULL, setup, test_tls_pacing, teardown);
   g_test_add ("/goodix5120/driver/tls-alert-after-hello", Fixture, NULL, setup,
               test_tls_alert_after_hello, teardown);
@@ -1911,11 +2215,9 @@ main (int argc, char **argv)
               test_tls_write_budget, teardown);
   g_test_add ("/goodix5120/driver/tls-write-budget-before-submit", Fixture,
               GUINT_TO_POINTER (1), setup, test_tls_write_budget, teardown);
-  g_test_add ("/goodix5120/driver/processing-after-lift", Fixture, NULL, setup,
-              test_processing_after_lift, teardown);
   g_test_add ("/goodix5120/driver/reopen", Fixture, NULL, setup, test_reopen, teardown);
   g_test_add_func ("/goodix5120/driver/open-unplug-sweep", test_open_unplug_sweep);
-  const char *sweep_names[] = { "unplug", "io-error", "cancel-transfer" };
+  const char *sweep_names[] = { "unplug", "io-error", "cancel" };
   for (guint i = 0; i < G_N_ELEMENTS (sweep_names); i++)
     {
       g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/%s-sweep", sweep_names[i]);
@@ -1947,13 +2249,6 @@ main (int argc, char **argv)
   g_test_add ("/goodix5120/driver/completion-wins-cancel", Fixture, NULL, setup,
               test_completion_wins_cancel, teardown);
   g_test_add ("/goodix5120/driver/short-write", Fixture, NULL, setup, test_short_write, teardown);
-  g_test_add ("/goodix5120/driver/late-processing-after-cancel", Fixture, NULL, setup,
-              test_late_processing_after_cancel, teardown);
-  for (guint i = 0; i < 3; i++)
-    {
-      g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/final-processing-during-lift/%u", i);
-      g_test_add (name, Fixture, GUINT_TO_POINTER (i), setup, test_final_processing_during_lift, teardown);
-    }
   const char *init_names[] = { "ack-timeout", "data-timeout", "negative-ack" };
   for (guint i = 0; i < G_N_ELEMENTS (init_names); i++)
     {

@@ -1,5 +1,5 @@
 #pragma once
-#include "fpi-image-device.h"
+#include "fpi-device.h"
 
 typedef struct _FpiSsm FpiSsm;
 typedef void (*FpiSsmHandlerCallback) (FpiSsm *, FpDevice *);
