@@ -1647,6 +1647,23 @@ the `ac43d30` driver build. `fprintd-list` showed the device. `fprintd-enroll -f
 - **Verify scores:** genuine 527 (114 keypoints), the lowest genuine score so far but 22 times the threshold of 24.
   Impostors 0 (83 keypoints) and 0 (132 keypoints).
 
+**Offline follow-up after Run 43 (2026-10-02, not yet run): open shortened.** Every fprintd operation opens
+the reader from scratch, and by the code and the timings above open took about 8 s:
+
+| Part of open | Time | Source |
+|---|---|---|
+| Attach drain, health check, drain | ~0.4 s | Run 42 |
+| 11 pre-TLS init steps, each followed by a 200 ms quiet drain | ~2.6 s | Run 42: firmware to TLS complete 2.85 s |
+| TLS handshake (two 60 ms paces, 10 ms settle) | ~0.18 s | Runs 32/34 |
+| Listen after the `0xd4` ACK | 5.0 s | silent in Runs 30, 32–34 |
+| `0xae` and final drain | ~0.2 s | |
+
+The 5 s listen served a hypothesis that Run 30 ruled out. Runs 32/33 placed the cause on host writes less than
+1 ms apart. The driver now listens 50 ms. The drains between open steps wait 20 ms of quiet; the attach drain
+keeps 200 ms (Run 29's stale event), and so does `0x96`. Every host write gap stays at 10 ms or more. Open logs
+`open: N ms`; the expected value is about 1 s. A failure would show as the Run 33 signature (no image after `0x20`)
+or as a pre-TLS protocol error, not as an unfinished handshake.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

@@ -102,6 +102,8 @@ struct _FpiDeviceGoodix5120
   gboolean      x_got_tls;
   guint         x_reads;
   gint64        x_listen_until; /* drain only: keep reading until then, 0 = until quiet */
+  guint         x_quiet;        /* drain only: ms of silence that ends it */
+  gint64        open_started;   /* monotonic time of dev_open, for the "open: N ms" line */
   GByteArray   *x_data;         /* payload of the data reply */
 
   /* The last transfer, classified. */
@@ -689,7 +691,7 @@ xchg_run_state (FpiSsm *ssm, FpDevice *dev)
           return;
         }
       submit_read (ssm, dev,
-                   self->x_reply == G5120_REPLY_NONE ? G5120_TIMEOUT_QUIET : G5120_TIMEOUT_REPLY,
+                   self->x_reply == G5120_REPLY_NONE ? self->x_quiet : G5120_TIMEOUT_REPLY,
                    NULL, xchg_recv_cb);
       break;
 
@@ -711,6 +713,7 @@ begin_exchange (FpiSsm              *parent,
                 G5120Reply           reply,
                 gboolean             secret,
                 guint                listen_ms,
+                guint                quiet_ms,
                 const char          *purpose)
 {
   g_assert (payload_len <= sizeof (self->x_payload));
@@ -728,6 +731,7 @@ begin_exchange (FpiSsm              *parent,
   self->x_got_tls = FALSE;
   self->x_reads = 0;
   self->x_listen_until = listen_ms ? g_get_monotonic_time () + (gint64) listen_ms * 1000 : 0;
+  self->x_quiet = quiet_ms;
   g_byte_array_set_size (self->x_data, 0);
 
   fpi_ssm_start_subsm (parent, fpi_ssm_new (FP_DEVICE (self), xchg_run_state, XCHG_NUM_STATES));
@@ -743,7 +747,7 @@ start_exchange (FpiSsm              *parent,
                 gboolean             secret,
                 const char          *purpose)
 {
-  begin_exchange (parent, self, TRUE, FALSE, cmd, payload, payload_len, reply, secret, 0, purpose);
+  begin_exchange (parent, self, TRUE, FALSE, cmd, payload, payload_len, reply, secret, 0, G5120_TIMEOUT_QUIET, purpose);
 }
 
 static void
@@ -760,15 +764,15 @@ start_health_check (FpiSsm *parent, FpiDeviceGoodix5120 *self)
   const G5120Step *step = g5120_step_health_check ();
 
   begin_exchange (parent, self, TRUE, TRUE, step->cmd, step->payload, step->payload_len,
-                  step->reply, step->secret_reply, 0, step->purpose);
+                  step->reply, step->secret_reply, 0, G5120_TIMEOUT_QUIET, step->purpose);
 }
 
-/* Reads until the device is quiet, so no reply is left queued in the EC.
- * Sends nothing. */
+/* Reads until the device has been quiet for @quiet_ms, so no reply is left
+ * queued in the EC. Sends nothing. */
 static void
-start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self)
+start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self, guint quiet_ms)
 {
-  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, 0, "drain");
+  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, 0, quiet_ms, "drain");
 }
 
 /* Reads IN for a fixed time, quiet or not. Sends nothing. A TLS record in
@@ -776,7 +780,7 @@ start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self)
 static void
 start_listen (FpiSsm *parent, FpiDeviceGoodix5120 *self, guint ms)
 {
-  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, ms, "listen");
+  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, ms, G5120_TIMEOUT_QUIET, "listen");
 }
 
 /* ---- TLS-PSK handshake ------------------------------------------------------
@@ -1137,10 +1141,16 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case OPEN_DRAIN:
+      /* After attach: stale finger-detect events and the unsolicited 0x32
+       * arrive here (Run 29), so this one waits for the long silence. */
+      start_drain (ssm, self, G5120_TIMEOUT_QUIET);
+      break;
+
     case OPEN_DRAIN_AFTER_HEALTH:
     case OPEN_INIT_DRAIN:
     case OPEN_DRAIN_FINAL:
-      start_drain (ssm, self);
+      /* Each exchange has already read its ACK and data reply in full. */
+      start_drain (ssm, self, G5120_TIMEOUT_DRAIN_STEP);
       break;
 
     case OPEN_HEALTH:
@@ -1198,11 +1208,11 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case OPEN_LISTEN_AFTER_D4:
-      /* Go's collect read IN for its 5 s default timeout after the 0xd4 ACK
-       * and sent nothing, and the next session found the TLS bit set (Run 18
-       * then Run 20). Every C session sent 0xae 1 ms after that ACK and the
-       * bit stayed clear (Runs 26, 27, 29). Untested hypothesis: the EC needs
-       * that time undisturbed to mark the session up. */
+      /* This was 5 s, after Go's collect (Runs 18/20), for the hypothesis
+       * that the EC needs time undisturbed to mark the session up. Run 30
+       * ruled that out; Runs 32/33 showed the cause was two host writes
+       * under ~1 ms apart. The EC was silent in every 5 s window (Runs 30,
+       * 32-34). A short window keeps every host write gap >= 10 ms. */
       trace ("reading IN for %d ms after the 0xd4 ACK before the next command",
              G5120_TIMEOUT_POST_D4);
       start_listen (ssm, self, G5120_TIMEOUT_POST_D4);
@@ -1259,6 +1269,8 @@ open_done (FpiSsm *ssm, FpDevice *dev, GError *error)
   FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
 
   self->session_valid = error == NULL;
+  if (!error)
+    fp_dbg ("open: %" G_GINT64_FORMAT " ms", (g_get_monotonic_time () - self->open_started) / 1000);
   if (error)
     {
       g_autoptr(GError) cleanup_error = NULL;
@@ -1286,6 +1298,7 @@ dev_open (FpDevice *dev)
                                                           "the device before reopening"));
       return;
     }
+  self->open_started = g_get_monotonic_time ();
   ssm = fpi_ssm_new (dev, open_run_state, OPEN_NUM_STATES);
   fpi_ssm_start (ssm, open_done);
 }

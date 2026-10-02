@@ -12,7 +12,7 @@ intervals, then stopped at an overly strict immediate MCU-state gate. Both keybo
 The corrected gate accepts the observed status `0x00` after authentication and positive `0xd4` ACK;
 Run 27 then reached the touch, but `0x20` drew no image and the TLS bit stayed clear; the final
 flight and `0xd4` follow the Go timing, which Runs 28/29 showed was not enough. The current source
-also listens 5 s after the `0xd4` ACK before `0xae` and paces every pair of host records; Run 33 confirmed
+also listens briefly after the `0xd4` ACK before `0xae` (5 s until Run 43, now 50 ms) and paces every pair of host records; Run 33 confirmed
 that pacing is what lets `0x20` answer (an unpaced final flight from the same EC state drew nothing). Run 32 drew and
 decrypted the first C image, but NBIS found no minutiae in its `>> 4` frame; the current source stretches each
 frame's contrast instead (257 offline tests). Run 34 ran that build from a bit-clear EC: the first
@@ -64,10 +64,12 @@ driver is built around that:
   arriving after the local handshake completed fails open. The total handshake budget bounds all states
   and transfers. Every failing run had one pair of host writes within ~1 ms (Runs 24/25 the first flight,
   26/27 Finished/`0xd4`, 28–30 ChangeCipherSpec/Finished); Go's working Run 31 never went below ~2.5 ms.
-- **Listen after `0xd4`.** After the `0xd4` ACK the driver reads IN for 5 s and sends nothing, as Go's
-  `collect` did after `0xd4` in Run 18, whose session set the TLS bit; C sent `0xae` 1 ms after the ACK.
-  A stale event does not end the window; a TLS record in it fails open. The causal role of any of these
-  timings remains unknown.
+- **Listen after `0xd4`.** After the `0xd4` ACK the driver reads IN for 50 ms and sends nothing, so no two
+  host writes are closer than 10 ms. A stale event does not end the window; a TLS record in it fails open.
+  It was 5 s (after Go's `collect` in Run 18) until Run 43. Run 30 ruled that hypothesis out, Runs 32/33
+  pinned the cause on sub-millisecond write pairs, and the EC was silent in every 5 s window.
+- **Open time.** Only the attach drain waits 200 ms for silence; the drains between open steps wait 20 ms,
+  since each exchange has read its replies in full. Open logs `open: N ms` (about 8 s before this change).
 - **Immediate MCU state.** After authenticated TLS, completed host records and a positive `0xd4` ACK,
   the final reply must be 20 bytes and have the TLS bit set or exactly status `0x00` (Run 26).
   This exception does not reinterpret the clear bit. Other bit-clear states, including stuck `0x08`, stop open.
@@ -186,7 +188,7 @@ ae 55 a2 52 00 00             data only; TLS bit set or immediate status 00 afte
 drain
 ```
 
-There is a short drain (200 ms of quiet) after each init step, never after `0xd0`. TLS is 1.2 with suite `0x00ae`
+There is a short drain (20 ms of quiet; 200 ms after attach) after each init step, never after `0xd0`. TLS is 1.2 with suite `0x00ae`
 `TLS_PSK_WITH_AES_128_CBC_SHA256` and identity `Client_identity`. There is no identity hint, so no
 ServerKeyExchange, and the vendor's flight has none either. Records are forwarded verbatim. An alert the host side
 generates is **not** sent to the EC; the Go bridge does the same.
@@ -329,7 +331,7 @@ tests cover:
    standard deviation of about 23, and Run 32's `>> 4` frame yielded no minutiae. The per-frame stretch is not a
    calibration: without a background frame, uneven sensor response is stretched along with the ridges.
 3. **Timing.** The live Go runs waited seconds between steps. The vendor waits for nothing. This driver waits for
-   each reply plus 200 ms of quiet. The handshake itself has no host-side waits, which is the part that mattered
+   each reply plus 20 ms of quiet. The handshake itself has no host-side waits, which is the part that mattered
    (Runs 11 and 17).
 4. **The drain at open** consumes a stale `0x32` event from an EC Windows left armed. An event that arrives
    between that drain and the first arm is dropped as stale before the arm's ACK.

@@ -745,8 +745,8 @@ test_tls_record_before_d4 (Fixture *f, gconstpointer data)
 static void before_command (Fixture *f, guint8 cmd);
 
 /* After the 0xd4 ACK the driver reads IN for G5120_TIMEOUT_POST_D4 before 0xae,
- * as Go's collect did after 0xd4 in Run 18. Input in that window, here a stale
- * finger-down event, neither shortens nor restarts it. */
+ * so no two host writes are closer than 10 ms. Input in that window, here a
+ * stale finger-down event, neither shortens nor restarts it. */
 static void
 test_listen_after_d4 (Fixture *f, gconstpointer data)
 {
@@ -764,14 +764,41 @@ test_listen_after_d4 (Fixture *f, gconstpointer data)
   g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
   g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_POST_D4);
   queue_event (f, 0x32);
-  fake_advance_time (1000000);
+  fake_advance_time (20000);
   g_assert_true (fake_usb_step (&f->usb));
   g_assert_cmpuint (commands_sent (f, 0xae), ==, ae);
   g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
-  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_POST_D4 - 1000);
+  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_POST_D4 - 20);
   g_assert_true (fake_usb_step (&f->usb)); /* the window expires */
   g_assert_cmphex (pending_command (f), ==, 0xae);
   g_assert_cmpint (g_get_monotonic_time () - acked_at, ==, G5120_TIMEOUT_POST_D4 * 1000);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+/* Only the attach drain waits G5120_TIMEOUT_QUIET for silence; the drains
+ * between open steps, whose replies were already read in full, wait
+ * G5120_TIMEOUT_DRAIN_STEP. */
+static void
+test_open_drain_timeouts (Fixture *f, gconstpointer data)
+{
+  guint last_in = 0, steps = 0;
+
+  (void) data;
+  fake_open (&f->usb);
+  g_assert_nonnull (f->usb.pending);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_QUIET);
+  /* 0x82 follows the first reset's drain. */
+  while (pending_command (f) != 0x82)
+    {
+      if (f->usb.pending && (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN))
+        last_in = f->usb.timeout;
+      g_assert_true (fake_usb_step (&f->usb));
+      g_assert_cmpuint (++steps, <, 300);
+    }
+  g_assert_cmpuint (last_in, ==, G5120_TIMEOUT_DRAIN_STEP);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
@@ -2211,6 +2238,8 @@ main (int argc, char **argv)
               test_tls_record_before_d4, teardown);
   g_test_add ("/goodix5120/driver/listen-after-d4", Fixture, NULL, setup,
               test_listen_after_d4, teardown);
+  g_test_add ("/goodix5120/driver/open-drain-timeouts", Fixture, NULL, setup,
+              test_open_drain_timeouts, teardown);
   g_test_add ("/goodix5120/driver/tls-record-after-d4", Fixture, NULL, setup,
               test_tls_record_after_d4, teardown);
   g_test_add ("/goodix5120/driver/tls-write-budget", Fixture, NULL, setup,

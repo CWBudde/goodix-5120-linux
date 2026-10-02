@@ -218,6 +218,8 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    Run 43 did that: fprintd enrolled the right index in 15 stages, plus one extra touch for fprintd's duplicate check
    (identify). `fprintd-verify` matched the index (score 527) and rejected another finger twice (0, 0).
    **The reader works through fprintd.** Next: PAM (`pam-auth-update --enable fprintd`).
+   Open took ~8 s per fprintd operation: a 5 s listen after `0xd4` (its hypothesis was ruled out in Run 30) and
+   11 × 200 ms init drains. Now 50 ms and 20 ms; open logs `open: N ms`, expected ~1 s (owner test pending).
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
