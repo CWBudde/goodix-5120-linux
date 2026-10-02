@@ -1664,6 +1664,23 @@ keeps 200 ms (Run 29's stale event), and so does `0x96`. Every host write gap st
 `open: N ms`; the expected value is about 1 s. A failure would show as the Run 33 signature (no image after `0x20`)
 or as a pre-TLS protocol error, not as an unfinished handshake.
 
+### Run 44 — 2026-10-02, open in ~965 ms: fprintd verify with the shortened open (observed)
+
+`430a1b9` (50 ms listen after `0xd4`, 20 ms drains between open steps) went to fprintd through the installer,
+against Run 43's template. sudo itself asked for the finger through `pam_fprintd`, which was already enabled.
+That prompt still ran on the previous build (score 849, no `open:` line).
+
+- **Open:** 965, 968, 961 and 965 ms. That is down from about 8 s, and no warning or error was logged.
+  Every session established and drew its image, so neither shortened wait was needed.
+- **Right index:** scores 1198, 454 and 36. All are above the threshold of 24 and matched. The owner identified
+  the 36 as their index finger and puts it down to the enrollment. Run 43's views 10–12 overlapped the rest by
+  only 105–938, and views 14 and 15 overlapped nothing, so part of the template covers little of the finger.
+- **Other finger:** score 0, `verify-no-match`.
+
+**Note:** 36 is the lowest genuine score so far, only 1.5 times the threshold. A template whose views overlap
+poorly can push genuine touches towards false rejects. Next: re-enroll the right index, centred, with small
+shifts only.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
