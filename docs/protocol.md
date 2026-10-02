@@ -1726,6 +1726,33 @@ Open: fingerprint sudo is in daily use with the password as fallback. Not yet ru
 and during the finger wait with immediate reuse, suspend/resume, and the cold-boot login screen (PLAN.md Phase
 6c, lifecycle item).
 
+### Run 46 — 2026-10-02 18:56, open in 498 ms with the shorter pre-TLS waits (observed)
+
+The owner installed the `38f52b2` bundle (50 ms attach drain, 20 ms after `0x96`, 10 ms between open steps) and
+ran `sudo -k; sudo true`, pasting the prompts and the journal. sudo for the installer itself still ran on the
+`7ada9a7` library.
+
+- **Before the install (`7ada9a7`, same fprintd process):** at 18:55:41 an open of 970 ms, a 1104 ms touch, score
+  2602, match. At 18:56:07, the installer's sudo: open 958 ms, a 672 ms touch, score 0. sudo printed
+  `Fehler beim Abgleich des Fingerabdrucks` and fell back to the password (`max-tries=1`). At 672 ms this was
+  not a brush, so the new too-short check did not apply.
+- **The installer stopped fprintd at 18:56:14; D-Bus started it again with `38f52b2`:**
+
+  | Part of open             | `7ada9a7` (18:56:07) | `38f52b2` (18:56:14) |
+  | ------------------------ | -------------------- | -------------------- |
+  | PSK load → firmware      | 204 ms               | 55 ms                |
+  | firmware → TLS complete  | 682 ms               | 380 ms               |
+  | TLS complete → open done | 73 ms                | 63 ms                |
+  | `open:`                  | 958 ms               | **498 ms**           |
+
+  The open went through without a warning, the handshake completed (4 records each way), and the touch (1443 ms)
+  scored 56625 and matched. sudo succeeded. Every saving came from where the code predicted it.
+
+- **fprintd start-up:** 118 ms from "Started fprintd" to the driver's first line, against 110–720 ms before.
+
+**Limits:** one open on the new library. The brush retry (`7ada9a7`) has still not been tried: no touch under
+180 ms happened.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

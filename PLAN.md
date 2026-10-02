@@ -39,8 +39,7 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 - [ ] **Cold-boot login screen** (GDM through `pam_fprintd`).
 - [ ] **Brush retry.** A touch under 180 ms is now a "too short" retry, not a no-match. Check on the lock screen
       that a quick brush asks again instead of falling back to the password.
-- [ ] **Faster open** (~500 ms expected, from ~965 ms): shorter attach, `0x96` and between-step drains. Confirm
-      the `open:` line and a clean match live.
+- [x] **Faster open:** 498 ms, from ~965 ms (Run 46, one open). Watch later opens for pre-TLS errors.
 - [ ] Record the recovery behaviour of each in `docs/protocol.md`.
 
 ### Phase 6c — portability and upstreaming

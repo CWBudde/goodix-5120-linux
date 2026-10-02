@@ -9,7 +9,7 @@ A driver for the Goodix `27c6:5120` fingerprint reader in a Huawei MateBook (`HV
 over i8042, and it talks to the host over TLS-PSK.
 
 **State (2026-10-02):** the C libfprint driver in `libfprint/goodix5120/` works on this machine through the system
-fprintd and `pam_fprintd` (Runs 43–45 in `docs/protocol.md`). It opened in about 965 ms (Runs 44–45; ~500 ms expected with shorter pre-TLS waits, untested live), enrolls 15 touches and matches
+fprintd and `pam_fprintd` (Runs 43–46 in `docs/protocol.md`). It opens in about 500 ms (Run 46; 965 ms before), enrolls 15 touches and matches
 with SIGFM (threshold 24; genuine scores so far 36–258594, other fingers 0–9). Not yet tested live: cancellation during
 open, suspend/resume, autosuspend, cold-boot login. The Go code is the offline reference the driver follows byte for
 byte. `PLAN.md` lists what is open.

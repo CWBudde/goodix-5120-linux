@@ -5,8 +5,7 @@ of the Go reference in `cmd/goodix-probe` byte for byte, runs the TLS-PSK sessio
 
 **Status (2026-10-02):** enroll, verify and identify work on this machine through fprintd and PAM (Runs 41–45 in
 [`docs/protocol.md`](../../docs/protocol.md)). Genuine scores so far 36–258594, other fingers 0–9, threshold 24.
-An open took about 965 ms in Runs 44–45; with the shorter pre-TLS waits it is expected to take about 500 ms
-(not yet tested live). Cancellation during open, suspend/resume and autosuspend are untested live. Install for
+An open takes about 500 ms (498 ms in Run 46; 965 ms in Runs 44–45). Cancellation during open, suspend/resume and autosuspend are untested live. Install for
 fprintd with [`docs/fprintd.md`](../../docs/fprintd.md).
 
 ## Read this first: the hardware can be wedged
@@ -47,7 +46,7 @@ driver is built around that:
 - **Open time.** The attach drain waits 50 ms for silence, `0x96` (no reply) 20 ms, and the drains between open
   steps 10 ms, since each exchange has read its replies in full and replies are matched by opcode. The vendor's
   driver sends its 11 pre-TLS commands in 256 ms, 4–38 ms apart, the next one 16 ms after `0x96` (driver log,
-  2026-09-19 23:25:41). Open logs `open: N ms`: 961–968 ms in Runs 44–45 with 200/200/20 ms waits, 8 s before
+  2026-09-19 23:25:41). Open logs `open: N ms`: 498 ms in Run 46, 961–968 ms in Runs 44–45 with 200/200/20 ms waits, 8 s before
   that. The TLS paces are unchanged.
 - **Immediate MCU state.** After authenticated TLS, completed host records and a positive `0xd4` ACK,
   the final reply must be 20 bytes and have the TLS bit set or exactly status `0x00` (Run 26).

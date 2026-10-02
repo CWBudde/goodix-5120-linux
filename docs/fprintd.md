@@ -25,9 +25,8 @@ not know this reader. It keeps `/etc/goodix5120/psk.bin` and the prints in `/var
 
 ## Behaviour under fprintd
 
-- fprintd opens the reader per operation, so each prompt starts with the init and TLS handshake (about 965 ms in
-  Run 44; about 500 ms expected since the pre-TLS waits were shortened, not yet tested live), then waits for the
-  touch.
+- fprintd opens the reader per operation, so each prompt starts with the init and TLS handshake (about 500 ms, Run 46),
+  then waits for the touch.
 - Enroll takes 15 touches. Views that barely overlap make a template that scores low on ordinary touches (Run 44), so
   vary the placement a little between touches.
 - Ubuntu's PAM profile is `pam_fprintd.so max-tries=1 timeout=10`. One no-match goes straight to the password prompt
