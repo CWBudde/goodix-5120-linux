@@ -758,3 +758,19 @@ g5120_samples_to_gray8_stretched (const guint16 *samples, gsize n, guint8 *out,
         out[i] = (guint8) (((v - lo) * 255 + range / 2) / range);
     }
 }
+
+gboolean
+g5120_trace_enabled (void)
+{
+  static gsize once = 0;
+  static gboolean on;
+
+  if (g_once_init_enter (&once))
+    {
+      const char *v = g_getenv ("GOODIX5120_TRACE");
+
+      on = v != NULL && *v != '\0' && g_strcmp0 (v, "0") != 0;
+      g_once_init_leave (&once, 1);
+    }
+  return on;
+}

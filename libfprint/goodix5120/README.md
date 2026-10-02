@@ -77,6 +77,10 @@ driver is built around that:
   TLS records are logged by type and length only. This does not cover libfprint USB transfer tracing: when
   `FP_DEBUG_TRANSFER` and debug logging are enabled, the USB helper can dump raw sensitive replies.
   Leave `FP_DEBUG_TRANSFER` unset, including inherited service environments; never publish raw transfer traces.
+- **Two log levels.** Debug output (`G_MESSAGES_DEBUG=libfprint-goodix5120`) carries milestones only: firmware,
+  TLS up, finger down/up, image contrast, keypoints, scores, warnings. Every ACK, reply, send, TLS record and
+  finger-detect reading is logged only when `GOODIX5120_TRACE` is set (not `0`); the redaction above holds at both
+  levels. The offline suite runs the driver tests a second time with tracing on.
 
 ## Files
 
@@ -373,7 +377,10 @@ contrast stretch and has 257 passing
 standalone C tests normally and under ASan/UBSan (leak detection disabled). Use the new revision
 prepared in the capture runbook. No successful live C capture is established yet.
 
-As with `--bisect`, the owner runs this with an **external keyboard attached** and a passing firmware
+Since Run 41 repeat runs follow the short procedure in
+[`docs/c-driver-enroll-verify.md`](../../docs/c-driver-enroll-verify.md#repeat-runs-after-run-41): no separate
+health check (open does its own), the USB keyboard to hand rather than attached. The first bring-up went as
+follows. As with `--bisect`, the owner ran this with an **external keyboard attached** and a passing firmware
 health check. Recovery is required for a failed health check or an unfinished/crashed TLS session;
 Run 26's local gate failure alone is not evidence that recovery is needed:
 

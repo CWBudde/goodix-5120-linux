@@ -53,14 +53,16 @@ test('goodix5120-tls',
   protocol: 'tap', args: ['--tap'])
 
 # Suppress only unused callback arguments, as libfprint's own build does.
-test('goodix5120-driver',
-  executable('test-goodix5120-driver',
-    ['goodix5120.c', 'goodix5120_match.c', 'tests/test-goodix5120-driver.c',
-     'tests/fake-libfprint/fake-libfprint.c', 'tests/fake-matcher.c'],
-    include_directories: [include_directories('tests/fake-libfprint'), include_directories('.')],
-    c_args: ['-Wno-unused-parameter'],
-    dependencies: [gio_dep, openssl_dep], link_with: [tls_lib, proto_lib, fixture_lib]),
-  protocol: 'tap', args: ['--tap'])
+driver_test = executable('test-goodix5120-driver',
+  ['goodix5120.c', 'goodix5120_match.c', 'tests/test-goodix5120-driver.c',
+   'tests/fake-libfprint/fake-libfprint.c', 'tests/fake-matcher.c'],
+  include_directories: [include_directories('tests/fake-libfprint'), include_directories('.')],
+  c_args: ['-Wno-unused-parameter'],
+  dependencies: [gio_dep, openssl_dep], link_with: [tls_lib, proto_lib, fixture_lib])
+test('goodix5120-driver', driver_test, protocol: 'tap', args: ['--tap'])
+# Again with every wire-level log line formatted (stderr, so TAP stays clean).
+test('goodix5120-driver-trace', driver_test, protocol: 'tap', args: ['--tap'],
+  env: ['GOODIX5120_TRACE=1', 'G_MESSAGES_DEBUG=all', 'G_DEBUG=fatal-criticals'])
 
 match_lib = static_library('g5120match', 'goodix5120_match.c', dependencies: glib_dep)
 fake_matcher_lib = static_library('g5120fakematcher', 'tests/fake-matcher.c',

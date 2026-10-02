@@ -453,9 +453,10 @@ g5120_tls_feed (G5120Tls *tls, const guint8 *data, gsize len, GError **error)
 
       tls->input_header_len = 0;
       tls->from_ec++;
-      g_debug ("TLS: EC -> host: %s record, %" G_GSIZE_FORMAT " bytes",
-               g5120_tls_type_name (tls->input_header[0]),
-               G5120_TLS_RECORD_HEADER_LEN + tls->input_body_len);
+      if (g5120_trace_enabled ())
+        g_debug ("TLS: EC -> host: %s record, %" G_GSIZE_FORMAT " bytes",
+                 g5120_tls_type_name (tls->input_header[0]),
+                 G5120_TLS_RECORD_HEADER_LEN + tls->input_body_len);
       if (tls->input_header[0] == G5120_TLS_ALERT && !tls->input_encrypted)
         {
           if (tls->input_body_len == 2)
@@ -590,8 +591,9 @@ g5120_tls_pop_record (G5120Tls *tls)
       rec = g_bytes_new (tls->out->data, rlen);
       g_byte_array_remove_range (tls->out, 0, rlen);
       tls->to_ec++;
-      g_debug ("TLS: host -> EC: %s record, %" G_GSIZE_FORMAT " bytes",
-               g5120_tls_type_name (type), rlen);
+      if (g5120_trace_enabled ())
+        g_debug ("TLS: host -> EC: %s record, %" G_GSIZE_FORMAT " bytes",
+                 g5120_tls_type_name (type), rlen);
       return rec;
     }
 

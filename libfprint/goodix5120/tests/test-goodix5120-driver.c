@@ -2126,6 +2126,8 @@ int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
+  /* Debug output (goodix5120-driver-trace) must not interleave with TAP. */
+  g_log_writer_default_set_use_stderr (TRUE);
   g_autoptr(GKeyFile) owned = fixture_load ();
   corpus = owned;
   for (guint i = 0; i < G_N_ELEMENTS (init_replies); i++)

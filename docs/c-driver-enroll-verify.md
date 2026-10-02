@@ -7,6 +7,10 @@ pinned `examples/enroll` and `examples/verify`; this is not fprintd or PAM, and 
 **Run 35** (`docs/protocol.md`) completed enrollment: 5/5 stages in one session, one NBIS retry,
 finger number `7` (labelled right middle; physically the right index finger, as the owner noted after Run 38). Its template is in the owner's private run directory. Verification is pending.
 
+**From Run 42 on, use [Repeat runs](#repeat-runs-after-run-41) at the end.** It drops the health check and
+the keyboard report, and the log is short enough to paste whole. The sections in between record how Runs 35–41
+were done.
+
 ## The bundle
 
 `dist/goodix-owner-c-enroll/` (ignored by Git, local only) is the **same compiled build** as
@@ -243,3 +247,42 @@ Report these lines from both logs. They contain no pixels, keys or templates:
 Never post `test-storage.variant`. Results go in `docs/protocol.md` as Run 41 and in PLAN.md Phase 6c.
 Ten attempts in one session say nothing about another day; repeat verify later from the same `$run` before
 calling the threshold settled.
+
+## Repeat runs (after Run 41)
+
+Forty-one runs and Run 41's clean enroll/verify have made the touch path routine. The owner keeps the USB
+keyboard to hand (not plugged in) and reboots if the internal keyboard ever stops; if a reboot does not bring it
+back, use the [EC recovery](protocol.md#recovering-the-ec-researched-offline-2026-09-30) (charger plugged in, power button 40 s). There is no
+separate health check any more: a stuck EC makes the driver's own open fail, before any TLS, with the reason in
+the log.
+
+The driver logs milestones only: firmware, TLS up, `finger down` / `finger up`, image contrast, keypoints and
+scores. Every ACK, reply, send, TLS record and finger-detect reading is behind `GOODIX5120_TRACE=1`, and
+`G_MESSAGES_DEBUG` names only the driver's domain, so libfprint-core and GUsb debug stay out. Nothing printed
+contains pixels, keys, the `0xe4`/`0xa6` replies or templates, so the whole log can be pasted.
+
+Once per terminal:
+
+```sh
+repo=/mnt/Projekte/Code/systems/goodix-5120-linux
+build="$repo/dist/goodix-owner-c-sigfm-driver"
+chmod 600 "$repo/captures/goodix-psk.bin"   # silences the PSK-permission warning
+g5120() {
+  sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=libfprint-goodix5120 \
+    ${GOODIX5120_TRACE:+GOODIX5120_TRACE=$GOODIX5120_TRACE} \
+    FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+    sh -c 'umask 077; cd "$1" || exit 1; shift; exec "$@"' sh "$run" \
+    stdbuf -oL "$build/examples/$1" 2>&1 | tee -a "$run/$1.log"
+}
+```
+
+Verify against the existing template (newest `~/goodix-c-sigfm-*`), or enroll a new one in a fresh directory:
+
+```sh
+run=$(ls -dt "$HOME"/goodix-c-sigfm-* | head -1); g5120 verify     # or: g5120 identify
+umask 077; run=$(mktemp -d "$HOME/goodix-c-sigfm-XXXXXX"); g5120 enroll
+```
+
+Say which finger each attempt used, and paste the terminal output. Only if something fails and the milestones do
+not explain it, repeat that one run as `GOODIX5120_TRACE=1 g5120 verify` for the wire-level log.
+`test-storage.variant` stays private, as before.

@@ -150,6 +150,9 @@ static void matching_clear (FpiDeviceGoodix5120 *self);
 
 /* ---- Helpers ------------------------------------------------------------- */
 
+/* Wire-level detail, only with GOODIX5120_TRACE=1 (g5120_trace_enabled). */
+#define trace(...) G_STMT_START { if (g5120_trace_enabled ()) fp_dbg (__VA_ARGS__); } G_STMT_END
+
 static gchar *
 hexstr (const guint8 *data, gsize len)
 {
@@ -299,7 +302,7 @@ rx_classify (FpiDeviceGoodix5120 *self,
 
   if (len == 0)
     {
-      fp_dbg ("empty transfer");
+      trace ("empty transfer");
       return RX_EMPTY;
     }
 
@@ -312,7 +315,7 @@ rx_classify (FpiDeviceGoodix5120 *self,
   if (flags == G5120_FLAG_TLS || flags == G5120_FLAG_TLS_ALT)
     {
       /* Length only: a TLS body is key agreement or an image. */
-      fp_dbg ("TLS pack (flags 0x%02x), %" G_GSIZE_FORMAT " bytes", flags, pl_len);
+      trace ("TLS pack (flags 0x%02x), %" G_GSIZE_FORMAT " bytes", flags, pl_len);
       g_byte_array_set_size (self->rx_tls, 0);
       g_byte_array_append (self->rx_tls, pl, pl_len);
       return RX_TLS;
@@ -334,11 +337,11 @@ rx_classify (FpiDeviceGoodix5120 *self,
     {
       if (acked == expect)
         {
-          fp_dbg ("ACK for %s (0x%02x), status 0x%02x", opcode_name (acked), acked, status);
+          trace ("ACK for %s (0x%02x), status 0x%02x", opcode_name (acked), acked, status);
           self->rx_ack_status = status;
           return RX_ACK;
         }
-      fp_dbg ("ACK for 0x%02x while waiting on 0x%02x; ignored", acked, expect);
+      trace ("ACK for 0x%02x while waiting on 0x%02x; ignored", acked, expect);
       return RX_OTHER;
     }
 
@@ -347,12 +350,12 @@ rx_classify (FpiDeviceGoodix5120 *self,
   if (g5120_is_fdt_cmd (cmd) &&
       g5120_fdt_decode_event (cmd, mp, mp_len, &self->rx_fdt, NULL))
     {
-      fp_dbg ("FDT event 0x%02x (%s): header %02x %02x %02x %02x, zones %u %u %u %u %u %u",
-              cmd, g5120_fdt_event_kind_name (self->rx_fdt.kind),
-              self->rx_fdt.header[0], self->rx_fdt.header[1],
-              self->rx_fdt.header[2], self->rx_fdt.header[3],
-              self->rx_fdt.zones[0], self->rx_fdt.zones[1], self->rx_fdt.zones[2],
-              self->rx_fdt.zones[3], self->rx_fdt.zones[4], self->rx_fdt.zones[5]);
+      trace ("FDT event 0x%02x (%s): header %02x %02x %02x %02x, zones %u %u %u %u %u %u",
+             cmd, g5120_fdt_event_kind_name (self->rx_fdt.kind),
+             self->rx_fdt.header[0], self->rx_fdt.header[1],
+             self->rx_fdt.header[2], self->rx_fdt.header[3],
+             self->rx_fdt.zones[0], self->rx_fdt.zones[1], self->rx_fdt.zones[2],
+             self->rx_fdt.zones[3], self->rx_fdt.zones[4], self->rx_fdt.zones[5]);
       self->rx_fdt_cmd = cmd;
       return RX_FDT;
     }
@@ -361,10 +364,10 @@ rx_classify (FpiDeviceGoodix5120 *self,
     {
       if (secret)
         {
-          fp_dbg ("reply to %s (0x%02x): %" G_GSIZE_FORMAT " bytes (contents not logged)",
-                  opcode_name (cmd), cmd, mp_len);
+          trace ("reply to %s (0x%02x): %" G_GSIZE_FORMAT " bytes (contents not logged)",
+                 opcode_name (cmd), cmd, mp_len);
         }
-      else
+      else if (g5120_trace_enabled ())
         {
           g_autofree gchar *h = hexstr (mp, mp_len);
 
@@ -375,7 +378,7 @@ rx_classify (FpiDeviceGoodix5120 *self,
       return RX_DATA;
     }
 
-  fp_dbg ("unsolicited message 0x%02x, %" G_GSIZE_FORMAT " bytes; ignored", cmd, mp_len);
+  trace ("unsolicited message 0x%02x, %" G_GSIZE_FORMAT " bytes; ignored", cmd, mp_len);
   return RX_OTHER;
 }
 
@@ -608,7 +611,7 @@ xchg_recv_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GErro
     case RX_FDT:
       /* Before the arm's own ACK, an event is stale: it answers an earlier
        * arm (the EC stays armed across sessions; Windows leaves it armed). */
-      fp_dbg ("finger-detect event while waiting on 0x%02x; dropped as stale", self->x_cmd);
+      trace ("finger-detect event while waiting on 0x%02x; dropped as stale", self->x_cmd);
       break;
 
     case RX_EMPTY:
@@ -660,8 +663,8 @@ xchg_run_state (FpiSsm *ssm, FpDevice *dev)
             return;
           }
 
-        fp_dbg ("-> %s (0x%02x), %" G_GSIZE_FORMAT "-byte payload: %s",
-                opcode_name (self->x_cmd), self->x_cmd, self->x_payload_len, self->x_purpose);
+        trace ("-> %s (0x%02x), %" G_GSIZE_FORMAT "-byte payload: %s",
+               opcode_name (self->x_cmd), self->x_cmd, self->x_payload_len, self->x_purpose);
         submit_write (ssm, dev, frame, fpi_ssm_usb_transfer_cb);
       }
       break;
@@ -985,8 +988,8 @@ hs_run_state (FpiSsm *ssm, FpDevice *dev)
 
         if (gap <= 0 && !g5120_tls_has_partial_input (self->tls))
           {
-            fp_dbg ("TLS: inter-record interval completed (%d ms); sending the next record",
-                    G5120_TIMEOUT_HS_PACE);
+            trace ("TLS: inter-record interval completed (%d ms); sending the next record",
+                   G5120_TIMEOUT_HS_PACE);
             fpi_ssm_jump_to_state (ssm, HS_WRITE);
             return;
           }
@@ -1002,8 +1005,8 @@ hs_run_state (FpiSsm *ssm, FpDevice *dev)
 
         if (gap <= 0 && !g5120_tls_has_partial_input (self->tls))
           {
-            fp_dbg ("TLS: EC quiet for %d ms after the host's Finished; handshake complete",
-                    G5120_TIMEOUT_HS_SETTLE);
+            trace ("TLS: EC quiet for %d ms after the host's Finished; handshake complete",
+                   G5120_TIMEOUT_HS_SETTLE);
             fpi_ssm_mark_completed (ssm);
             return;
           }
@@ -1200,8 +1203,8 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
        * then Run 20). Every C session sent 0xae 1 ms after that ACK and the
        * bit stayed clear (Runs 26, 27, 29). Untested hypothesis: the EC needs
        * that time undisturbed to mark the session up. */
-      fp_dbg ("reading IN for %d ms after the 0xd4 ACK before the next command",
-              G5120_TIMEOUT_POST_D4);
+      trace ("reading IN for %d ms after the 0xd4 ACK before the next command",
+             G5120_TIMEOUT_POST_D4);
       start_listen (ssm, self, G5120_TIMEOUT_POST_D4);
       break;
 
@@ -1333,7 +1336,7 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
 
   if (self->rx_fdt_cmd != self->fdt_mode)
     {
-      fp_dbg ("event 0x%02x while armed with 0x%02x; ignored", self->rx_fdt_cmd, self->fdt_mode);
+      trace ("event 0x%02x while armed with 0x%02x; ignored", self->rx_fdt_cmd, self->fdt_mode);
       fpi_ssm_jump_to_state (ssm, FDT_WAIT);
       return;
     }
@@ -1343,6 +1346,7 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
     case G5120_FDT_EVENT_DOWN:
       /* Up thresholds come from the readings with the finger on. */
       g5120_fdt_up_thresholds (ev->zones, ev->touchflags, self->fdt_delta, self->up_thr);
+      fp_dbg ("finger down");
       self->base_invalid = 0;
       self->result = RESULT_FINGER_DOWN;
       fpi_ssm_mark_completed (ssm);
@@ -1362,13 +1366,17 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
       if (zones_all_zero (ev->zones))
         fp_warn ("'base invalid' with all-zero readings; re-arming with the previous thresholds");
       else
-        g5120_fdt_down_thresholds (ev->zones, self->down_thr);
+        {
+          fp_dbg ("'base invalid'; re-arming with the current readings");
+          g5120_fdt_down_thresholds (ev->zones, self->down_thr);
+        }
       fpi_ssm_jump_to_state (ssm, FDT_ARM);
       return;
 
     case G5120_FDT_EVENT_UP:
       /* The next down arm comes from the readings with the finger off. */
       g5120_fdt_down_thresholds (ev->zones, self->down_thr);
+      fp_dbg ("finger up");
       self->result = RESULT_FINGER_UP;
       fpi_ssm_mark_completed (ssm);
       return;
@@ -1376,8 +1384,8 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
     case G5120_FDT_EVENT_MANUAL:
     case G5120_FDT_EVENT_UNKNOWN:
     default:
-      fp_dbg ("%s event while armed with 0x%02x; still waiting",
-              g5120_fdt_event_kind_name (ev->kind), self->fdt_mode);
+      trace ("%s event while armed with 0x%02x; still waiting",
+             g5120_fdt_event_kind_name (ev->kind), self->fdt_mode);
       fpi_ssm_jump_to_state (ssm, FDT_WAIT);
       return;
     }
@@ -1431,8 +1439,8 @@ fdt_run_state (FpiSsm *ssm, FpDevice *dev)
         guint16 ts = (guint16) ((g_get_monotonic_time () / 1000) & 0xffff);
         gsize len = g5120_fdt_encode_arm (self->fdt_mode, thr, ts, payload);
 
-        fp_dbg ("arming 0x%02x with thresholds %02x %02x %02x %02x %02x %02x",
-                self->fdt_mode, thr[0], thr[1], thr[2], thr[3], thr[4], thr[5]);
+        trace ("arming 0x%02x with thresholds %02x %02x %02x %02x %02x %02x",
+               self->fdt_mode, thr[0], thr[1], thr[2], thr[3], thr[4], thr[5]);
         start_exchange (ssm, self, self->fdt_mode, payload, len, G5120_REPLY_ACK, FALSE,
                         self->fdt_mode == G5120_CMD_FDT_DOWN ? "arm finger-down" : "arm finger-up");
       }
@@ -1552,8 +1560,8 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
             fpi_ssm_mark_failed (ssm, proto_error (error, "image"));
             return;
           }
-        fp_dbg ("image: %u plaintext bytes, %s", self->plain->len,
-                wrapped ? "8-byte header + samples + 5-byte trailer" : "bare samples");
+        trace ("image: %u plaintext bytes, %s", self->plain->len,
+               wrapped ? "8-byte header + samples + 5-byte trailer" : "bare samples");
 
         img = fp_image_new (G5120_IMG_WIDTH, G5120_IMG_HEIGHT);
         g5120_samples_to_gray8_stretched (samples, G5120_IMG_SAMPLES, img->data, &lo, &hi);

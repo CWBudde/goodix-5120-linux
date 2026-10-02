@@ -21,6 +21,8 @@ meson test -C /tmp/goodix-build-c-asan --print-errorlogs
 Dependencies: GLib/GObject/GIO >= 2.68 and OpenSSL >= 3 development headers, Meson and Ninja. With OpenCV 4
 development files and a C++17 compiler, `test-goodix5120-sigfm` is built too (the offline container
 `goodix-offline-build-opencv:26.04` has both); without them it is skipped.
+`goodix5120-driver-trace` reruns the same driver executable with `GOODIX5120_TRACE=1 G_MESSAGES_DEBUG=all`, so every
+wire-level log line is formatted at least once (under ASan too); debug output goes to stderr to keep TAP clean.
 Under ptrace, LeakSanitizer cannot run; use `ASAN_OPTIONS=detect_leaks=0` there and report that limitation.
 
 ## Adapter contract

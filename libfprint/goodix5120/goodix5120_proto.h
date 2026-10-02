@@ -335,4 +335,9 @@ void g5120_samples_to_gray8_stretched (const guint16 *samples,
                                        guint16       *lo_out,
                                        guint16       *hi_out);
 
+/* Wire-level logging (every ACK, reply, send, TLS record, finger-detect
+ * reading) is off unless GOODIX5120_TRACE is set to a value other than
+ * "" or "0"; milestones log either way. Read once per process. */
+gboolean g5120_trace_enabled (void);
+
 G_END_DECLS

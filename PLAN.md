@@ -209,6 +209,9 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    index 6/6 `MATCH!` (best scores 1031–258594), another finger 3/3 `NO MATCH!` (all 0). **First working
    enroll + verify on Linux.** Next: verify again on another day from the same template, more impostor attempts,
    then identify and fprintd/PAM integration (still needs the PSK-provisioning decision below).
+   After Run 41 testing is streamlined (owner's call, 2026-10-02): no separate health check or keyboard report,
+   one `g5120` shell function, whole log pasted. Wire-level driver logging moved behind `GOODIX5120_TRACE=1`;
+   the default debug log is milestones only ([runbook](docs/c-driver-enroll-verify.md), "Repeat runs").
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
