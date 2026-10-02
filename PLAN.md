@@ -212,6 +212,9 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    After Run 41 testing is streamlined (owner's call, 2026-10-02): no separate health check or keyboard report,
    one `g5120` shell function, whole log pasted. Wire-level driver logging moved behind `GOODIX5120_TRACE=1`;
    the default debug log is milestones only ([runbook](docs/c-driver-enroll-verify.md), "Repeat runs").
+   Run 42 used the quiet-log build: a second session against the Run 41 template, index `MATCH!` (score 43918) and
+   other finger `NO MATCH!` (0). Next: fprintd through a reversible drop-in that loads this libfprint build, with no
+   package replaced ([docs/fprintd.md](docs/fprintd.md)). That is the first live identify. PAM comes after it.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

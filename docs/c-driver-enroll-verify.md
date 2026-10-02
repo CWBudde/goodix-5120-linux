@@ -261,16 +261,19 @@ scores. Every ACK, reply, send, TLS record and finger-detect reading is behind `
 `G_MESSAGES_DEBUG` names only the driver's domain, so libfprint-core and GUsb debug stay out. Nothing printed
 contains pixels, keys, the `0xe4`/`0xa6` replies or templates, so the whole log can be pasted.
 
+The PSK path is the root-only copy made by the [fprintd installer](fprintd.md) (run its `install` once first).
+`captures/` is on a `fuseblk` mount that ignores `chmod`, so the original always logs the permission warning
+(Run 42).
+
 Once per terminal:
 
 ```sh
 repo=/mnt/Projekte/Code/systems/goodix-5120-linux
 build="$repo/dist/goodix-owner-c-sigfm-driver"
-chmod 600 "$repo/captures/goodix-psk.bin"   # silences the PSK-permission warning
 g5120() {
   sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=libfprint-goodix5120 \
     ${GOODIX5120_TRACE:+GOODIX5120_TRACE=$GOODIX5120_TRACE} \
-    FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+    FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE=/etc/goodix5120/psk.bin \
     sh -c 'umask 077; cd "$1" || exit 1; shift; exec "$@"' sh "$run" \
     stdbuf -oL "$build/examples/$1" 2>&1 | tee -a "$run/$1.log"
 }

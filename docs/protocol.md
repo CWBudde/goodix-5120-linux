@@ -1615,6 +1615,21 @@ template round-trip through libfprint's print serialisation therefore works on h
 verification on another day against this same template, more impostor attempts, and keyboard behaviour during the
 run (not reported).
 
+### Run 42 — 2026-10-02 12:39, quiet-log driver: verify 1/1 genuine, 1/1 impostor rejected (observed)
+
+This was the first run with `ac43d30` (wire-level logging behind `GOODIX5120_TRACE`) and the streamlined procedure,
+with no separate health check. It ran `examples/verify` against Run 41's stored template, about 40 minutes later,
+in a new session.
+
+- **Open:** firmware `GF_ITE_EC_20063`. The TLS handshake completed in 2.85 s with 4 records each way.
+- **Right index:** 133 keypoints, contrast 924..2587, best score 43918. `MATCH!`
+- **Other finger:** 133 keypoints, contrast 1091..2532, score 0. `NO MATCH!`
+- **Touch timing:** about 85 ms from finger-down to image, 0.2–0.6 s until finger-up.
+- **Log size:** the whole log was about 15 driver lines for two attempts.
+- **PSK warning:** it still appeared (`mode 775`) after `chmod 600`, because `/mnt/Projekte` is a `fuseblk` mount
+  that ignores modes. Repeat runs now read the root-only copy `/etc/goodix5120/psk.bin`
+  ([fprintd.md](fprintd.md)).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
