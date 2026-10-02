@@ -37,6 +37,8 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 - [ ] **Suspend / resume**, then unlock by finger. Also whether USB autosuspend (`ID_AUTOSUSPEND=1`) between
       sessions upsets the EC.
 - [ ] **Cold-boot login screen** (GDM through `pam_fprintd`).
+- [ ] **Brush retry.** A touch under 180 ms is now a "too short" retry, not a no-match. Check on the lock screen
+      that a quick brush asks again instead of falling back to the password.
 - [ ] Record the recovery behaviour of each in `docs/protocol.md`.
 
 ### Phase 6c — portability and upstreaming

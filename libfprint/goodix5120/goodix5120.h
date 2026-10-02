@@ -52,6 +52,10 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FPI,
 #define G5120_MAX_DRAIN_READS    8
 /* Consecutive "base invalid" replies to one 0x32 arm before giving up. */
 #define G5120_MAX_BASE_INVALID   8
+/* A finger lifted sooner after finger-down brushed the sensor: the image was
+ * taken while it landed or left. Ask for another touch rather than report a
+ * no-match. Observed: a 144 ms brush scored 0; genuine touches from 203 ms. */
+#define G5120_MIN_CONTACT_MS     180
 
 /* Where the 32-byte raw PSK is read from. The environment variable wins.
  * TODO(provisioning): see README.md, "PSK provisioning". */

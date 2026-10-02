@@ -131,6 +131,8 @@ struct _FpiDeviceGoodix5120
   guint8        up_thr[G5120_FDT_ZONES];
   guint8        fdt_delta;
   guint         base_invalid;
+  gint64        finger_down_at; /* monotonic time of this touch's finger-down */
+  gint64        contact_ms;     /* how long the last touch stayed on the sensor */
 
   /* Matching (goodix5120_match.h). */
   G5120View    *probe;          /* this touch's features */
@@ -1360,6 +1362,7 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
       /* Up thresholds come from the readings with the finger on. */
       g5120_fdt_up_thresholds (ev->zones, ev->touchflags, self->fdt_delta, self->up_thr);
       fp_dbg ("finger down");
+      self->finger_down_at = g_get_monotonic_time ();
       self->base_invalid = 0;
       self->result = RESULT_FINGER_DOWN;
       fpi_ssm_mark_completed (ssm);
@@ -1389,7 +1392,8 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
     case G5120_FDT_EVENT_UP:
       /* The next down arm comes from the readings with the finger off. */
       g5120_fdt_down_thresholds (ev->zones, self->down_thr);
-      fp_dbg ("finger up");
+      self->contact_ms = (g_get_monotonic_time () - self->finger_down_at) / 1000;
+      fp_dbg ("finger up after %" G_GINT64_FORMAT " ms", self->contact_ms);
       self->result = RESULT_FINGER_UP;
       fpi_ssm_mark_completed (ssm);
       return;
@@ -1696,6 +1700,18 @@ extract_probe (FpiDeviceGoodix5120 *self)
     }
 }
 
+/* A brush is a retry, whatever its image scored. */
+static void
+check_contact (FpiDeviceGoodix5120 *self)
+{
+  if (self->probe_retry || self->contact_ms >= G5120_MIN_CONTACT_MS)
+    return;
+  g_clear_pointer (&self->probe, g5120_view_free);
+  self->probe_retry = fpi_device_retry_new_msg (FP_DEVICE_RETRY_TOO_SHORT,
+                                                "The finger left the sensor after %" G_GINT64_FORMAT
+                                                " ms; leave it on a little longer", self->contact_ms);
+}
+
 static void
 enroll_touch_done (FpiDeviceGoodix5120 *self)
 {
@@ -1892,6 +1908,8 @@ session_done (FpiSsm *ssm, FpDevice *dev, GError *error)
 
     case RESULT_FINGER_UP:
       fpi_device_report_finger_status_changes (dev, FP_FINGER_STATUS_NONE, FP_FINGER_STATUS_PRESENT);
+      if (fpi_device_get_current_action (dev) != FPI_DEVICE_ACTION_CAPTURE)
+        check_contact (self);
       touch_done (self);
       break;
 

@@ -32,6 +32,11 @@ not know this reader. It keeps `/etc/goodix5120/psk.bin` and the prints in `/var
 - Ubuntu's PAM profile is `pam_fprintd.so max-tries=1 timeout=10`. One no-match goes straight to the password prompt
   (Run 45). For more tries, change `max-tries` in `/usr/share/pam-configs/fprintd` and run `pam-auth-update` again.
   That file belongs to the package, so an fprintd update can overwrite it.
+- A touch that leaves the sensor less than 180 ms after finger-down is a brush, not a scan: the image was taken
+  while the finger landed or lifted. The driver reports it as "too short" (a retry) instead of a no-match. fprintd
+  then waits for another touch, which should not use up `max-tries` (expected from fprintd's retry handling, not yet
+  tested live). Observed before the change: a 144 ms lock-screen brush scored 0 and fell back to the password; the
+  shortest genuine touch in the journal was 203 ms.
 
 ## Logs
 
@@ -39,6 +44,6 @@ not know this reader. It keeps `/etc/goodix5120/psk.bin` and the prints in `/var
 journalctl -b -u fprintd --since -15min -o cat --no-pager | grep -E 'open:|score|WARN|rror'
 ```
 
-The default log has milestones only: `open: N ms`, TLS up, finger down/up, keypoints, `best SIGFM score N, threshold
-24`, warnings. For wire-level detail, add `Environment=GOODIX5120_TRACE=1` to the drop-in. Keys, OTP, images and
+The default log has milestones only: `open: N ms`, TLS up, finger down, `finger up after N ms`, keypoints,
+`best SIGFM score N, threshold 24`, warnings. For wire-level detail, add `Environment=GOODIX5120_TRACE=1` to the drop-in. Keys, OTP, images and
 templates are never logged at either level.

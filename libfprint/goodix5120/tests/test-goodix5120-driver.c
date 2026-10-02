@@ -28,6 +28,7 @@ typedef struct {
   gboolean check_init;
   guint corpus_position;
   gboolean auto_events;
+  guint short_touches; /* lifts that follow finger-down too soon: brushes */
   gboolean no_hello, corrupt_image;
   gboolean wrong_key;
   gboolean alert_after_hello; /* answer ServerHello alone with decode_error */
@@ -93,7 +94,17 @@ queue_event (Fixture *f, guint8 cmd)
       data[2] = 0x3f;
     }
   else
-    data[1] = 2;
+    {
+      data[1] = 2;
+      /* The finger stays on for a normal touch, or briefly for a brush. */
+      if (f->short_touches > 0)
+        {
+          f->short_touches--;
+          fake_advance_time ((G5120_MIN_CONTACT_MS - 30) * 1000);
+        }
+      else
+        fake_advance_time (500 * 1000);
+    }
   for (guint i = 0; i < 6; i++)
     {
       data[4 + i * 2] = 0x90 + i * 2;
@@ -1918,20 +1929,23 @@ test_init_reply_opaque (Fixture *f, gconstpointer data)
 static void
 test_enroll_retry (Fixture *f, gconstpointer data)
 {
-  gboolean failure = GPOINTER_TO_UINT (data);
+  guint mode = GPOINTER_TO_UINT (data); /* few keypoints, extraction failure, brush */
   g_autoptr(FpPrint) print = NULL;
   g_autoptr(GPtrArray) views = NULL;
+  const FpDeviceRetry codes[] = { FP_DEVICE_RETRY_CENTER_FINGER, FP_DEVICE_RETRY_GENERAL,
+                                  FP_DEVICE_RETRY_TOO_SHORT };
 
   open_driver (f);
-  if (failure)
+  if (mode == 1)
     fake_matcher.fail_extract = 1;
+  else if (mode == 2)
+    f->short_touches = 1;
   else
     fake_matcher.low_keypoints = 1;
   print = enroll_print (f);
   g_assert_cmpuint (f->usb.notify.progress, ==, 16);
   g_assert_cmpuint (f->usb.notify.retries, ==, 1);
-  FpDeviceRetry code = failure ? FP_DEVICE_RETRY_GENERAL : FP_DEVICE_RETRY_CENTER_FINGER;
-  g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, (gint) code);
+  g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, (gint) codes[mode]);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, 16);
   g_assert_cmpuint (f->usb.notify.fingers_off, ==, 16);
   views = stored_views (print);
@@ -1973,7 +1987,7 @@ test_enroll_cancel (Fixture *f, gconstpointer data)
 static void
 test_verify (Fixture *f, gconstpointer data)
 {
-  guint mode = GPOINTER_TO_UINT (data); /* match, no match, retry */
+  guint mode = GPOINTER_TO_UINT (data); /* match, no match, retry, brush */
   g_autoptr(FpPrint) print = NULL;
   guint fingers;
 
@@ -1984,6 +1998,8 @@ test_verify (Fixture *f, gconstpointer data)
     f->pattern = 1;
   else if (mode == 2)
     fake_matcher.low_keypoints = 1;
+  else if (mode == 3)
+    f->short_touches = 1; /* of the enrolled finger: it would have matched */
   fake_verify (&f->usb, print);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
@@ -1993,10 +2009,11 @@ test_verify (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.notify.fingers_off, ==, fingers + 1);
   g_assert_cmpuint (f->handshakes, ==, 1);
   g_assert_null (f->usb.pending);
-  if (mode == 2)
+  if (mode >= 2)
     {
       g_assert_cmpint (f->usb.notify.result, ==, FPI_MATCH_ERROR);
-      g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, FP_DEVICE_RETRY_CENTER_FINGER);
+      g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY,
+                      (mode == 2 ? FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_TOO_SHORT));
     }
   else
     g_assert_cmpint (f->usb.notify.result, ==, mode == 0 ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL);
@@ -2006,7 +2023,7 @@ test_verify (Fixture *f, gconstpointer data)
 static void
 test_identify (Fixture *f, gconstpointer data)
 {
-  guint mode = GPOINTER_TO_UINT (data); /* match the second print, no match, retry */
+  guint mode = GPOINTER_TO_UINT (data); /* match the second print, no match, retry, brush */
   g_autoptr(FpPrint) other = NULL;
   g_autoptr(FpPrint) mine = NULL;
   g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
@@ -2022,14 +2039,17 @@ test_identify (Fixture *f, gconstpointer data)
     f->pattern = 2;
   else if (mode == 2)
     fake_matcher.low_keypoints = 1;
+  else if (mode == 3)
+    f->short_touches = 1;
   fake_identify (&f->usb, gallery);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.completions, ==, 3);
   g_assert_true (f->usb.notify.reported);
   g_assert_true (f->usb.notify.match == (mode == 0 ? mine : NULL));
-  if (mode == 2)
-    g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY, FP_DEVICE_RETRY_CENTER_FINGER);
+  if (mode >= 2)
+    g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY,
+                    (mode == 2 ? FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_TOO_SHORT));
   g_assert_cmpuint (f->handshakes, ==, 1);
   g_assert_null (f->usb.pending);
 }
@@ -2143,6 +2163,7 @@ test_capture_without_finger (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.writes->len, ==, writes);
   g_assert_null (f->usb.pending);
   g_clear_error (&f->usb.notify.error);
+  f->short_touches = 1; /* capture has no match to protect: a brush still returns its image */
   start_operation (f);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
@@ -2200,8 +2221,10 @@ main (int argc, char **argv)
   g_test_add ("/goodix5120/driver/enroll/retry-keypoints", Fixture, NULL, setup, test_enroll_retry, teardown);
   g_test_add ("/goodix5120/driver/enroll/retry-extraction", Fixture, GUINT_TO_POINTER (1), setup,
               test_enroll_retry, teardown);
+  g_test_add ("/goodix5120/driver/enroll/retry-too-short", Fixture, GUINT_TO_POINTER (2), setup,
+              test_enroll_retry, teardown);
   g_test_add ("/goodix5120/driver/enroll/cancel", Fixture, NULL, setup, test_enroll_cancel, teardown);
-  const char *verify_names[] = { "match", "no-match", "retry" };
+  const char *verify_names[] = { "match", "no-match", "retry", "too-short" };
   for (guint i = 0; i < G_N_ELEMENTS (verify_names); i++)
     {
       g_autofree gchar *vname = g_strdup_printf ("/goodix5120/driver/verify/%s", verify_names[i]);
