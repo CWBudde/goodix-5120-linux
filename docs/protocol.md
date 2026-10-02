@@ -1681,6 +1681,24 @@ That prompt still ran on the previous build (score 849, no `open:` line).
 poorly can push genuine touches towards false rejects. Next: re-enroll the right index, centred, with small
 shifts only.
 
+### Run 45 — 2026-10-02, re-enrolled right index; PAM sudo prompts (observed)
+
+The owner deleted Run 43's print and re-enrolled the right index through fprintd (`430a1b9`, unchanged).
+
+- **Enroll:** 15 stages and no warning. Open took 961–968 ms each time. Each view's best score against the earlier
+  views was 55, 78143, 48, 5, 0, 2521, 0, 30598, 0, 24579, 2193, 0, 208 and 17734 (views 2–15). Four views overlap
+  none of the earlier ones. On a 64×80 sensor a small shift shows a different patch. A view like that still adds
+  coverage for verify, which takes the best score over all views. The enroll scores don't rate the template
+  quality; verify scores do.
+- **`sudo -k; sudo true`, odd placement (owner's report):** score 0, a clean `verify-no-match` with no driver
+  error. sudo fell back to the password after that one attempt. Ubuntu's `common-auth` loads `pam_fprintd.so
+  max-tries=1 timeout=10`, so this is configured behaviour.
+- **Same, good placement:** score 7037, and sudo succeeded.
+
+Open: fingerprint sudo is in daily use with the password as fallback. Not yet run live: cancelling during open
+and during the finger wait with immediate reuse, suspend/resume, and the cold-boot login screen (PLAN.md Phase
+6c, lifecycle item).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

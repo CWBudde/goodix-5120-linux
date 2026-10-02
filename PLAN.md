@@ -220,7 +220,8 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    **The reader works through fprintd.** Next: PAM (`pam-auth-update --enable fprintd`).
    Open took ~8 s per fprintd operation: a 5 s listen after `0xd4` (its hypothesis was ruled out in Run 30) and
    11 × 200 ms init drains. Now 50 ms and 20 ms; open logs `open: N ms`. Run 44: open 961–968 ms, sessions fine.
-   Genuine scores 1198/454/36 (the 36 traced to Run 43's poorly overlapping views), impostor 0. Re-enroll pending.
+   Genuine scores 1198/454/36 (the 36 traced to Run 43's poorly overlapping views), impostor 0. Run 45: re-enrolled; sudo via PAM matched a good placement (7037) and rejected an odd
+   one (0; Ubuntu's `max-tries=1` then asks for the password). Open live: cancel, suspend/resume, cold-boot login.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
