@@ -16,6 +16,14 @@
 # uninstall removes the library and the drop-in; the PSK and prints enrolled
 # under fprintd (/var/lib/fprint) stay. Owner only: restarting fprintd lets
 # it enumerate the reader. Agents do not run this.
+#
+# If fingerprint login is enabled in PAM (pam-auth-update's fprintd profile),
+# install swaps that profile for goodix5120-fprintd: the same pam_fprintd
+# line, skipped for gdm-password. GNOME's unlock screen runs gdm-password and
+# gdm-fingerprint side by side; with pam_fprintd in both they race for the
+# reader, and when gdm-password wins, its prompt is blocked until pam_fprintd
+# times out (seen after a resume). Fedora's gdm-password has no pam_fprintd
+# either. uninstall swaps the stock profile back.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -35,6 +43,7 @@ psk=${2:-${PSK:-}}
 [ -n "$psk" ] || [ ! -f "$repo/captures/goodix-psk.bin" ] || psk=$repo/captures/goodix-psk.bin
 lib=/opt/goodix5120/lib
 conf=/etc/systemd/system/fprintd.service.d/goodix5120.conf
+pamprof=/usr/share/pam-configs/goodix5120-fprintd
 
 [ "$(id -u)" = 0 ] || {
   echo "run with sudo" >&2
@@ -63,6 +72,11 @@ install)
   install -d -m 700 /etc/goodix5120
   [ -z "$psk" ] || install -m 600 "$psk" /etc/goodix5120/psk.bin
   install -d -m 755 "$(dirname "$conf")"
+  install -m 644 "$here/goodix5120-fprintd.pam-config" "$pamprof"
+  if grep -q 'pam_fprintd\.so' /etc/pam.d/common-auth; then
+    pam-auth-update --disable fprintd --enable goodix5120-fprintd
+    echo "PAM: fingerprint everywhere except gdm-password (gdm-fingerprint covers the GNOME screens)"
+  fi
   cat >"$conf" <<'EOF'
 # goodix5120: fprintd with the 27c6:5120 driver build (goodix5120-fprintd.sh)
 [Service]
@@ -75,6 +89,14 @@ UnsetEnvironment=FP_DEBUG_TRANSFER
 EOF
   ;;
 uninstall)
+  if [ -f "$pamprof" ]; then
+    if grep -q 'service = gdm-password' /etc/pam.d/common-auth; then
+      pam-auth-update --remove goodix5120-fprintd --enable fprintd
+    else
+      pam-auth-update --remove goodix5120-fprintd
+    fi
+    rm -f "$pamprof"
+  fi
   rm -f "$conf"
   rmdir --ignore-fail-on-non-empty "$(dirname "$conf")" 2>/dev/null || true
   rm -rf /opt/goodix5120

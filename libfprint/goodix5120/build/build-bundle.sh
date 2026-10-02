@@ -78,7 +78,7 @@ patchelf --set-rpath '$ORIGIN' "$out/libfprint/fprint-list-supported-devices"
 "$out/libfprint/fprint-list-supported-devices" >"$out/device-table.txt"
 grep -q '27c6:5120' "$out/device-table.txt"
 
-cp "$driver/fprintd/goodix5120-fprintd.sh" "$out/"
+cp "$driver/fprintd/goodix5120-fprintd.sh" "$driver/fprintd/goodix5120-fprintd.pam-config" "$out/"
 # LGPL: the sources of the modified library travel with it.
 mkdir -p "$out/source/goodix5120"
 cp -r "$driver"/goodix5120*.[ch] "$driver"/goodix5120_sigfm.cpp "$driver"/sigfm "$driver"/libfprint-register.patch \

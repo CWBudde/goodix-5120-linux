@@ -15,12 +15,20 @@ from the repository, where it picks the bundle that `just bundle` left in `dist/
 - writes the drop-in `/etc/systemd/system/fprintd.service.d/goodix5120.conf`. It sets `LD_LIBRARY_PATH`, the PSK
   path, `FP_DRIVERS_ALLOWLIST=goodix5120` and milestone-level debug, and unsets `FP_DEBUG_TRANSFER`, whose raw transfer
   dumps would bypass the driver's redaction;
+- if fingerprint login is enabled in PAM (`pam_fprintd` in `common-auth`), replaces pam-auth-update's `fprintd`
+  profile with `goodix5120-fprintd` (`/usr/share/pam-configs/`). It has the same `pam_fprintd` line, skipped for the
+  `gdm-password` service. GNOME's unlock screen runs `gdm-password` and `gdm-fingerprint` side by side. With
+  `pam_fprintd` in both, they race for the reader, and when `gdm-password` wins, the password prompt is blocked until
+  `pam_fprintd` gives up after 10 s ("Zeitüberschreitung", Run 50). Afterwards the finger on the GNOME screens goes
+  through `gdm-fingerprint` alone, as on Fedora, whose `gdm-password` has no `pam_fprintd` either. `sudo`, polkit and
+  the TTY login are unchanged;
 - stops fprintd, which D-Bus starts again on first use with the new library.
 
 fprintd keeps its own sandbox. Ubuntu's fprintd 1.94.5 imports 47 libfprint symbols, and the pinned build
 (`1.94.100`, `6f9479c3`) exports all of them. With only the allowlisted driver, no other reader shows up.
 
-`uninstall` removes the library and the drop-in, so fprintd falls back to the distribution's libfprint, which does
+`uninstall` swaps the stock `fprintd` PAM profile back (if `install` swapped it) and removes the library and the
+drop-in, so fprintd falls back to the distribution's libfprint, which does
 not know this reader. It keeps `/etc/goodix5120/psk.bin` and the prints in `/var/lib/fprint`.
 
 ## Behaviour under fprintd
