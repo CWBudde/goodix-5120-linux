@@ -1356,7 +1356,8 @@ established by one saved frame.
 ### Run 35 — 2026-10-02 01:47, first C enrollment: 5 of 5 stages in one session (observed)
 
 The owner ran `examples/enroll` from `dist/goodix-owner-c-enroll/` (the same compiled driver as Run 34,
-commit `17af857`), right middle finger, twelve minutes after Run 34, no EC reset.
+commit `17af857`), finger number `7` (libfprint's label for right middle), twelve minutes after Run 34, no EC reset.
+*Correction (owner, after Run 38): the finger physically used was the right index.*
 **Result: enrollment completed (5/5) with one retry, all in one TLS session; the template was saved
 and close completed without error.**
 
@@ -1402,10 +1403,11 @@ after Go sessions, not after this C close.
 
 ### Run 36 — 2026-10-02 01:56, first C verification: device path clean, every match score 0 (observed)
 
-The owner ran `examples/verify` from `dist/goodix-owner-c-enroll/` against Run 35's template (right
-middle), nine minutes after Run 35, no EC reset. Four attempts ran in one open.
+The owner ran `examples/verify` from `dist/goodix-owner-c-enroll/` against Run 35's template (labelled right
+middle, physically right index), nine minutes after Run 35, no EC reset. Four attempts ran in one open.
 **Result: no protocol or device error, and no match.** Two attempts found no minutiae, and two scored
-`0/24` against all five enrolled views. The log does not say which finger the owner used for each attempt.
+`0/24` against all five enrolled views. *Correction (owner, after Run 38): all four attempts used the right index finger, the same finger that was
+enrolled, so none was an impostor attempt.*
 
 - **Reopen after a C close that left `0x34` armed works.** The first IN read during open delivered the
   pending `0x34` finger-up event (`00 02 00 00`, readings `[357 387 327 362 336 367]`). The driver
@@ -1465,7 +1467,7 @@ frame — what this run measured. Bozorth3 needs at least 10 on each print, so *
 this sensor at any enlargement**. That matches the community `goodixtls` fork's move to SIGFM for similar small
 Goodix parts. The pinned libfprint contains no non-minutiae matcher.
 
-### Run 38 — 2026-10-02 02:36, SIGFM scores: no separation between fingers (observed)
+### Run 38 — 2026-10-02 02:36, SIGFM scores, one finger only: half of the later touches unmatched (observed)
 
 The owner ran `examples/g5120-sigfm 6` from `dist/goodix-owner-c-sigfm/` (same driver and library as Runs 34–37;
 SIGFM from the `goodixtls` fork at `07306bb`, host OpenCV 4.10). It ran without an EC reset after Run 37. Open, all
@@ -1474,33 +1476,38 @@ were discarded for having no NBIS minutiae and repeated (A once twice; B four ti
 re-armed correctly. Stretch bounds ranged from 931..2300 to 1199..2499 (one at 1040..2899). Three finger-up arms
 carried the untouched-zone threshold `0x19` for zone 0.
 
+**Correction (owner, after the run): finger B was not a different finger.** The owner used the right index finger
+for all twelve touches, and also in Runs 35 and 36 (see the corrections there). So this run measured **same-finger
+repeatability only. It contains no impostor data at all.** Columns the tool printed as "impostor" are labelled
+below as "A frames vs later B touches".
+
 Every kept frame had plenty of SIFT keypoints (×1: 82–137, median 114; ×3: 94–147, median 123), far above the
-fork's 25. The scores do not separate the fingers:
+fork's 25.
 
-| | genuine verify (best of the other 5 A frames) | impostor verify (best over 6 A frames) | accepted at 24 |
+| | A: best of the other 5 A frames | later B touches: best over 6 A frames | at 24 |
 |---|---|---|---|
-| ×1 (64 × 80) | 58, 2870, 7794, 8648, 269307, 295515 | 0, 0, 0, 1884, 2131, **316748** | genuine 6/6, impostor 3/6 |
-| ×3 (driver image) | 121, 15224, 33652, 62337, 676396, 947510 | 0, 0, 10, 2263, 8195, **2599516** | genuine 6/6, impostor 3/6 |
+| ×1 (64 × 80) | 58, 2870, 7794, 8648, 269307, 295515 | 0, 0, 0, 1884, 2131, 316748 | A 6/6, B 3/6 |
+| ×3 (driver image) | 121, 15224, 33652, 62337, 676396, 947510 | 0, 0, 10, 2263, 8195, 2599516 | A 6/6, B 3/6 |
 
-Of the 30 genuine pairs, 4 (×1) and 5 (×3) scored 0. Of the 36 impostor pairs, 26 scored 0 at both scales, and
-the rest are spread up to the largest score of the whole run. **No threshold works:** at both scales the best
-impostor score is higher than the best genuine one.
+Within the six A touches, 4 (×1) and 5 (×3) of 30 pairs scored 0, and every A touch matched another A touch.
+Between A and the B touches, which used the same finger about 10–20 s later, 26 of 36 pairs scored 0. Half of the B touches matched
+no A frame at all. Read as genuine attempts against a six-view template, **SIGFM rejected the enrolled finger 3 times
+out of 6**. The likeliest reason is placement: each touch images only a few mm² of the finger, and frames from
+touches next to each other in time (the A set) overlap more than frames from a later set. That is consistent with
+the fork enrolling 20 views for its 64 × 80 sensor rather than libfprint's default 5.
 
 **Reading the magnitude.** SIGFM's score is not a match count. It counts *pairs of pairs*: point pairs whose
 lengths agree within 5 %, then pairs of those whose angles agree within 5 % (`sigfm.cpp`, `sigfm_match_score`).
 When M matches all follow one rigid motion, the score is about P(P−1)/2 with P ≈ M(M−1)/2, so it grows roughly as
-M⁴/8. The fork's threshold of 24 then corresponds to about 4–5 consistent matches. The impostor 2 599 516 at ×3 corresponds to about
-68 matches agreeing on one motion, and 316 748 at ×1 to about 40. Those are 40–60 % of a frame's keypoints, matched
-consistently between two different fingers.
+M⁴/8. The fork's threshold of 24 corresponds to about 4–5 consistent matches. 2 599 516 corresponds to about 68,
+and 316 748 to about 40. Scores therefore jump between 0 and millions, depending on overlap. SIGFM's `match::operator<`
+compares only `y`, so its de-duplication keeps one match per image row.
 
-**Hypothesis (not yet tested): the sensor's fixed pattern.** The likeliest feature common to two fingers'
-frames is the sensor's own fixed-pattern structure (column/row offsets, per-pixel gain), at the same pixel position
-in every frame, so it fits an identity motion. The fork's `goodix511` subtracts a no-finger calibration frame
-before scaling for this reason; this driver does not (`docs/c-driver-enroll-verify.md`). A second, smaller
-factor is that SIGFM's `match::operator<` compares only `y`, so its de-duplication keeps one match per row.
-The next check is offline-buildable and needs no new command: report each pair's dominant translation (near
-zero would confirm a fixed pattern), and score again after subtracting a background estimated from the frames
-themselves.
+**Fixed-pattern noise is not ruled out but now has little support.** The sensor's fixed pattern sits at the
+same pixel positions in every frame, so it would make most pairs match. Here 26 of 36 A–B pairs scored 0. The fork
+still subtracts a no-finger frame (`docs/c-driver-enroll-verify.md`), and this driver does not.
+
+**Open:** a run with a genuinely different finger for B, to measure impostor scores at all.
 
 ### Recovering the EC (researched offline, 2026-09-30)
 

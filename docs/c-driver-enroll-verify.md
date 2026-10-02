@@ -5,7 +5,7 @@ Phase 6c's first hardware check after Run 34's first complete C capture
 pinned `examples/enroll` and `examples/verify`; this is not fprintd or PAM, and nothing is installed.
 
 **Run 35** (`docs/protocol.md`) completed enrollment: 5/5 stages in one session, one NBIS retry,
-right middle finger (`7`). Its template is in the owner's private run directory. Verification is pending.
+finger number `7` (labelled right middle; physically the right index finger, as the owner noted after Run 38). Its template is in the owner's private run directory. Verification is pending.
 
 ## The bundle
 
@@ -154,6 +154,8 @@ sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
   "$build/examples/g5120-sigfm" 6 2>&1 | tee "$HOME/goodix-sigfm.log"
 ```
 
+Decide on both fingers before starting, for example right index for A and **left thumb** for B (Run 38
+accidentally used the right index for both). Switch fingers when `=== finger B` appears.
 Report the `keypoints:` lines and everything from `=== SIGFM scores` onward.
 
 **Not yet in the driver: background subtraction.** The fork's `goodix511` driver subtracts a no-finger
@@ -161,6 +163,6 @@ calibration frame from every frame before its min–max scaling. It takes that f
 FDT-up, nav `0x50` and `0x20`, a sequence never sent to this EC. This driver has no such subtraction. It is
 a candidate for improving both matchers, but it needs its own live step first.
 
-**Run 38** (`docs/protocol.md`) ran this tool. Every frame had 82–147 keypoints, but SIGFM did not separate the
-two fingers: at threshold 24 it accepted 3 of 6 impostors, and the best impostor score was higher than the best
-genuine one. The suspected cause is the sensor's fixed pattern, which background subtraction would remove.
+**Run 38** (`docs/protocol.md`) ran this tool, but all twelve touches used the same finger (right index), so it
+measured repeatability only. Every frame had 82–147 keypoints. All six A touches matched each other, but 3 of the
+6 later touches matched no A frame at threshold 24. Impostor scores still need a run with a different finger for B.

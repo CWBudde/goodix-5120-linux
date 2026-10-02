@@ -184,16 +184,16 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    1468..2756) and the image was saved — **the first complete C capture**. Next: Phase 6c
    (repeated captures, enrollment, verification).** The owner-only enroll/verify procedure is
    [docs/c-driver-enroll-verify.md](docs/c-driver-enroll-verify.md), using `dist/goodix-owner-c-enroll/`.
-   Run 35 enrolled the right middle finger in C: 5/5 stages in one TLS session (six touches, one
+   Run 35 enrolled a finger in C (labelled right middle, physically right index): 5/5 stages in one TLS session (six touches, one
    NBIS retry, one base-invalid re-arm), template saved, clean close. 
    Run 36 verified against it: the device path stayed clean (including reopen after a C close), but
    every Bozorth score was 0, NBIS's value for fewer than 10 minutiae. Matching is the open problem.
    Run 37 measured it: at most 5 minutiae per frame (mean 1.7) at every scale ×1–×5. NBIS cannot
    match on this sensor; a non-minutiae matcher (SIGFM-style) is required.
-   Run 38 scored SIGFM offline-built, owner-run (6 + 6 touches, two fingers): plenty of keypoints
-   (82–147), but no separation. At the fork's threshold of 24, 3 of 6 impostors were accepted, and the best impostor
-   outscored the best genuine score. Suspected cause: the sensor's fixed pattern, which the fork removes by
-   subtracting a no-finger frame. Next: check that offline with software background estimates.
+   Run 38 scored SIGFM offline-built and owner-run, with 12 touches. All of them turned out to be the same finger, so the run gave
+   repeatability only and no impostor data. Every frame had plenty of keypoints (82–147). All six early touches
+   matched each other, but 3 of the 6 later touches matched none of them at the fork's threshold of 24 (likely
+   placement, so more enroll views are needed). Next: rerun with a genuinely different finger for B.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
