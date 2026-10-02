@@ -1818,6 +1818,26 @@ finger-down; not waiting for the lift`. No `0x34` was armed.
   `gdm-fingerprint`. The profile swap and its reversal were rehearsed with `pam-auth-update --root` on a copy of this
   machine's PAM files; the other `common-*` files stay byte-identical.
 
+### Run 51 — 2026-10-02 22:21, the re-check images three times; the PAM swap installed (observed)
+
+`6bfc625` library. The owner unlocked the screen, then re-ran the installer with `sudo` (which swapped the PAM
+profile) and ran `sudo -k; sudo true`.
+
+- **22:21:43, the unlock screen, before the swap:** the race again, without a resume: fprintd refused
+  `gdm-fingerprint`'s claim ("Device was already claimed"), and `gdm-password` held the reader. So the race is not
+  specific to resume.
+- **First live re-check, in that session:** open 504 ms, finger-down 60 ms later (the finger was already on). Image 1
+  scored 0. Then `finger still on (touch flags 0x3f); image 2 of 3` 19 ms after the score, image 2 87 ms after that,
+  score 0. Image 3 the same way, score 0. `finger up after 694 ms`, no warnings. That is about 120 ms per image, each
+  `0x36` event answering within 20 ms. The EC handled `0x34` → `0x36` → `0x20` as it does for the vendor. The owner
+  unlocked with the password at 22:21:52.
+- **The three images were of one placement:** stretch bounds 1012..2523, 1011..2516, 1004..2508, and 114/114/107
+  keypoints. A resting finger gives the same image again. So the re-check rescues a first image taken while the
+  finger landed, not a finger resting on an area the template does not cover.
+- **After the swap:** `common-auth` starts with the `pam_succeed_if … service = gdm-password` skip, then
+  `pam_fprintd` (`success=3`). The installer's own `sudo` matched by finger at 22:22:11 (score 1522, 104 ms after
+  finger-down). The next `sudo`, on the restarted fprintd, matched at 22:22:13 (score 64005, 100 ms).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

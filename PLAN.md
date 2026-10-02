@@ -43,10 +43,10 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
       and matched (Run 47), so this needs a real graze, under 180 ms.
 - [x] **Match before the lift:** 103–115 ms after finger-down, and a reopen 37 ms later with the finger still on
       matched normally (Run 49).
-- [ ] **Re-image a held finger.** After a no-match, `0x34` → `0x36` → `0x20` while the finger stays, up to three
-      images (the vendor's retry). This is the first time the driver sends `0x36`. Check for `finger still on`, a match
-      on image 2 or 3, and that a no-match ends with `finger up` and no warning. Three held touches scored 0 in
-      Run 48.
+- [x] **Re-image a held finger:** works on the EC (Run 51: three images ~120 ms apart, `finger up`, no warning).
+      Still to see: a match on image 2 or 3. All three images of a resting finger were alike and scored 0.
+- [ ] **Unlock screen after the PAM swap** (Run 51 installed it): the fingerprint prompt appears at once, also after
+      resume, and no "Device was already claimed" shows in the journal.
 - [x] **Faster open:** 498–506 ms, from ~965 ms (Runs 46–47, three opens, no warnings).
 - [ ] Record the recovery behaviour of each in `docs/protocol.md`.
 
