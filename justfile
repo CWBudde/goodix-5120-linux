@@ -119,6 +119,27 @@ rehearse-touches: probe
 rehearse: rehearse-handshake rehearse-capture rehearse-touches
     -@just rehearse-rejection
 
+# ---------------------------------------------------------------------------- driver bundle
+
+libfprint_rev := "6f9479c3d55f847c1b3769f28ceb99227f9858cf"
+build_image := "goodix5120-build:26.04"
+
+# Build the driver bundle (pinned libfprint + goodix5120) in docker, offline, into dist/.
+bundle version=`git describe --tags --always --dirty`:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d .cache/libfprint/.git ]; then
+        git clone --quiet https://gitlab.freedesktop.org/libfprint/libfprint.git .cache/libfprint
+    fi
+    git -C .cache/libfprint checkout --quiet --detach {{libfprint_rev}}
+    docker buildx version >/dev/null 2>&1 || export DOCKER_BUILDKIT=0   # legacy builder without buildx
+    docker build --quiet -t {{build_image}} libfprint/goodix5120/build >/dev/null
+    out=dist/goodix5120-{{version}}
+    mkdir -p "$out"
+    docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
+        -e VERSION={{version}} -v "$PWD:/src:ro" -v "$PWD/.cache/libfprint:/libfprint:ro" -v "$PWD/$out:/out" \
+        {{build_image}} sh /src/libfprint/goodix5120/build/build-bundle.sh
+
 # ---------------------------------------------------------------------------- live runs
 
 # Why there is no `just live-…`, and where the real procedure is.

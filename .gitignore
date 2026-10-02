@@ -36,3 +36,6 @@ kernel-after-wedge.txt
 
 # Claude Code local state (settings, agent worktrees)
 /.claude/
+
+# libfprint checkout for `just bundle`
+/.cache/
