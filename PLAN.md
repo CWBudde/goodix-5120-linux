@@ -205,7 +205,10 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    [docs/c-driver-enroll-verify.md](docs/c-driver-enroll-verify.md) "SIGFM driver"): one 15-stage enrollment, then
    verify attempts with the enrolled finger and with another finger.
    Run 41 enrolled with it: 15/15 stages in one session (about 1.4 s per touch), every touch including the last
-   ended by its lift, 101–172 keypoints per view, clean close. Verification is next.
+   ended by its lift, 101–172 keypoints per view, clean close. Verification against that stored template: right
+   index 6/6 `MATCH!` (best scores 1031–258594), another finger 3/3 `NO MATCH!` (all 0). **First working
+   enroll + verify on Linux.** Next: verify again on another day from the same template, more impostor attempts,
+   then identify and fprintd/PAM integration (still needs the PSK-provisioning decision below).
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

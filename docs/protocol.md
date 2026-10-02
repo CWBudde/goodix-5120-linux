@@ -1566,7 +1566,7 @@ Keypoints: ×1 88–159 (median 126), ×3 91–165 (median 129).
 fingers, dry/wet skin, or a real enroll/verify flow with stored templates. **Conclusion:** SIGFM with roughly 15
 enroll views is a workable matcher for this sensor; NBIS is not (Run 37).
 
-### Run 41 — 2026-10-02 12:00, first enrollment with the SIGFM driver: 15/15 stages, clean close (observed)
+### Run 41 — 2026-10-02 12:00, SIGFM driver: 15-stage enrollment, then verify 6/6 genuine, 3/3 impostors rejected (observed)
 
 The owner ran `examples/enroll` from `dist/goodix-owner-c-sigfm-driver/` (driver `9c682a6`), finger 6 (right index),
 in a fresh private directory. The pasted log starts at stage 5. Every stage shown is one complete touch:
@@ -1587,8 +1587,33 @@ cut short (Run 35). Then came enroll completion, the example's first-run `Error 
   Down arms came back from each lift's readings, for example `b8 c5 ab b9 aa b9`. There were no base-invalid events
   in the pasted part.
 
-**Open:** verification with the enrolled finger and with another finger against this template (runbook "SIGFM
-driver"), and keyboard behaviour during the run (not reported yet).
+**Verification (12:12–12:16, same template, one `verify` process, no reopen between attempts):**
+
+| Attempt | Finger (owner) | Best SIGFM score | Result |
+|---|---|---|---|
+| 1 | right index (enrolled) | 258594 | MATCH |
+| 2 | right index | 5064 | MATCH |
+| 3 | right index | 199628 | MATCH |
+| 4 | right index | 20253 | MATCH |
+| 5 | right index | 63411 | MATCH |
+| 6 | right index | 1031 | MATCH |
+| 7 | another finger | 0 | NO MATCH |
+| 8 | another finger | 0 | NO MATCH |
+| 9 | another finger | 0 | NO MATCH |
+
+**6/6 genuine accepted, 3/3 impostor rejected**, with the lowest genuine score (1031) 43× the threshold and every
+impostor scoring exactly 0, as in Runs 39 and 40. This is the first time this sensor has verified a finger on Linux
+through libfprint's own `verify`, with the template stored and loaded through `test-storage.variant`. The
+template round-trip through libfprint's print serialisation therefore works on hardware.
+
+- Each attempt was one complete touch (arm, image, lift) with 96–141 keypoints. No retry, warning or error.
+- Before attempt 6, one base-invalid event (`80 00 00 00`) arrived 30 ms after the arm. The driver re-armed from its
+  readings (`b9 c7 ac ba ab ba`), and the touch then worked. Attempts 7 and 8 had untouched-zone `0x19` in zone 0.
+- Stretch bounds ranged from 940..2812 to 1491..2740.
+
+**Limits:** one session, minutes after enrollment, three impostor attempts with one other finger. **Open:**
+verification on another day against this same template, more impostor attempts, and keyboard behaviour during the
+run (not reported).
 
 ### Recovering the EC (researched offline, 2026-09-30)
 

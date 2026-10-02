@@ -22,8 +22,9 @@ scored 0 on every attempt, and Run 37 measured at most 5 minutiae per frame at a
 so matching needs a different matcher. Runs 38–40 tried SIGFM offline: with a 14-view template, 14/15
 genuine attempts matched, and no true impostor scored above 9 (threshold 24). The driver now matches with SIGFM
 itself: it is a plain `FpDevice` with its own enroll (15 stages), verify, identify and capture, and the wire
-sequence is unchanged ([Matching](#matching-sigfm)). It passes the offline tests (280 with OpenCV); the first
-live enroll and verify with it are next.**
+sequence is unchanged ([Matching](#matching-sigfm)). It passes the offline tests (280 with OpenCV). Run 41
+enrolled 15 stages and then verified the enrolled finger 6/6 (scores ≥ 1031) and rejected another finger 3/3
+(scores 0), with the template stored and loaded by libfprint's `verify` example.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in
