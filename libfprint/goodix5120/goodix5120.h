@@ -37,8 +37,9 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FPI,
 
 /* Timeouts, in milliseconds. */
 #define G5120_TIMEOUT_REPLY      2000  /* an ACK or a data reply */
-#define G5120_TIMEOUT_QUIET       200  /* "nothing more is coming" */
-#define G5120_TIMEOUT_DRAIN_STEP   20  /* quiet between open steps, after the attach drain */
+#define G5120_TIMEOUT_ATTACH_DRAIN 50  /* quiet before the health check: stale events */
+#define G5120_TIMEOUT_NO_REPLY     20  /* quiet after 0x96, which draws no reply */
+#define G5120_TIMEOUT_DRAIN_STEP   10  /* quiet between open steps, after the attach drain */
 #define G5120_TIMEOUT_OUT        2000  /* complete padded OUT frame, across its 64-byte writes */
 #define G5120_TIMEOUT_HS_READ    1000  /* one read during the handshake */
 #define G5120_TIMEOUT_HS_PACE      60  /* read between two records of the first host flight */

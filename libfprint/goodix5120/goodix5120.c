@@ -749,7 +749,7 @@ start_exchange (FpiSsm              *parent,
                 gboolean             secret,
                 const char          *purpose)
 {
-  begin_exchange (parent, self, TRUE, FALSE, cmd, payload, payload_len, reply, secret, 0, G5120_TIMEOUT_QUIET, purpose);
+  begin_exchange (parent, self, TRUE, FALSE, cmd, payload, payload_len, reply, secret, 0, G5120_TIMEOUT_NO_REPLY, purpose);
 }
 
 static void
@@ -766,7 +766,7 @@ start_health_check (FpiSsm *parent, FpiDeviceGoodix5120 *self)
   const G5120Step *step = g5120_step_health_check ();
 
   begin_exchange (parent, self, TRUE, TRUE, step->cmd, step->payload, step->payload_len,
-                  step->reply, step->secret_reply, 0, G5120_TIMEOUT_QUIET, step->purpose);
+                  step->reply, step->secret_reply, 0, G5120_TIMEOUT_NO_REPLY, step->purpose);
 }
 
 /* Reads until the device has been quiet for @quiet_ms, so no reply is left
@@ -782,7 +782,7 @@ start_drain (FpiSsm *parent, FpiDeviceGoodix5120 *self, guint quiet_ms)
 static void
 start_listen (FpiSsm *parent, FpiDeviceGoodix5120 *self, guint ms)
 {
-  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, ms, G5120_TIMEOUT_QUIET, "listen");
+  begin_exchange (parent, self, FALSE, FALSE, 0x00, NULL, 0, G5120_REPLY_NONE, TRUE, ms, G5120_TIMEOUT_NO_REPLY, "listen");
 }
 
 /* ---- TLS-PSK handshake ------------------------------------------------------
@@ -1144,8 +1144,9 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
 
     case OPEN_DRAIN:
       /* After attach: stale finger-detect events and the unsolicited 0x32
-       * arrive here (Run 29), so this one waits for the long silence. */
-      start_drain (ssm, self, G5120_TIMEOUT_QUIET);
+       * arrive here (Run 29), so this one waits longest. One that arrives
+       * later is dropped by opcode in rx_classify. */
+      start_drain (ssm, self, G5120_TIMEOUT_ATTACH_DRAIN);
       break;
 
     case OPEN_DRAIN_AFTER_HEALTH:

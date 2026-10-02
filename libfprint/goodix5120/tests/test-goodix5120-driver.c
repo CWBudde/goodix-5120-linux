@@ -788,7 +788,7 @@ test_listen_after_d4 (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
 }
 
-/* Only the attach drain waits G5120_TIMEOUT_QUIET for silence; the drains
+/* Only the attach drain waits G5120_TIMEOUT_ATTACH_DRAIN for silence; the drains
  * between open steps, whose replies were already read in full, wait
  * G5120_TIMEOUT_DRAIN_STEP. */
 static void
@@ -800,7 +800,7 @@ test_open_drain_timeouts (Fixture *f, gconstpointer data)
   fake_open (&f->usb);
   g_assert_nonnull (f->usb.pending);
   g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
-  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_QUIET);
+  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_ATTACH_DRAIN);
   /* 0x82 follows the first reset's drain. */
   while (pending_command (f) != 0x82)
     {
@@ -813,6 +813,48 @@ test_open_drain_timeouts (Fixture *f, gconstpointer data)
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+/* 0x96 draws no reply: the driver reads for G5120_TIMEOUT_NO_REPLY of quiet,
+ * then sends the next init command (the vendor's goes out 16 ms later). */
+static void
+test_open_no_reply_quiet (Fixture *f, gconstpointer data)
+{
+  gint64 sent_at;
+
+  (void) data;
+  fake_open (&f->usb);
+  before_command (f, 0x96);
+  g_assert_true (fake_usb_step (&f->usb)); /* 0x96 goes out */
+  sent_at = g_get_monotonic_time ();
+  g_assert_nonnull (f->usb.pending);
+  g_assert_true (f->usb.pending->endpoint & FPI_USB_ENDPOINT_IN);
+  g_assert_cmpuint (f->usb.timeout, ==, G5120_TIMEOUT_NO_REPLY);
+  before_command (f, 0xa8);
+  g_assert_cmpint (g_get_monotonic_time () - sent_at, ==,
+                   (G5120_TIMEOUT_NO_REPLY + G5120_TIMEOUT_DRAIN_STEP) * 1000);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+}
+
+/* The attach drain is short, so a stale finger event can still arrive during
+ * the health check. It is dropped, and open goes on. */
+static void
+test_stale_event_during_health (Fixture *f, gconstpointer data)
+{
+  (void) data;
+  fake_open (&f->usb);
+  before_command (f, 0xa8);
+  g_assert_true (fake_usb_step (&f->usb));
+  fake_drop_replies (&f->usb);
+  queue_event (f, 0x32);
+  queue_ack (f, 0xa8, 1);
+  queue_message (f, 0xa8, (guint8 *) "GF_ITE_EC_20063", 15);
+  pump (f);
+  g_assert_no_error (f->usb.notify.error);
+  g_assert_cmpuint (f->usb.notify.opens, ==, 1);
+  g_assert_cmpuint (f->usb.notify.fingers_on, ==, 0);
 }
 
 /* A TLS record in the listen window cannot be dropped without desynchronising
@@ -2263,6 +2305,10 @@ main (int argc, char **argv)
               test_listen_after_d4, teardown);
   g_test_add ("/goodix5120/driver/open-drain-timeouts", Fixture, NULL, setup,
               test_open_drain_timeouts, teardown);
+  g_test_add ("/goodix5120/driver/open-no-reply-quiet", Fixture, NULL, setup,
+              test_open_no_reply_quiet, teardown);
+  g_test_add ("/goodix5120/driver/open-stale-event-during-health", Fixture, NULL, setup,
+              test_stale_event_during_health, teardown);
   g_test_add ("/goodix5120/driver/tls-record-after-d4", Fixture, NULL, setup,
               test_tls_record_after_d4, teardown);
   g_test_add ("/goodix5120/driver/tls-write-budget", Fixture, NULL, setup,

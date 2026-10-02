@@ -5,7 +5,8 @@ of the Go reference in `cmd/goodix-probe` byte for byte, runs the TLS-PSK sessio
 
 **Status (2026-10-02):** enroll, verify and identify work on this machine through fprintd and PAM (Runs 41–45 in
 [`docs/protocol.md`](../../docs/protocol.md)). Genuine scores so far 36–258594, other fingers 0–9, threshold 24.
-An open takes about 965 ms. Cancellation during open, suspend/resume and autosuspend are untested live. Install for
+An open took about 965 ms in Runs 44–45; with the shorter pre-TLS waits it is expected to take about 500 ms
+(not yet tested live). Cancellation during open, suspend/resume and autosuspend are untested live. Install for
 fprintd with [`docs/fprintd.md`](../../docs/fprintd.md).
 
 ## Read this first: the hardware can be wedged
@@ -43,8 +44,11 @@ driver is built around that:
   host writes are closer than 10 ms. A stale event does not end the window; a TLS record in it fails open.
   It was 5 s (after Go's `collect` in Run 18) until Run 43. Run 30 ruled that hypothesis out, Runs 32/33
   pinned the cause on sub-millisecond write pairs, and the EC was silent in every 5 s window.
-- **Open time.** Only the attach drain waits 200 ms for silence; the drains between open steps wait 20 ms,
-  since each exchange has read its replies in full. Open logs `open: N ms` (961–968 ms in Run 44; 8 s before).
+- **Open time.** The attach drain waits 50 ms for silence, `0x96` (no reply) 20 ms, and the drains between open
+  steps 10 ms, since each exchange has read its replies in full and replies are matched by opcode. The vendor's
+  driver sends its 11 pre-TLS commands in 256 ms, 4–38 ms apart, the next one 16 ms after `0x96` (driver log,
+  2026-09-19 23:25:41). Open logs `open: N ms`: 961–968 ms in Runs 44–45 with 200/200/20 ms waits, 8 s before
+  that. The TLS paces are unchanged.
 - **Immediate MCU state.** After authenticated TLS, completed host records and a positive `0xd4` ACK,
   the final reply must be 20 bytes and have the TLS bit set or exactly status `0x00` (Run 26).
   This exception does not reinterpret the clear bit. Other bit-clear states, including stuck `0x08`, stop open.
@@ -166,7 +170,7 @@ ae 55 a2 52 00 00             data only; TLS bit set or immediate status 00 afte
 drain
 ```
 
-There is a short drain (20 ms of quiet; 200 ms after attach) after each init step, never after `0xd0`. TLS is 1.2 with suite `0x00ae`
+There is a short drain (10 ms of quiet; 50 ms after attach) after each init step, never after `0xd0`. TLS is 1.2 with suite `0x00ae`
 `TLS_PSK_WITH_AES_128_CBC_SHA256` and identity `Client_identity`. There is no identity hint, so no
 ServerKeyExchange, and the vendor's flight has none either. Records are forwarded verbatim. An alert the host side
 generates is **not** sent to the EC; the Go bridge does the same.
