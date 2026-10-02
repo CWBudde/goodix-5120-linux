@@ -70,14 +70,14 @@ func (h *Hive) cell(off uint32) ([]byte, error) {
 
 // nk is a parsed key node, holding only what path-walking needs.
 type nk struct {
-	h            *Hive
-	subkeyCount  uint32
-	subkeyList   uint32
-	valueCount   uint32
-	valueList    uint32
-	classOff     uint32
-	classLen     uint16
-	name         string
+	h           *Hive
+	subkeyCount uint32
+	subkeyList  uint32
+	valueCount  uint32
+	valueList   uint32
+	classOff    uint32
+	classLen    uint16
+	name        string
 }
 
 func (h *Hive) readNK(off uint32) (*nk, error) {

@@ -29,7 +29,7 @@ func TestTLSPreflightStopsBeforeHardware(t *testing.T) {
 			dir := t.TempDir()
 			key := filepath.Join(dir, "key.bin")
 			if tc.write {
-				if err := os.WriteFile(key, tc.contents, 0600); err != nil {
+				if err := os.WriteFile(key, tc.contents, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}

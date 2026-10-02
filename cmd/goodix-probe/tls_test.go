@@ -182,8 +182,10 @@ func TestTLSConfigValidate(t *testing.T) {
 		},
 		{
 			name: "--wait-finger without --allow-34",
-			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
-				waitFinger: true, armDown: true, fingerTimeout: time.Second},
+			cfg: tlsConfig{
+				enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, armDown: true, fingerTimeout: time.Second,
+			},
 			allowed: allowD0And20,
 			wantErr: "--allow-34",
 		},
@@ -194,8 +196,10 @@ func TestTLSConfigValidate(t *testing.T) {
 		},
 		{
 			name: "capture on touch",
-			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
-				waitFinger: true, armDown: true, armUp: true, fingerTimeout: time.Second},
+			cfg: tlsConfig{
+				enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, armDown: true, armUp: true, fingerTimeout: time.Second,
+			},
 			allowed: allowD0And20,
 		},
 		{
@@ -205,21 +209,27 @@ func TestTLSConfigValidate(t *testing.T) {
 		},
 		{
 			name: "several touches",
-			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
-				waitFinger: true, touches: 5, armDown: true, armUp: true, fingerTimeout: time.Second},
+			cfg: tlsConfig{
+				enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, touches: 5, armDown: true, armUp: true, fingerTimeout: time.Second,
+			},
 			allowed: allowD0And20,
 		},
 		{
 			name: "--touches without --wait-finger",
-			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
-				touches: 3},
+			cfg: tlsConfig{
+				enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				touches: 3,
+			},
 			allowed: allowD0And20,
 			wantErr: "needs --wait-finger",
 		},
 		{
 			name: "--touches beyond the bound",
-			cfg: tlsConfig{enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
-				waitFinger: true, touches: maxTouches + 1, armDown: true, armUp: true, fingerTimeout: time.Second},
+			cfg: tlsConfig{
+				enabled: true, pskPath: "k.bin", capture: "captures/frame.pgm", getImage: true,
+				waitFinger: true, touches: maxTouches + 1, armDown: true, armUp: true, fingerTimeout: time.Second,
+			},
 			allowed: allowD0And20,
 			wantErr: "--touches must be",
 		},

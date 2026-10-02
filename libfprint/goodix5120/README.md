@@ -61,22 +61,22 @@ driver is built around that:
 
 ## Files
 
-| File | What it is |
-|---|---|
-| `goodix5120.c`, `goodix5120.h` | The libfprint driver: an `FpDevice` with its own enroll/verify/identify/capture loop, `FpiSsm` state machines, USB |
-| `goodix5120_match.c/.h` | The stored template (a GVariant of SIGFM views), validated in full before use. GLib only |
-| `goodix5120_sigfm.cpp` | The SIGFM view backend: extraction, scoring, conversion to and from the template. Keeps C++ exceptions out of the driver |
-| `sigfm/` | SIGFM from the `goodixtls` fork, vendored unmodified, LGPL-2.1+ ([its README](sigfm/README.md)) |
-| `goodix5120_proto.c/.h` | Pure framing, the send gate, the vendor sequence, TLS record splitting, FDT arm/event codec and threshold rules, 12-bit unpacking. GLib only |
-| `goodix5120_tls.c/.h` | TLS 1.2 PSK server on OpenSSL memory BIOs: no socket, no thread, no subprocess. GLib and OpenSSL only |
-| `tests/test-goodix5120-proto.c` | Unit tests. The vectors come from the Go tests or from bytes observed on the wire |
-| `tests/test-goodix5120-tls.c` | Offline rehearsal. An in-process OpenSSL PSK client stands in for the EC |
+| File                                                                              | What it is                                                                                                                                     |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `goodix5120.c`, `goodix5120.h`                                                    | The libfprint driver: an `FpDevice` with its own enroll/verify/identify/capture loop, `FpiSsm` state machines, USB                             |
+| `goodix5120_match.c/.h`                                                           | The stored template (a GVariant of SIGFM views), validated in full before use. GLib only                                                       |
+| `goodix5120_sigfm.cpp`                                                            | The SIGFM view backend: extraction, scoring, conversion to and from the template. Keeps C++ exceptions out of the driver                       |
+| `sigfm/`                                                                          | SIGFM from the `goodixtls` fork, vendored unmodified, LGPL-2.1+ ([its README](sigfm/README.md))                                                |
+| `goodix5120_proto.c/.h`                                                           | Pure framing, the send gate, the vendor sequence, TLS record splitting, FDT arm/event codec and threshold rules, 12-bit unpacking. GLib only   |
+| `goodix5120_tls.c/.h`                                                             | TLS 1.2 PSK server on OpenSSL memory BIOs: no socket, no thread, no subprocess. GLib and OpenSSL only                                          |
+| `tests/test-goodix5120-proto.c`                                                   | Unit tests. The vectors come from the Go tests or from bytes observed on the wire                                                              |
+| `tests/test-goodix5120-tls.c`                                                     | Offline rehearsal. An in-process OpenSSL PSK client stands in for the EC                                                                       |
 | `tests/test-goodix5120-driver.c`, `tests/fake-libfprint/`, `tests/fake-matcher.c` | Actual driver compiled against a test-only libfprint/USB adapter and a fake SIGFM backend; synthetic lifecycle, matching and failure scenarios |
-| `tests/test-goodix5120-match.c` | The template format: round trip and every refused shape |
-| `tests/test-goodix5120-sigfm.cpp` | Real SIGFM on synthetic patterns: extraction, and that storing a view changes no score (built only with OpenCV) |
-| `meson.build` | Standalone helper and driver tests, without linking libfprint or USB |
-| `libfprint-register.patch` | Registers the driver in a libfprint tree |
-| `fprintd/goodix5120-fprintd.sh` | Points the system fprintd at this build, reversibly ([`docs/fprintd.md`](../../docs/fprintd.md)) |
+| `tests/test-goodix5120-match.c`                                                   | The template format: round trip and every refused shape                                                                                        |
+| `tests/test-goodix5120-sigfm.cpp`                                                 | Real SIGFM on synthetic patterns: extraction, and that storing a view changes no score (built only with OpenCV)                                |
+| `meson.build`                                                                     | Standalone helper and driver tests, without linking libfprint or USB                                                                           |
+| `libfprint-register.patch`                                                        | Registers the driver in a libfprint tree                                                                                                       |
+| `fprintd/goodix5120-fprintd.sh`                                                   | Points the system fprintd at this build, reversibly ([`docs/fprintd.md`](../../docs/fprintd.md))                                               |
 
 ## Building
 

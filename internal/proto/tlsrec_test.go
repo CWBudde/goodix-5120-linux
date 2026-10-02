@@ -128,8 +128,10 @@ func TestSplitTLSRecordsRefusesAPartialRecord(t *testing.T) {
 		{"empty buffer", nil},
 		{"header only, body missing", observedImageHeader},
 		{"body one byte short", append(append([]byte{}, TLSHandshake, 0x03, 0x03, 0x00, 0x04), 0x01, 0x02, 0x03)},
-		{"trailing junk after a whole record",
-			append(append([]byte{}, TLSHandshake, 0x03, 0x03, 0x00, 0x01, 0x01), 0xff)},
+		{
+			"trailing junk after a whole record",
+			append(append([]byte{}, TLSHandshake, 0x03, 0x03, 0x00, 0x01, 0x01), 0xff),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

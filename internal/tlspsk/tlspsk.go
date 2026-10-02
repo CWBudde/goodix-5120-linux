@@ -163,8 +163,10 @@ func start(ctx context.Context, cfg Config, client bool) (*Session, error) {
 	if native == nil {
 		return nil, nativeError(int(code))
 	}
-	s := &Session{native: native, changed: make(chan struct{}), done: make(chan struct{}),
-		cipher: make([]byte, 0, QueueLimit), plain: make([]byte, 0, QueueLimit)}
+	s := &Session{
+		native: native, changed: make(chan struct{}), done: make(chan struct{}),
+		cipher: make([]byte, 0, QueueLimit), plain: make([]byte, 0, QueueLimit),
+	}
 	s.device.s = s
 	s.mu.Lock()
 	err := s.driveLocked()
@@ -346,6 +348,7 @@ func (s *Session) Close() error {
 	s.failLocked(net.ErrClosed)
 	return nil
 }
+
 func (s *Session) Wait(ctx context.Context) error {
 	select {
 	case <-s.done:
@@ -406,6 +409,7 @@ func (c *memoryConn) SetDeadline(t time.Time) error {
 	s.signalLocked()
 	return nil
 }
+
 func (c *memoryConn) SetReadDeadline(t time.Time) error {
 	s := c.s
 	s.mu.Lock()
@@ -417,6 +421,7 @@ func (c *memoryConn) SetReadDeadline(t time.Time) error {
 	s.signalLocked()
 	return nil
 }
+
 func (c *memoryConn) SetWriteDeadline(t time.Time) error {
 	s := c.s
 	s.mu.Lock()

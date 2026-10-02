@@ -62,8 +62,8 @@ func touchPath(path string, n, total int) string {
 
 // captureOnTouch runs the loop above cfg.touches times and writes each frame.
 func captureOnTouch(ctx context.Context, logger *log.Logger, tr transport.Transport,
-	bridge *session.Bridge, cfg tlsConfig, rehearsal *session.LoopbackEC) error {
-
+	bridge *session.Bridge, cfg tlsConfig, rehearsal *session.LoopbackEC,
+) error {
 	logger.Printf("\n--- finger detection (PLAN.md Phase 5d)")
 	start, ok := stepFor(opFDTDown)
 	if !ok {
@@ -112,8 +112,8 @@ func captureOnTouch(ctx context.Context, logger *log.Logger, tr transport.Transp
 // or nil if none came before the deadline — not a failure of the capture,
 // which is written by then.
 func touchOnce(ctx context.Context, logger *log.Logger, tr transport.Transport, bridge *session.Bridge,
-	cfg tlsConfig, rehearsal *session.LoopbackEC, thresholds [proto.FDTZones]byte, path string, first bool) (*proto.FDTEvent, error) {
-
+	cfg tlsConfig, rehearsal *session.LoopbackEC, thresholds [proto.FDTZones]byte, path string, first bool,
+) (*proto.FDTEvent, error) {
 	var down proto.FDTEvent
 	for attempt := 0; ; attempt++ {
 		if err := sendFDTArm(logger, tr, opFDTDown, proto.FDTArm{
@@ -201,8 +201,8 @@ var errNoFinger = errors.New("no finger-detect event before the deadline")
 // ACK is logged on the way past, as is anything else that arrives; an
 // finger-detect event is not something to drop because it came at an odd time.
 func waitFDTEvent(ctx context.Context, logger *log.Logger, tr transport.Transport,
-	op proto.Opcode, wait time.Duration) (proto.FDTEvent, error) {
-
+	op proto.Opcode, wait time.Duration,
+) (proto.FDTEvent, error) {
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {

@@ -5,7 +5,7 @@ Guidance for coding agents working in this repository.
 ## What this is
 
 A driver for the Goodix `27c6:5120` fingerprint reader in a Huawei MateBook (`HVY-WXX9`). The device reports
-`GF_ITE_EC_20063`: an ITE embedded controller that bridges to the sensor over USB *and* drives the internal keyboard
+`GF_ITE_EC_20063`: an ITE embedded controller that bridges to the sensor over USB _and_ drives the internal keyboard
 over i8042, and it talks to the host over TLS-PSK.
 
 **State (2026-10-02):** the C libfprint driver in `libfprint/goodix5120/` works on this machine through the system

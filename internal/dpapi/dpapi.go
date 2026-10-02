@@ -364,7 +364,7 @@ func ParseBlob(b []byte) (*Blob, error) {
 	salt := r.take(int(r.u32()))
 	r.take(int(r.u32())) // HMacKey (usually empty)
 	hashAlgo := r.u32()
-	r.skip(4)                       // hash-algo length in bits
+	r.skip(4)                         // hash-algo length in bits
 	hmacField := r.take(int(r.u32())) // HMac
 	dataLen := r.u32()
 	data := r.take(int(dataLen))
@@ -378,7 +378,7 @@ func ParseBlob(b []byte) (*Blob, error) {
 	}
 	sealedLen := r.pos
 	return &Blob{
-		SealedLen: sealedLen,
+		SealedLen:     sealedLen,
 		MasterKeyGUID: guidString(mkGUID),
 		Description:   decodeUTF16(desc),
 		cryptAlgo:     cryptAlgo,
@@ -531,6 +531,7 @@ func (r *reader) take(n int) []byte {
 	r.pos += n
 	return s
 }
+
 func (r *reader) u32() uint32 {
 	s := r.take(4)
 	if s == nil {

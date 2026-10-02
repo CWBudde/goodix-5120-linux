@@ -96,16 +96,22 @@ var vendorInit = []step{
 	{0x96, []byte{0x01, 0x02}, "enable chip", "the driver does not wait for a reply"},
 	{0xa8, []byte{0x00, 0x00}, "firmware version", ""},
 	{0xae, mcuStateRequest, "get MCU state", "answers with 20 bytes and NO ACK"},
-	{0xe4, []byte{0x03, 0x00, 0x02, 0xbb, 0x00, 0x00, 0x00, 0x00}, "read production data",
-		"data_type 0xbb020003 then a uint32 length of 0; the reply carries a hash of the device PSK"},
+	{
+		0xe4,
+		[]byte{0x03, 0x00, 0x02, 0xbb, 0x00, 0x00, 0x00, 0x00},
+		"read production data",
+		"data_type 0xbb020003 then a uint32 length of 0; the reply carries a hash of the device PSK",
+	},
 	{0xa2, []byte{0x01, 0x14}, "reset", ""},
 	{0x82, []byte{0x00, 0x00, 0x00, 0x04, 0x00}, "read register — chip ID", "replies a2 04 25 00, i.e. 0x2504"},
 	{0xa6, []byte{0x00, 0x00}, "read OTP", "64 bytes of calibration data; empty payload got no reply in Run 1"},
 	{0xa2, []byte{0x01, 0x14}, "reset", "sent a second time"},
 	{0x70, []byte{0x14, 0x00}, "switch MCU to idle mode", ""},
 	{0x98, []byte{0xc8, 0x0b, 0xbe, 0x00, 0xbc, 0x00, 0xbc, 0x00}, "set DAC", "values derived from the OTP"},
-	{0x90, uploadConfigPayload, "upload config",
-		"224 bytes, recovered from gfusb.dll (docs/protocol.md); sum & 0xff == 0xaa pins the length"},
+	{
+		0x90, uploadConfigPayload, "upload config",
+		"224 bytes, recovered from gfusb.dll (docs/protocol.md); sum & 0xff == 0xaa pins the length",
+	},
 	{0xd0, []byte{0x00, 0x00}, "request TLS connection", "no ACK; the EC then opens a TLS handshake as the client"},
 	{0xd4, []byte{0x00, 0x00}, "TLS established", ""},
 	{0xae, mcuStateRequest, "get MCU state", "now reports isTlsConnected=1"},
@@ -126,12 +132,18 @@ var vendorInit = []step{
 // hearsay and it stays out.
 var vendorLoop = []step{
 	{0x20, []byte{0x01, 0x00}, "get one image", "the frame arrives as an encrypted TLS record, not as a message"},
-	{opFDTDown, []byte{0x0c, 0x01, 0x80, 0xb8, 0x80, 0xc5, 0x80, 0xab, 0x80, 0xb9, 0x80, 0xaa, 0x80, 0xb9, 0xec, 0x5f},
+	{
+		opFDTDown,
+		[]byte{0x0c, 0x01, 0x80, 0xb8, 0x80, 0xc5, 0x80, 0xab, 0x80, 0xb9, 0x80, 0xaa, 0x80, 0xb9, 0xec, 0x5f},
 		"arm finger-down detection",
-		"frame 27 of dump.pcapng; thresholds and timestamp are derived at run time, and --wait-finger starts from these"},
-	{opFDTUp, []byte{0x0e, 0x01, 0x80, 0x83, 0x80, 0xa1, 0x80, 0x75, 0x80, 0x9d, 0x80, 0x19, 0x80, 0xa9},
+		"frame 27 of dump.pcapng; thresholds and timestamp are derived at run time, and --wait-finger starts from these",
+	},
+	{
+		opFDTUp,
+		[]byte{0x0e, 0x01, 0x80, 0x83, 0x80, 0xa1, 0x80, 0x75, 0x80, 0x9d, 0x80, 0x19, 0x80, 0xa9},
 		"arm finger-up detection",
-		"frame 33 of dump.pcapng; thresholds are derived at run time from the finger-down event"},
+		"frame 33 of dump.pcapng; thresholds are derived at run time from the finger-down event",
+	},
 }
 
 // steps is what the probe sends to live hardware. It is deliberately one

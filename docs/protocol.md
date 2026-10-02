@@ -3,7 +3,7 @@
 Working notes. Two kinds of statement appear here and they are deliberately kept apart:
 
 - **Transcribed** — read from the upstream [goodix-fp-dump][dump] Python source (`goodix.py`,
-  `protocol.py`, `driver_51x0.py`). Believed accurate for the 5110; *assumed* to hold for the 5120.
+  `protocol.py`, `driver_51x0.py`). Believed accurate for the 5110; _assumed_ to hold for the 5120.
 - **Observed** — measured against this machine's actual hardware (Runs 1–4 below).
 
 Anything not marked observed is a hypothesis. The point of the probe is to move lines from the first
@@ -63,11 +63,11 @@ Two nested layers.
 
 `checksum = sum(bytes[0:3]) & 0xff` — i.e. over the flags byte and both length bytes only.
 
-| flags | meaning |
-|---|---|
+| flags  | meaning                                  |
+| ------ | ---------------------------------------- |
 | `0xa0` | message protocol (the inner layer below) |
-| `0xb0` | TLS-wrapped data |
-| `0xb2` | TLS-wrapped data |
+| `0xb0` | TLS-wrapped data                         |
+| `0xb2` | TLS-wrapped data                         |
 
 ### Inner layer — "message"
 
@@ -82,7 +82,7 @@ The length field counts the payload **plus one** for the trailing checksum byte.
 
 `checksum = (0xaa - sum(bytes[0 : 2+length])) & 0xff`
 
-In *no-checksum mode* the trailing byte is the literal constant `0x88` instead of the computed value.
+In _no-checksum mode_ the trailing byte is the literal constant `0x88` instead of the computed value.
 
 ### ACK convention
 
@@ -105,34 +105,34 @@ never sends them and a guessed rule would read like evidence.
 
 ### `ClassSafe` — read-only, in the default allowlist
 
-| Opcode | Name | Payload | Notes |
-|---|---|---|---|
-| `0x00` | `nop` | none recorded | the vendor never sends it to an ITE EC; **not** a probe step any more |
-| `0xa8` | `firmware_version` | 2 (`00 00`) | **the go/no-go signal** — the one command the probe sends |
-| `0xa6` | `read_otp` | 2 (`00 00`) | calibration data; the empty form got no reply in Run 1 |
-| `0xae` | `get_mcu_state` | 5 (`55` + `uint32`) | answers with 20 bytes and **no ACK** |
-| `0x82` | `read_register` | 5 | the vendor's only use returns the chip ID `0x2504` |
+| Opcode | Name               | Payload             | Notes                                                                 |
+| ------ | ------------------ | ------------------- | --------------------------------------------------------------------- |
+| `0x00` | `nop`              | none recorded       | the vendor never sends it to an ITE EC; **not** a probe step any more |
+| `0xa8` | `firmware_version` | 2 (`00 00`)         | **the go/no-go signal** — the one command the probe sends             |
+| `0xa6` | `read_otp`         | 2 (`00 00`)         | calibration data; the empty form got no reply in Run 1                |
+| `0xae` | `get_mcu_state`    | 5 (`55` + `uint32`) | answers with 20 bytes and **no ACK**                                  |
+| `0x82` | `read_register`    | 5                   | the vendor's only use returns the chip ID `0x2504`                    |
 
 ### `ClassStateChanging` — alters runtime state, no flash write; opt-in only
 
-| Opcode | Name | Payload |
-|---|---|---|
-| `0x96` | `enable_chip` | 2 (`01 02`) |
-| `0xa2` | `reset` | 2 (`01 14`) |
-| `0x70` | `mcu_switch_to_idle_mode` | 2 (`14 00`) |
-| `0x98` | `set_dac` | 8, from the OTP |
-| `0x90` | `upload_config_mcu` | 224, recovered from `gfusb.dll` — see below |
-| `0xd0` | `request_tls_connection` | 2 (`00 00`); no ACK |
-| `0xd4` | `tls_successfully_established` | 2 (`00 00`) |
-| `0x20` | `mcu_get_image` | 2 (`01 00`) |
-| `0x50` | `nav_mode` | 2 (`01 00`); driver log only |
+| Opcode               | Name                             | Payload                                                                 |
+| -------------------- | -------------------------------- | ----------------------------------------------------------------------- |
+| `0x96`               | `enable_chip`                    | 2 (`01 02`)                                                             |
+| `0xa2`               | `reset`                          | 2 (`01 14`)                                                             |
+| `0x70`               | `mcu_switch_to_idle_mode`        | 2 (`14 00`)                                                             |
+| `0x98`               | `set_dac`                        | 8, from the OTP                                                         |
+| `0x90`               | `upload_config_mcu`              | 224, recovered from `gfusb.dll` — see below                             |
+| `0xd0`               | `request_tls_connection`         | 2 (`00 00`); no ACK                                                     |
+| `0xd4`               | `tls_successfully_established`   | 2 (`00 00`)                                                             |
+| `0x20`               | `mcu_get_image`                  | 2 (`01 00`)                                                             |
+| `0x50`               | `nav_mode`                       | 2 (`01 00`); driver log only                                            |
 | `0x32`/`0x34`/`0x36` | `fdt_down`/`fdt_up`/`fdt_manual` | 16/14/14 — they arm the EC to emit events unprompted, so none is a read |
-| `0xf4` | `check_firmware` | none recorded |
-| `0xe4` | `preset_psk_read` | 8 (`03 00 02 bb 00 00 00 00`) |
+| `0xf4`               | `check_firmware`                 | none recorded                                                           |
+| `0xe4`               | `preset_psk_read`                | 8 (`03 00 02 bb 00 00 00 00`)                                           |
 
 `0xd2` is **not** registered. It is named in `PLAN.md`, but appears in neither the nine complete driver inits
 nor either USB capture, and registering an opcode nobody has observed widens the boundary for nothing.
-No sensor-register *write* is registered either: the vendor init contains none.
+No sensor-register _write_ is registered either: the vendor init contains none.
 
 `0xf4` is classified conservatively: it reads state, but it appears in upstream's IAP flow, and being
 wrong in that direction is cheap while being wrong in the other could cost the sensor.
@@ -145,10 +145,10 @@ itself can no longer be built: the payload rule refuses it at the transport.
 
 ### `ClassDestructive` — never compiled into a default build
 
-| Opcode | Name | Why |
-|---|---|---|
-| `0xf0` | `write_firmware` | flashes application firmware — **can brick the device** |
-| `0xe0` | `preset_psk_write` | writes the PSK |
+| Opcode | Name               | Why                                                     |
+| ------ | ------------------ | ------------------------------------------------------- |
+| `0xf0` | `write_firmware`   | flashes application firmware — **can brick the device** |
+| `0xe0` | `preset_psk_write` | writes the PSK                                          |
 
 Registered only behind the `goodix_destructive` build tag.
 
@@ -200,7 +200,7 @@ number of TLS records. Half a record is the same shape of mistake as an `0xe4` w
 
 **How success is detected:** the local endpoint's ChangeCipherSpec followed by its Finished. In TLS 1.2 a
 server sends those only after verifying the client's Finished, which it can only do if both ends derived
-the same keys — so reaching that point *is* the answer to "does the EC accept our PSK". A rejection
+the same keys — so reaching that point _is_ the answer to "does the EC accept our PSK". A rejection
 arrives as a plaintext alert, whose description is readable: `bad_record_mac`, `decrypt_error`,
 `handshake_failure` and `unknown_psk_identity` are reported as `session.ErrPSKMismatch`, anything else as
 a plain alert. That classification is an INTERPRETATION — no alert ever says "wrong PSK".
@@ -214,21 +214,21 @@ implementation; it proves nothing about the EC, whose timing, pack sizes and cho
 ## Open questions
 
 Four of the six rows this table used to hold were answered between 2026-08 and 2026-09-20; they are
-kept, struck, because knowing a question *is* settled is worth as much as the answer.
+kept, struck, because knowing a question _is_ settled is worth as much as the answer.
 
-| Question | Status |
-|---|---|
-| ~~Does the 5120 accept 51x0 framing at all?~~ | **Resolved — yes.** Every pack and message checksum verifies across both USB captures and all nine complete driver inits. The old answer here said "probe: `nop` → expect ACK `0x01`"; **do not do that** — the vendor driver never sends `nop` to an ITE EC part, and it drew no reply in Runs 2 and 3 |
-| ~~Firmware version string~~ | **Resolved** — `GF_ITE_EC_20063`, via `0xa8` |
-| ~~Sensor resolution~~ | **Resolved — 64 columns × 80 rows.** 5120 samples from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". The orientation is measured, from the first real frame (Run 20) Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
-| ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
-| PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see "Unsealing the PSK offline") and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
-| What the 224-byte `0x90` config actually *does* | **Open**, but it is *accepted*: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
-| ~~How the EC wants a server flight framed~~ | **Resolved — one pack per record**, from the driver log of a completed handshake (see "The vendor's handshake, read from the driver log"). That is Run 11's framing, so the framing did not cause Run 11's stall; Run 17 found the cause in the bridge's read timing. The bridge sends one pack per record; `--tls-coalesce-flight` keeps the other |
+| Question                                        | Status                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ~~Does the 5120 accept 51x0 framing at all?~~   | **Resolved — yes.** Every pack and message checksum verifies across both USB captures and all nine complete driver inits. The old answer here said "probe: `nop` → expect ACK `0x01`"; **do not do that** — the vendor driver never sends `nop` to an ITE EC part, and it drew no reply in Runs 2 and 3                                                                         |
+| ~~Firmware version string~~                     | **Resolved** — `GF_ITE_EC_20063`, via `0xa8`                                                                                                                                                                                                                                                                                                                                    |
+| ~~Sensor resolution~~                           | **Resolved — 64 columns × 80 rows.** 5120 samples from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". The orientation is measured, from the first real frame (Run 20) Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
+| ~~12-bit sample packing for image decode~~      | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext                                                                                                                                                                                                                          |
+| PSK variant                                     | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see "Unsealing the PSK offline") and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested        |
+| What the 224-byte `0x90` config actually _does_ | **Open**, but it is _accepted_: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered"                                                                                                                                       |
+| ~~How the EC wants a server flight framed~~     | **Resolved — one pack per record**, from the driver log of a completed handshake (see "The vendor's handshake, read from the driver log"). That is Run 11's framing, so the framing did not cause Run 11's stall; Run 17 found the cause in the bridge's read timing. The bridge sends one pack per record; `--tls-coalesce-flight` keeps the other                             |
 
 ## Image sample packing (transcribed, `tool.py::decode_image`)
 
-Every 6 bytes carry 4 twelve-bit samples, in a deliberately irregular order — this is *not* a plain
+Every 6 bytes carry 4 twelve-bit samples, in a deliberately irregular order — this is _not_ a plain
 little- or big-endian 12-bit stream, and assuming it were would produce a plausible-looking but
 wrong image:
 
@@ -251,11 +251,11 @@ which the live capture in Phase 5c will settle. See "How big is an image, really
 
 Three distinct values appear upstream and conflating them wastes time:
 
-| Value | Role |
-|---|---|
-| 32 zero bytes | the actual **TLS pre-shared key** passed to `openssl -psk` |
-| `PSK_WHITE_BOX` | a 96-byte blob written into the device's PSK slot — *written*, hence destructive |
-| `PMK_HASH` | SHA-256 the device reports back for verification |
+| Value           | Role                                                                             |
+| --------------- | -------------------------------------------------------------------------------- |
+| 32 zero bytes   | the actual **TLS pre-shared key** passed to `openssl -psk`                       |
+| `PSK_WHITE_BOX` | a 96-byte blob written into the device's PSK slot — _written_, hence destructive |
+| `PMK_HASH`      | SHA-256 the device reports back for verification                                 |
 
 Whether this 5120 accepts the zero key is unverified and is a Tier 2 question.
 
@@ -288,14 +288,14 @@ framing above is therefore confirmed against hardware, not merely transcribed.
 **The incident.** Right after the run the internal keyboard stopped working. The journal of that boot
 (read back 2026-09-19, times CEST):
 
-| Time | Event |
-|---|---|
-| 20:31:41.32 | `sudo goodix-probe -v` starts; it exits 0.13 s later |
-| 20:31–21:08 | **no kernel message at all**: no USB disconnect, no i8042 or atkbd error |
-| 21:05:09 | external USB keyboard plugged in |
-| 21:08:28 | `atkbd` unbind → `i8042: Can't write CTR while closing KBD port` (first i8042 error) |
-| 21:08:52 | `usbreset 27c6:5120` → `usb 1-4: USB disconnect`, re-enumeration fails with `error -71` |
-| 21:09:44 | suspend attempt → on resume, i8042 selftest timeouts and `failed to resume: error -5` |
+| Time        | Event                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------- |
+| 20:31:41.32 | `sudo goodix-probe -v` starts; it exits 0.13 s later                                    |
+| 20:31–21:08 | **no kernel message at all**: no USB disconnect, no i8042 or atkbd error                |
+| 21:05:09    | external USB keyboard plugged in                                                        |
+| 21:08:28    | `atkbd` unbind → `i8042: Can't write CTR while closing KBD port` (first i8042 error)    |
+| 21:08:52    | `usbreset 27c6:5120` → `usb 1-4: USB disconnect`, re-enumeration fails with `error -71` |
+| 21:09:44    | suspend attempt → on resume, i8042 selftest timeouts and `failed to resume: error -5`   |
 
 The EC failed **silently**: Linux noticed nothing until it wrote to the i8042 itself, so the kernel log
 cannot name the command. The device stayed enumerated until the `usbreset`. Rebinding `atkbd` recreated
@@ -304,7 +304,7 @@ help. A cold power cycle (charger unplugged, power button ~30 s) did. ACPI offer
 the port or the EC (`docs/acpi.md`). Runs 2 and 4 then found the cause: `0xe4` sent with an **empty
 payload**, where the vendor always sends an 8-byte argument.
 
-The lesson: opcodes had been classed by what they do *to the sensor* (read versus write flash). On a
+The lesson: opcodes had been classed by what they do _to the sensor_ (read versus write flash). On a
 controller that also runs the keyboard, the risk is collateral, so every opcode now also carries a
 payload rule.
 
@@ -386,7 +386,7 @@ baseline      —                           —                                 
 - **Same make-without-break signature as Run 2.** Between the step 0 snapshot (`irq1=4955`, 22:41:45.53)
   and the step 1 snapshot (`irq1=4956`, 22:42:47.89) the user pressed Shift exactly once — the press that
   cleared the attach check at 22:41:47.82. A press is worth 2 (make + break); only 1 arrived. `0xe4` went
-  out at 22:41:47.84, about 20 ms after the make. *Interpretation:* the EC stopped serving i8042 within
+  out at 22:41:47.84, about 20 ms after the make. _Interpretation:_ the EC stopped serving i8042 within
   those 20 ms, before it could deliver the break. The ACPI SCI count did not move at all (330 → 330).
 - **The kernel logged nothing**, as in Runs 1 and 2 — no i8042, atkbd or USB message between the `0xe4`
   and the shutdown. The probe's own `/dev/kmsg` markers stop at `step 1 preset_psk_read (0xe4): sending`;
@@ -511,7 +511,8 @@ Counters: i8042 `irq1` 4909 → 4917, EC refreshes advancing, sensor enumerated 
   refusing the `0xe4` body, and the same rule applies to a live run: the bytes were seen on the operator's
   screen and go no further. What is safe to state is that the reply is well-formed, 41 bytes of message,
   and declares a 32-byte payload — matching the length the vendor log records (`recvd data cmd-len:
-  0xe4-42`) without its bytes.
+0xe4-42`) without its bytes.
+
 - **Phase 4 steps 1–3 are complete.** The plaintext half of the vendor init — `0xa8`, `0xae`, `0xe4` —
   now runs live on this hardware with no ill effect. Step 4 (`a2`, `82`, `a6`) is next; `d0` and beyond
   stay gated on the PSK (Phase 5).
@@ -654,11 +655,11 @@ now the leading explanation, so the bridge sends a flight as one pack (`session.
 capture cannot settle it, because `dump.pcapng` is steady-state and contains 43 device→host TLS packs and
 **no host→device TLS pack at all**.
 
-*Superseded 2026-09-30:* the driver log shows the vendor sending one pack per record, like this run, and a
+_Superseded 2026-09-30:_ the driver log shows the vendor sending one pack per record, like this run, and a
 server flight with the same contents. This run's init left out `0xe4`, which the vendor never does. See
 "The vendor's handshake, read from the driver log".
 
-If one pack per flight does not fix it, the remaining suspects are the flight's *contents*: the 32-byte
+If one pack per flight does not fix it, the remaining suspects are the flight's _contents_: the 32-byte
 session id and the `renegotiation_info` extension that the EC's own hello never asked for, and the absence
 of a ServerKeyExchange (openssl omits it with no PSK identity hint; RFC 4279 §2 permits either). Both are
 openssl's to change, and **a record cannot be rewritten in passing** — the Finished MACs cover the
@@ -694,7 +695,7 @@ changed since Run 11:
 
 - **`0xa8` answered nothing.** Fifteen minutes earlier the same frame returned `GF_ITE_EC_20063`. Same for
   `0xa2`, `0x82`, `0xa6` and `0x70`, all of which had answered in Run 11.
-- **`0xae` still answered** — and it is the *only* command that did. Its reply changed: `02 08 31 … 14 14`
+- **`0xae` still answered** — and it is the _only_ command that did. Its reply changed: `02 08 31 … 14 14`
   against Run 11's `02 02 31 … 12 12` before `0xd0`. Byte 1 and the last two bytes move with the EC's state,
   and byte 1 going `02` → `08` is the difference between "no TLS" and "a TLS handshake is open".
 
@@ -706,7 +707,7 @@ whole init into it wedged the i8042 bridge and the keyboard with it.
 So **a cold power cycle is mandatory after any `--tls` run that does not complete**, and this is now enforced
 rather than remembered: after attach, a bisect run sends `0xa8` as a health check and refuses to send a
 single step if nothing comes back (`checkECResponsive` in `cmd/goodix-probe/bisect.go`). `0xae` is
-deliberately *not* the probe — it is the one command a stuck EC still answers, so it cannot tell the two
+deliberately _not_ the probe — it is the one command a stuck EC still answers, so it cannot tell the two
 states apart. This run would have stopped at the health check with the keyboard alive.
 
 **Still unknown:** whether a plaintext command can bring the EC out of the TLS state at all. `0xa2` (reset)
@@ -721,7 +722,7 @@ wedge.
 
 Two things worth keeping:
 
-- **The internal keyboard recovered without a reboot, and the EC did not.** `irq1` continues *upward* from
+- **The internal keyboard recovered without a reboot, and the EC did not.** `irq1` continues _upward_ from
   Run 12 — 15839 at the wedge, 16660 at this baseline — so this is the same boot, with no cold power cycle
   in between, and the keyboard has been generating interrupts again. The host's i8042 came back on its own;
   the EC stayed deaf. **So a live keyboard says nothing about the EC's state**, which is exactly why the
@@ -813,7 +814,7 @@ a zero-length transfer, 256 ms after the ClientKeyExchange.
 **Run 11 was the same fault**, one message earlier: the bridge sent ServerHelloDone and then waited out
 HostIdle for more host records, exactly when the vendor's EC sends its ClientKeyExchange (1 ms later),
 and the zero-length transfer came 256 ms after ServerHelloDone. Run 17 got the ClientKeyExchange only
-because the default path now sends the flight *after* gathering it and reads the device straight after.
+because the default path now sends the flight _after_ gathering it and reads the device straight after.
 **So the `0xe4` explanation written earlier today is not supported:** the missing `0xe4` may or may not
 have mattered, and the blind window explains both stalls on its own. `0xe4` stays in the init because
 the vendor sends it.
@@ -845,21 +846,22 @@ completed handshake on Linux, and it settles Phase 5b: the recovered key is the 
   `01 00 08` both times; `0x82` → `a2 04 25 00` (chip ID `0x2504`); `0xa6` ACK + 64 bytes of OTP (withheld); `0x70` ACK only; `0x98` and `0x90` ACK + `01 01`.
 - **The handshake, timed from the host log** (`0xd0` sent at .884, so +0 ms):
 
-  | +ms | direction | record |
-  |---|---|---|
-  | 17 | EC → host | ClientHello, 47-byte body (same shape as Runs 11 and 17) |
-  | 27–30 | host → EC | ServerHello (81), ServerHelloDone (4), one `0xb0` pack each |
-  | 34 | EC → host | ClientKeyExchange, identity `Client_identity` |
-  | 56 | EC → host | ChangeCipherSpec |
-  | 62 | EC → host | Finished (80-byte encrypted body) |
-  | 71–74 | host → EC | ChangeCipherSpec, Finished (80), one pack each |
-  | 76 | — | openssl reports the handshake complete: 4 records each way |
+  | +ms     | direction | record                                                                |
+  | ------- | --------- | --------------------------------------------------------------------- |
+  | 17      | EC → host | ClientHello, 47-byte body (same shape as Runs 11 and 17)              |
+  | 27–30   | host → EC | ServerHello (81), ServerHelloDone (4), one `0xb0` pack each           |
+  | 34      | EC → host | ClientKeyExchange, identity `Client_identity`                         |
+  | 56      | EC → host | ChangeCipherSpec                                                      |
+  | 62      | EC → host | Finished (80-byte encrypted body)                                     |
+  | 71–74   | host → EC | ChangeCipherSpec, Finished (80), one pack each                        |
+  | 76      | —         | openssl reports the handshake complete: 4 records each way            |
   | 81 / 88 | host ↔ EC | `0xd4` sent, ACK status `0x01`; no data message follows (5 s timeout) |
 
   The EC's ChangeCipherSpec came 22 ms after its ClientKeyExchange and its Finished 6 ms after that: the
   vendor log's 22 ms and 27 ms. This is the gap the bridge used to spend waiting on openssl (Runs 11 and
   17). Reading the EC through its flight was the whole fix. The handshake took 76 ms against the vendor's
   1100 ms budget.
+
 - **So the Run 17 hypothesis stands, and nothing else was wrong:** the records, their framing (one pack
   per record) and their contents all passed unchanged, and so did the PSK. An encrypted Finished that
   openssl accepts is only possible with the same key on both ends.
@@ -879,7 +881,7 @@ check passed**: `0xa8` answered ACK + `GF_ITE_EC_20063`, the step's `0xa8` answe
 keyboard stayed alive. `--read-state` therefore sent no `0xae`, as designed.
 
 - **A completed handshake does not leave the EC stuck**, even one the host dropped without a TLS close.
-  A *stalled* one does (Runs 11 → 12, 17). So the EC reset after every `--tls` run is needed only after
+  A _stalled_ one does (Runs 11 → 12, 17). So the EC reset after every `--tls` run is needed only after
   a stall, not after a completed handshake.
 - Whether byte 1 of `0xae` (TLS state) is still set is not known from this run. The next init's `0xae`
   step will show it.
@@ -899,8 +901,8 @@ stayed alive throughout.** Phase 5c is done.
   - byte 8 is `0x90`, as in the stuck state, where the fresh EC has `0x00`;
   - the trailing counter went `02 02` → `04 04` over Run 18's one handshake. That fits `+2` per `0xd0`,
     as `10` → `12` → `14` did over Runs 11 and 12.
-  What the bits mean is not known. This is the reply of an EC that answers plaintext and completes a new
-  handshake (this run), so it is a healthy state.
+    What the bits mean is not known. This is the reply of an EC that answers plaintext and completes a new
+    handshake (this run), so it is a healthy state.
 - **The init and handshake repeated Run 18 exactly:** the same replies step for step, 4 records each way,
   the EC's ChangeCipherSpec 22 ms after its ClientKeyExchange, and `0xd4` ACK only.
 - **`0x20` (payload `01 00`):** ACK after 3 ms, then **one 7753-byte transfer 88 ms after the command**:
@@ -981,11 +983,11 @@ frame per session.
   the previous lift's readings (`b9c6acbaabba`, `b8c5abb9aab9`), and the EC accepted both.
 - **The three touches:**
 
-  | Touch | Down arm → event | Flags | Down readings | `0x20` → record | Record → plaintext | Up arm → event | Up readings |
-  |---|---|---|---|---|---|---|---|
-  | 1 | 2.28 s | `0x3d` | `[318 361 231 251 210 291]` | 89 ms | 407 ms | 1.23 s | `[370 396 344 373 343 373]` |
-  | 2 | 1.35 s | `0x3d` | `[328 363 209 254 247 259]` | 88 ms | 407 ms | 0.83 s | `[368 395 342 371 340 371]` |
-  | 3 | 1.31 s | `0x3f` | `[262 283 267 275 236 267]` | 88 ms | 407 ms | 0.59 s | `[369 396 344 373 341 372]` |
+  | Touch | Down arm → event | Flags  | Down readings               | `0x20` → record | Record → plaintext | Up arm → event | Up readings                 |
+  | ----- | ---------------- | ------ | --------------------------- | --------------- | ------------------ | -------------- | --------------------------- |
+  | 1     | 2.28 s           | `0x3d` | `[318 361 231 251 210 291]` | 89 ms           | 407 ms             | 1.23 s         | `[370 396 344 373 343 373]` |
+  | 2     | 1.35 s           | `0x3d` | `[328 363 209 254 247 259]` | 88 ms           | 407 ms             | 0.83 s         | `[368 395 342 371 340 371]` |
+  | 3     | 1.31 s           | `0x3f` | `[262 283 267 275 236 267]` | 88 ms           | 407 ms             | 0.59 s         | `[369 396 344 373 341 372]` |
 
 - **The up arm waits for a finger that is still down.** Each lift came 0.6–1.2 s after its arm, not
   34 ms as in Run 21, because the finger was still on the sensor. This was the other thing Run 21 left
@@ -1115,12 +1117,12 @@ throughout. So Run 24's rejected handshake did leave the EC stuck, and the reboo
 The available log timestamps correlate **spacing between consecutive host records** with different
 outcomes. They measure logging points, not USB completion times or the EC's parsing interval:
 
-| Handshake | ClientHello → ServerHello | ServerHello → ServerHelloDone | Result |
-|---|---|---|---|
-| Vendor driver (log above, "The vendor's handshake") | 1 ms | **61 ms** | completed |
-| Go probe, Run 18 (`openssl s_server`) | ~10 ms | **~3 ms** (+27 → +30) | completed |
-| C driver, Run 24 | ~0 ms | **≤ 1 ms** (.351 → .352) | `decode_error` |
-| C driver, Run 25 | ~1 ms | **same logged millisecond** (both at .825) | `decode_error` |
+| Handshake                                           | ClientHello → ServerHello | ServerHello → ServerHelloDone              | Result         |
+| --------------------------------------------------- | ------------------------- | ------------------------------------------ | -------------- |
+| Vendor driver (log above, "The vendor's handshake") | 1 ms                      | **61 ms**                                  | completed      |
+| Go probe, Run 18 (`openssl s_server`)               | ~10 ms                    | **~3 ms** (+27 → +30)                      | completed      |
+| C driver, Run 24                                    | ~0 ms                     | **≤ 1 ms** (.351 → .352)                   | `decode_error` |
+| C driver, Run 25                                    | ~1 ms                     | **same logged millisecond** (both at .825) | `decode_error` |
 
 The vendor log also has 66 ms between ChangeCipherSpec and Finished. The hypothesis is that the EC
 firmware is still parsing one pack when the next arrives. The accepted config is a single pack,
@@ -1243,7 +1245,7 @@ pace, 10 ms settle). `0xd4` ACK `0x01` at 01.039.
 - Finger-down 330 ms after the arm, `0x20` ACKed in 1 ms, **no image in 2 s**. Close without error.
 
 **So post-`0xd4` timing is ruled out too.** Re-reading Runs 18–22: every Go session that drew an image
-(Runs 20, 21, 22) *started* with byte 1 `0x02`, left by the previous Go session. The only Go session that
+(Runs 20, 21, 22) _started_ with byte 1 `0x02`, left by the previous Go session. The only Go session that
 started from `0x00` (Run 18, fresh after a reset) requested no image. Every C session started from `0x00`.
 No Go `--tls` session has run since the EC resets around Runs 24/25. So the evidence cannot yet tell
 "the C session differs from Go's" from "a session that starts with the bit clear does not get images,
@@ -1267,12 +1269,12 @@ keyboard counters stayed flat.
 
 **Timing of consecutive host writes** (TX log lines; Go's gaps are its logging overhead):
 
-| gap | Go (Run 31) | C Runs 24/25 | C Runs 26/27 | C Runs 28–30 |
-|---|---|---|---|---|
-| ServerHello → ServerHelloDone | 3.2 ms | ≤1 ms → **decode_error** | 60 ms | 60 ms |
-| ChangeCipherSpec → Finished | 2.5 ms | — | 60 ms | **<1 ms** |
-| Finished → `0xd4` | 7 ms | — | **≤1 ms** | 10 ms |
-| outcome | image | alert | no TLS bit, no image | no TLS bit, no image |
+| gap                           | Go (Run 31) | C Runs 24/25             | C Runs 26/27         | C Runs 28–30         |
+| ----------------------------- | ----------- | ------------------------ | -------------------- | -------------------- |
+| ServerHello → ServerHelloDone | 3.2 ms      | ≤1 ms → **decode_error** | 60 ms                | 60 ms                |
+| ChangeCipherSpec → Finished   | 2.5 ms      | —                        | 60 ms                | **<1 ms**            |
+| Finished → `0xd4`             | 7 ms        | —                        | **≤1 ms**            | 10 ms                |
+| outcome                       | image       | alert                    | no TLS bit, no image | no TLS bit, no image |
 
 Every failing C run has one pair of host writes within about 1 ms of each other; Go never does.
 **Hypothesis, not observed:** the EC loses or garbles an OUT pack that arrives within about a
@@ -1380,7 +1382,7 @@ established by one saved frame.
 
 The owner ran `examples/enroll` from `dist/goodix-owner-c-enroll/` (the same compiled driver as Run 34,
 commit `17af857`), finger number `7` (libfprint's label for right middle), twelve minutes after Run 34, no EC reset.
-*Correction (owner, after Run 38): the finger physically used was the right index.*
+_Correction (owner, after Run 38): the finger physically used was the right index._
 **Result: enrollment completed (5/5) with one retry, all in one TLS session; the template was saved
 and close completed without error.**
 
@@ -1394,18 +1396,19 @@ and close completed without error.**
 - **Six touch → image → lift rounds in one session**, every one with `0x20` ACKed in 1–2 ms and the
   7749-byte record arriving 86–87 ms after the command, decoded as `7693 plaintext bytes`.
 
-  | Round | Down header / readings | Stretch bounds | Minutiae | Stage |
-  |---|---|---|---|---|
-  | 1 | `3f` `[290 264 184 234 166 239]` | 1032..2504 | ok, 21 ms | 1/5 |
-  | 2 | `3f` `[278 272 221 278 231 262]` | 1160..2511 | ok, 30 ms | 2/5 |
-  | 3 | `3f` `[302 333 213 247 220 252]` | 1151..2676 | **none found**, retry | 2/5 |
-  | 4 | `2f` `[272 275 251 258 301 321]` | 1108..2779 | ok, 18 ms | 3/5 |
-  | 5 | `3f` `[296 334 227 272 221 261]` | 1131..2552 | ok, 23 ms | 4/5 |
-  | 6 | `3f` `[257 284 240 275 232 253]` | 1079..2500 | ok, 21 ms | 5/5 |
+  | Round | Down header / readings           | Stretch bounds | Minutiae              | Stage |
+  | ----- | -------------------------------- | -------------- | --------------------- | ----- |
+  | 1     | `3f` `[290 264 184 234 166 239]` | 1032..2504     | ok, 21 ms             | 1/5   |
+  | 2     | `3f` `[278 272 221 278 231 262]` | 1160..2511     | ok, 30 ms             | 2/5   |
+  | 3     | `3f` `[302 333 213 247 220 252]` | 1151..2676     | **none found**, retry | 2/5   |
+  | 4     | `2f` `[272 275 251 258 301 321]` | 1108..2779     | ok, 18 ms             | 3/5   |
+  | 5     | `3f` `[296 334 227 272 221 261]` | 1131..2552     | ok, 23 ms             | 4/5   |
+  | 6     | `3f` `[257 284 240 275 232 253]` | 1079..2500     | ok, 21 ms             | 5/5   |
 
   libfprint reports the retry as `Minutiae detection failed, please retry` and continues. It is a
   quality signal, not a protocol fault. Round 4's touch flags `0x2f` again gave zone 4 the untouched up
   threshold `0x19`.
+
 - **Down thresholds follow the last up event.** Each re-arm uses that lift's readings `>> 1`
   (e.g. up `[367 394 339 368 336 368]` → down `b7 c5 a9 b8 a8 b8`). Untouched readings stayed within
   `[329..370 379..396 339..344 368..372 336..342 368..372]`.
@@ -1414,7 +1417,7 @@ and close completed without error.**
   70 ms later the EC sent `0x32` header `80 00 00 00` with readings `[370 396 344 372 342 372]`. The
   driver re-armed at once with `b9 c6 ac ba ab ba` (those readings `>> 1`), and the next touch worked.
 - The final stage completed while `0x34` was armed. libfprint logged its own `Deactivating image device
-  while it is not idle` warning (the image-device class deactivates as soon as the last stage completes)
+while it is not idle` warning (the image-device class deactivates as soon as the last stage completes)
   and cancelled the up wait. As designed, close sent nothing (`dev_close`: no session-ending command is
   known), so the EC was left with the TLS session open and `0x34` armed.
 - `Error loading storage, assuming it is empty` is the example's first-run message (no
@@ -1429,8 +1432,8 @@ after Go sessions, not after this C close.
 The owner ran `examples/verify` from `dist/goodix-owner-c-enroll/` against Run 35's template (labelled right
 middle, physically right index), nine minutes after Run 35, no EC reset. Four attempts ran in one open.
 **Result: no protocol or device error, and no match.** Two attempts found no minutiae, and two scored
-`0/24` against all five enrolled views. *Correction (owner, after Run 38): all four attempts used the right index finger, the same finger that was
-enrolled, so none was an impostor attempt.*
+`0/24` against all five enrolled views. _Correction (owner, after Run 38): all four attempts used the right index finger, the same finger that was
+enrolled, so none was an impostor attempt._
 
 - **Reopen after a C close that left `0x34` armed works.** The first IN read during open delivered the
   pending `0x34` finger-up event (`00 02 00 00`, readings `[357 387 327 362 336 367]`). The driver
@@ -1439,15 +1442,16 @@ enrolled, so none was an impostor attempt.*
   identical to Runs 34/35.
 - Four touch → image → lift rounds, each `0x20` → 7749-byte record 85–86 ms later, `7693 plaintext bytes`:
 
-  | Attempt | Down header / readings | Stretch bounds | Minutiae scan | Outcome |
-  |---|---|---|---|---|
-  | 1 | `3e` `[357 329 253 289 251 250]` | 1316..2795 | 12 ms, **none found** | retry |
-  | 2 | `3f` `[257 265 232 253 192 221]` | 1019..2523 | 8 ms | `score 0/24` ×5, NO MATCH |
-  | 3 | `3f` `[278 282 241 276 231 278]` | 1144..2504 | 10 ms, **none found** | retry |
-  | 4 | `3d` `[239 364 204 239 228 230]` | 920..2780 | 23 ms | `score 0/24` ×5, NO MATCH |
+  | Attempt | Down header / readings           | Stretch bounds | Minutiae scan         | Outcome                   |
+  | ------- | -------------------------------- | -------------- | --------------------- | ------------------------- |
+  | 1       | `3e` `[357 329 253 289 251 250]` | 1316..2795     | 12 ms, **none found** | retry                     |
+  | 2       | `3f` `[257 265 232 253 192 221]` | 1019..2523     | 8 ms                  | `score 0/24` ×5, NO MATCH |
+  | 3       | `3f` `[278 282 241 276 231 278]` | 1144..2504     | 10 ms, **none found** | retry                     |
+  | 4       | `3d` `[239 364 204 239 228 230]` | 920..2780      | 23 ms                 | `score 0/24` ×5, NO MATCH |
 
   Touch flags `0x3e`/`0x3d` left zone 0 or 1 uncovered (up threshold `0x19`). That is a partial placement,
   and zone readings near the untouched level agree.
+
 - **A score of exactly 0 is NBIS's "too few minutiae" value, not a weak match.** In the pinned libfprint,
   `bz_match_score()` returns `ZERO_MATCH_SCORE` without comparing whenever the probe or the gallery
   print has fewer than `MIN_COMPUTABLE_BOZORTH_MINUTIAE` (10) minutiae (`nbis/include/bozorth.h:122`,
@@ -1469,15 +1473,15 @@ twelve minutes after Run 36, no EC reset. Open, ten captures and close completed
 `0x02` after the listen (counter `1b 1b`). One base-invalid event came 30 ms after a re-arm and was re-armed
 correctly. Stretch bounds ranged from 1063..2423 to 1219..2648.
 
-| Frame | driver (×3) | x1 | x2 | x3 | x4 | x5 | inv |
-|---|---|---|---|---|---|---|---|
-| 1 | 4 | 1 | 4 | 2 | 0 | 0 | 3 |
-| 2, 3, 5, 6 | 0 (no minutiae; image discarded) | | | | | | |
-| 4 | 1 | 0 | 2 | 0 | 0 | 0 | 1 |
-| 7 | 1 | 0 | 1 | 0 | 0 | 0 | 2 |
-| 8 | 4 | 0 | 3 | 0 | 0 | 0 | 2 |
-| 9 | 5 | 1 | 1 | 1 | 0 | 0 | 4 |
-| 10 | 2 | 0 | 1 | 1 | 0 | 0 | 0 |
+| Frame      | driver (×3)                      | x1  | x2  | x3  | x4  | x5  | inv |
+| ---------- | -------------------------------- | --- | --- | --- | --- | --- | --- |
+| 1          | 4                                | 1   | 4   | 2   | 0   | 0   | 3   |
+| 2, 3, 5, 6 | 0 (no minutiae; image discarded) |     |     |     |     |     |     |
+| 4          | 1                                | 0   | 2   | 0   | 0   | 0   | 1   |
+| 7          | 1                                | 0   | 1   | 0   | 0   | 0   | 2   |
+| 8          | 4                                | 0   | 3   | 0   | 0   | 0   | 2   |
+| 9          | 5                                | 1   | 1   | 1   | 0   | 0   | 4   |
+| 10         | 2                                | 0   | 1   | 1   | 0   | 0   | 0   |
 
 **Summary: 0 of 10 frames reached 10 minutiae; the maximum was 5 and the mean 1.7.** No rescale helps:
 ×4/×5 found nothing, and ×1/×2 found no more than the driver's ×3. The tool's own ×3, rebuilt from a box-reduced
@@ -1507,10 +1511,10 @@ below as "A frames vs later B touches".
 Every kept frame had plenty of SIFT keypoints (×1: 82–137, median 114; ×3: 94–147, median 123), far above the
 fork's 25.
 
-| | A: best of the other 5 A frames | later B touches: best over 6 A frames | at 24 |
-|---|---|---|---|
-| ×1 (64 × 80) | 58, 2870, 7794, 8648, 269307, 295515 | 0, 0, 0, 1884, 2131, 316748 | A 6/6, B 3/6 |
-| ×3 (driver image) | 121, 15224, 33652, 62337, 676396, 947510 | 0, 0, 10, 2263, 8195, 2599516 | A 6/6, B 3/6 |
+|                   | A: best of the other 5 A frames          | later B touches: best over 6 A frames | at 24        |
+| ----------------- | ---------------------------------------- | ------------------------------------- | ------------ |
+| ×1 (64 × 80)      | 58, 2870, 7794, 8648, 269307, 295515     | 0, 0, 0, 1884, 2131, 316748           | A 6/6, B 3/6 |
+| ×3 (driver image) | 121, 15224, 33652, 62337, 676396, 947510 | 0, 0, 10, 2263, 8195, 2599516         | A 6/6, B 3/6 |
 
 Within the six A touches, 4 (×1) and 5 (×3) of 30 pairs scored 0, and every A touch matched another A touch.
 Between A and the B touches, which used the same finger about 10–20 s later, 26 of 36 pairs scored 0. Half of the B touches matched
@@ -1519,7 +1523,7 @@ out of 6**. The likeliest reason is placement: each touch images only a few mm²
 touches next to each other in time (the A set) overlap more than frames from a later set. That is consistent with
 the fork enrolling 20 views for its 64 × 80 sensor rather than libfprint's default 5.
 
-**Reading the magnitude.** SIGFM's score is not a match count. It counts *pairs of pairs*: point pairs whose
+**Reading the magnitude.** SIGFM's score is not a match count. It counts _pairs of pairs_: point pairs whose
 lengths agree within 5 %, then pairs of those whose angles agree within 5 % (`sigfm.cpp`, `sigfm_match_score`).
 When M matches all follow one rigid motion, the score is about P(P−1)/2 with P ≈ M(M−1)/2, so it grows roughly as
 M⁴/8. The fork's threshold of 24 corresponds to about 4–5 consistent matches. 2 599 516 corresponds to about 68,
@@ -1542,10 +1546,10 @@ minutiae and repeated, and one base-invalid event was re-armed correctly. Stretc
 
 Keypoints: ×1 91–163 (median 127), ×3 92–169 (median 138), all far above 25.
 
-| | A pairs (30) | A: best of the other 5 | B vs A pairs (36) | B: best over 6 A | at 24 |
-|---|---|---|---|---|---|
-| ×1 | 25 zero; others 15, 249, 360, 817, 1021 | 0, 0, 0, 249, 817, 1021 | **all 0** | all 0 | genuine 3/6, impostor 0/6 |
-| ×3 | 25 zero; others 2, 485, 617, 1893, 2140 | 0, 0, 0, 485, 1893, 2140 | **all 0** | all 0 | genuine 3/6, impostor 0/6 |
+|     | A pairs (30)                            | A: best of the other 5   | B vs A pairs (36) | B: best over 6 A | at 24                     |
+| --- | --------------------------------------- | ------------------------ | ----------------- | ---------------- | ------------------------- |
+| ×1  | 25 zero; others 15, 249, 360, 817, 1021 | 0, 0, 0, 249, 817, 1021  | **all 0**         | all 0            | genuine 3/6, impostor 0/6 |
+| ×3  | 25 zero; others 2, 485, 617, 1893, 2140 | 0, 0, 0, 485, 1893, 2140 | **all 0**         | all 0            | genuine 3/6, impostor 0/6 |
 
 **SIGFM discriminates:** all 36 impostor pairs scored exactly 0 at both scales, so there were no false accepts. Read
 together with Run 38 (one finger, 2.6 million between two of its frames), large scores come from real overlap of the same finger, not from the
@@ -1568,10 +1572,10 @@ index. Finger B was another finger, **except one B touch, which the owner report
 
 Keypoints: ×1 88–159 (median 126), ×3 91–165 (median 129).
 
-| | genuine: each A vs the other 14 (best) | B vs 15 A (best) | at 24 |
-|---|---|---|---|
-| ×1 | 0, 3526, 4294, 5489, 8436 … 89432, 140736 | 12 × 0, 3, 9, **50059** | genuine 14/15, "impostor" 1/15 |
-| ×3 | 0, 6643, 13766, 13975 … 147055, 249328 | 12 × 0, 1, 2, **228300** | genuine 14/15, "impostor" 1/15 |
+|     | genuine: each A vs the other 14 (best)    | B vs 15 A (best)         | at 24                          |
+| --- | ----------------------------------------- | ------------------------ | ------------------------------ |
+| ×1  | 0, 3526, 4294, 5489, 8436 … 89432, 140736 | 12 × 0, 3, 9, **50059**  | genuine 14/15, "impostor" 1/15 |
+| ×3  | 0, 6643, 13766, 13975 … 147055, 249328    | 12 × 0, 1, 2, **228300** | genuine 14/15, "impostor" 1/15 |
 
 - **The one accepted B touch is the mislabelled index touch.** Exactly one B frame scored above 9. All 11 nonzero
   ×1 B-vs-A pair scores (1, 3, 6, 9, 132 … 50059) are consistent with that frame matching several A views plus four tiny values.
@@ -1612,17 +1616,17 @@ cut short (Run 35). Then came enroll completion, the example's first-run `Error 
 
 **Verification (12:12–12:16, same template, one `verify` process, no reopen between attempts):**
 
-| Attempt | Finger (owner) | Best SIGFM score | Result |
-|---|---|---|---|
-| 1 | right index (enrolled) | 258594 | MATCH |
-| 2 | right index | 5064 | MATCH |
-| 3 | right index | 199628 | MATCH |
-| 4 | right index | 20253 | MATCH |
-| 5 | right index | 63411 | MATCH |
-| 6 | right index | 1031 | MATCH |
-| 7 | another finger | 0 | NO MATCH |
-| 8 | another finger | 0 | NO MATCH |
-| 9 | another finger | 0 | NO MATCH |
+| Attempt | Finger (owner)         | Best SIGFM score | Result   |
+| ------- | ---------------------- | ---------------- | -------- |
+| 1       | right index (enrolled) | 258594           | MATCH    |
+| 2       | right index            | 5064             | MATCH    |
+| 3       | right index            | 199628           | MATCH    |
+| 4       | right index            | 20253            | MATCH    |
+| 5       | right index            | 63411            | MATCH    |
+| 6       | right index            | 1031             | MATCH    |
+| 7       | another finger         | 0                | NO MATCH |
+| 8       | another finger         | 0                | NO MATCH |
+| 9       | another finger         | 0                | NO MATCH |
 
 **6/6 genuine accepted, 3/3 impostor rejected**, with the lowest genuine score (1031) 43× the threshold and every
 impostor scoring exactly 0, as in Runs 39 and 40. This is the first time this sensor has verified a finger on Linux
@@ -1673,13 +1677,13 @@ the `ac43d30` driver build. `fprintd-list` showed the device. `fprintd-enroll -f
 **Offline follow-up after Run 43 (2026-10-02, not yet run): open shortened.** Every fprintd operation opens
 the reader from scratch, and by the code and the timings above open took about 8 s:
 
-| Part of open | Time | Source |
-|---|---|---|
-| Attach drain, health check, drain | ~0.4 s | Run 42 |
-| 11 pre-TLS init steps, each followed by a 200 ms quiet drain | ~2.6 s | Run 42: firmware to TLS complete 2.85 s |
-| TLS handshake (two 60 ms paces, 10 ms settle) | ~0.18 s | Runs 32/34 |
-| Listen after the `0xd4` ACK | 5.0 s | silent in Runs 30, 32–34 |
-| `0xae` and final drain | ~0.2 s | |
+| Part of open                                                 | Time    | Source                                  |
+| ------------------------------------------------------------ | ------- | --------------------------------------- |
+| Attach drain, health check, drain                            | ~0.4 s  | Run 42                                  |
+| 11 pre-TLS init steps, each followed by a 200 ms quiet drain | ~2.6 s  | Run 42: firmware to TLS complete 2.85 s |
+| TLS handshake (two 60 ms paces, 10 ms settle)                | ~0.18 s | Runs 32/34                              |
+| Listen after the `0xd4` ACK                                  | 5.0 s   | silent in Runs 30, 32–34                |
+| `0xae` and final drain                                       | ~0.2 s  |                                         |
 
 The 5 s listen served a hypothesis that Run 30 ruled out. Runs 32/33 placed the cause on host writes less than
 1 ms apart. The driver now listens 50 ms. The drains between open steps wait 20 ms of quiet; the attach drain
@@ -1715,7 +1719,7 @@ The owner deleted Run 43's print and re-enrolled the right index through fprintd
   quality; verify scores do.
 - **`sudo -k; sudo true`, odd placement (owner's report):** score 0, a clean `verify-no-match` with no driver
   error. sudo fell back to the password after that one attempt. Ubuntu's `common-auth` loads `pam_fprintd.so
-  max-tries=1 timeout=10`, so this is configured behaviour.
+max-tries=1 timeout=10`, so this is configured behaviour.
 - **Same, good placement:** score 7037, and sudo succeeded.
 
 Open: fingerprint sudo is in daily use with the password as fallback. Not yet run live: cancelling during open
@@ -1757,7 +1761,7 @@ What is left, least invasive first:
 
 1. **Read the state first** — `--bisect --read-state`. It sends one `0xae`
    after the failed health check. Status `0x08` and a counter above `0x14` mean the stuck handshake is
-   still there. A counter below `0x14` means the EC *was* reset and something new is wrong.
+   still there. A counter below `0x14` means the EC _was_ reset and something new is wrong.
 2. **Power-button variants**: charger plugged in with a 40 s hold, and charger unplugged with a 60 s
    hold. Run `--read-state` after each. The counter is what shows whether one worked.
 3. **Disconnect the internal battery**: bottom cover off, battery connector unplugged, charger unplugged,
@@ -1798,7 +1802,7 @@ What it settles:
 
 - **The vendor sends one pack per record**, in both directions: ServerHello and ServerHelloDone are two
   sends, each wrapped in its own 4-byte pack header (86 → 90, 9 → 13). That is **Run 11's framing**. The
-  one-pack-per-flight change made after Run 11 moved *away* from the vendor, so it is reverted: the bridge
+  one-pack-per-flight change made after Run 11 moved _away_ from the vendor, so it is reverted: the bridge
   sends one pack per record. (`--tls-coalesce-flight` kept the other framing for comparison until Run 18 settled it; it was removed on 2026-09-30.)
 - **The server flight's contents match openssl's.** mbedTLS's ServerHello is 81 bytes of body, exactly
   the length of openssl's (32-byte session id plus `renegotiation_info`, answering the EC's SCSV). There
@@ -1809,8 +1813,8 @@ What it settles:
 - **Padding matches too.** The vendor's OUT transfers are padded to 64 bytes (see "Read back from the
   captures"), and so are ours.
 
-*Corrected by Run 17: the paragraph below overstates `0xe4`. Both stalls are explained by the bridge not
-reading the EC for 250 ms at the moment the EC sends its next record; see Run 17.*
+_Corrected by Run 17: the paragraph below overstates `0xe4`. Both stalls are explained by the bridge not
+reading the EC for 250 ms at the moment the EC sends its next record; see Run 17._
 
 **So what differed in Run 11 is the init, not the TLS.** The vendor's init before `0xd0` is
 `96, a8, ae, e4, a2, 82, a6, a2, 70, 98, 90` in every one of the nine logged inits. Run 11 sent all of
@@ -1903,14 +1907,14 @@ Sources:
   capture, **no excerpt of it may be pasted into a document, an issue or a commit message without
   being checked against those labels**, and `cmd/goodix-evtx` withholds all of them at parse time
   rather than at the print site, so there is no unredacted path through it. Host-sent `Send data::`
-  frames are *not* withheld — the `0x90` config and the whole init live there, and recovering them is
+  frames are _not_ withheld — the `0x90` config and the whole init live there, and recovering them is
   the point of the tool.
 - **USBPcap captures** (`restart.pcapng`: `Restart-Service WbioSrvc`; `dump.pcapng`: 43 finger
   captures). Both show steady-state traffic only. No init runs, because the EC keeps its TLS session
   (see "Power"). Every pack and message checksum in both captures verifies. The driver doesn't zero the
   padding of its 64-byte OUT transfers (stack bytes leak into it), so ignore everything after the pack length.
 
-Device facts, from the log: **chip ID `0x2504`**, "ChicagoHS", sensor type 12, **80 × 64 pixels** (*Run 20: stored as 64 samples per row, 80 rows*)
+Device facts, from the log: **chip ID `0x2504`**, "ChicagoHS", sensor type 12, **80 × 64 pixels** (_Run 20: stored as 64 samples per row, 80 rows_)
 (not upstream's 80 × 88). The OTP begins with ASCII `S2A755.`. The driver treats this as an
 "ITE EC project": it sends **no `nop`** ("not to send nop for ITE EC projects") and does **no firmware
 update** ("no firmware update for EC projects"). None of the 9 complete inits sends `0xe0`, `0xf0`, `0xf2`, `0xf4` or `0xf6`.
@@ -1925,24 +1929,24 @@ Payloads are message payloads (checksum omitted). ACK means a `b0` message
 `[cmd] 01`. The `0x90` config (224 bytes) is truncated in the log to its first 57 payload bytes, but
 is **known in full** from `gfusb.dll` — see "The 224-byte `0x90` config — recovered" below.
 
-| # | TX | payload | reply |
-|---|---|---|---|
-| 1 | `96` enable_chip | `01 02` | none; the driver doesn't wait for one |
-| 2 | `a8` firmware_version | `00 00` | ACK, `GF_ITE_EC_20063` |
-| 3 | `ae` get MCU state | `55` + `uint32` LE timestamp (ms, low bits) | **no ACK**, 20-byte state (below) |
-| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes: Run 8's nine-byte prefix `00 03 00 01 bb 20 00 00 00`, then a 32-byte PSK hash |
-| 5 | `a2` reset | `01 14` | ACK, `01 00 08` |
-| 6 | `82` read register | `00 00 00 04 00` | ACK, `a2 04 25 00` (driver: chip ID `0x2504`) |
-| 7 | `a6` read_otp | `00 00` | ACK, 64-byte OTP (~35 ms) |
-| 8 | `a2` reset | `01 14` | ACK, `01 00 08` |
-| 9 | `70` idle | `14 00` | ACK |
-| 10 | `98` set DAC | `c8 0b be 00 bc 00 bc 00` (from OTP) | ACK, `01 01` |
-| 11 | `90` upload config | 224 bytes | ACK, `01 01` |
-| 12 | `d0` request TLS | `00 00` | no ACK; the EC starts the TLS handshake |
-| 13 | `d4` TLS established | `00 00` | ACK |
-| 14 | `ae` get MCU state | as above | state with `isTlsConnected=1` |
-| 15 | `36`, `50`, `36`, `82 00 82 00 02 00`, `20`, `36` | calibration | — |
-| 16 | `32` FDT down | armed; the driver now waits for a finger | ACK, then an event on touch |
+| #   | TX                                                | payload                                     | reply                                                                                         |
+| --- | ------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1   | `96` enable_chip                                  | `01 02`                                     | none; the driver doesn't wait for one                                                         |
+| 2   | `a8` firmware_version                             | `00 00`                                     | ACK, `GF_ITE_EC_20063`                                                                        |
+| 3   | `ae` get MCU state                                | `55` + `uint32` LE timestamp (ms, low bits) | **no ACK**, 20-byte state (below)                                                             |
+| 4   | `e4` read production data                         | `03 00 02 bb 00 00 00 00`                   | ACK, 41 bytes: Run 8's nine-byte prefix `00 03 00 01 bb 20 00 00 00`, then a 32-byte PSK hash |
+| 5   | `a2` reset                                        | `01 14`                                     | ACK, `01 00 08`                                                                               |
+| 6   | `82` read register                                | `00 00 00 04 00`                            | ACK, `a2 04 25 00` (driver: chip ID `0x2504`)                                                 |
+| 7   | `a6` read_otp                                     | `00 00`                                     | ACK, 64-byte OTP (~35 ms)                                                                     |
+| 8   | `a2` reset                                        | `01 14`                                     | ACK, `01 00 08`                                                                               |
+| 9   | `70` idle                                         | `14 00`                                     | ACK                                                                                           |
+| 10  | `98` set DAC                                      | `c8 0b be 00 bc 00 bc 00` (from OTP)        | ACK, `01 01`                                                                                  |
+| 11  | `90` upload config                                | 224 bytes                                   | ACK, `01 01`                                                                                  |
+| 12  | `d0` request TLS                                  | `00 00`                                     | no ACK; the EC starts the TLS handshake                                                       |
+| 13  | `d4` TLS established                              | `00 00`                                     | ACK                                                                                           |
+| 14  | `ae` get MCU state                                | as above                                    | state with `isTlsConnected=1`                                                                 |
+| 15  | `36`, `50`, `36`, `82 00 82 00 02 00`, `20`, `36` | calibration                                 | —                                                                                             |
+| 16  | `32` FDT down                                     | armed; the driver now waits for a finger    | ACK, then an event on touch                                                                   |
 
 **`0xe4` is not what wedges the EC. An `0xe4` with an empty payload is.** The vendor sends it with an 8-byte
 argument (`data_type = 0xbb020003` LE, then a `uint32` length of 0) in every init and gets ACK plus data.
@@ -1977,7 +1981,7 @@ The `0xe4` reply carries a hash of the device's PSK, so don't record it here.
 
 #### How big is an image, really (hypothesis, arithmetic only, 2026-09-20)
 
-7744 is the length of the *record*, so it is an upper bound on the plaintext and not the plaintext
+7744 is the length of the _record_, so it is an upper bound on the plaintext and not the plaintext
 itself. Suite `0x00ae` is `TLS_PSK_WITH_AES_128_CBC_SHA256` (observed in the ClientHello), which in
 TLS 1.2 puts a 16-byte explicit IV in front of the ciphertext and a 32-byte MAC plus 1–16 bytes of
 padding inside it:
@@ -2050,12 +2054,12 @@ derivation is now pinned, from two independent sources that agree:
 
 The rules, with `z[i]` the event's `uint16` readings and `flags` its third header byte:
 
-| arm | derived from | threshold for zone *i* |
-|---|---|---|
-| `0x32` down | readings with **no finger**: an up event or a base-invalid event | `z[i] >> 1` |
-| `0x34` up | the **finger-down** event | `(z[i] >> 1) + 27` if bit *i* of `flags` is set, else `0x19` |
+| arm         | derived from                                                     | threshold for zone _i_                                       |
+| ----------- | ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| `0x32` down | readings with **no finger**: an up event or a base-invalid event | `z[i] >> 1`                                                  |
+| `0x34` up   | the **finger-down** event                                        | `(z[i] >> 1) + 27` if bit _i_ of `flags` is set, else `0x19` |
 
-So `flags` really is the touched-zone mask: bit *i* clear means the finger missed zone *i*, and that
+So `flags` really is the touched-zone mask: bit _i_ clear means the finger missed zone _i_, and that
 zone's up threshold drops to `0x19`. 27 is this device's delta from its OTP; how the OTP yields it is
 not known, so the code uses the observed constant (`proto.FDTDeltaObserved`).
 
@@ -2084,13 +2088,13 @@ the following. These facts come from the wire, independently of the driver's deb
 382 frames decoded, 0 failed — every pack and message checksum verifies
 ```
 
-| TX | count | payload length |
-|---|---|---|
-| `0x20` mcu_get_image | 43 | 2 |
-| `0x32` fdt_down | 26 | 16 |
-| `0x34` fdt_up | 43 | 14 |
-| `0x36` fdt_manual | 22 | 14 |
-| `0xae` get_mcu_state | 1 | 5 |
+| TX                   | count | payload length |
+| -------------------- | ----- | -------------- |
+| `0x20` mcu_get_image | 43    | 2              |
+| `0x32` fdt_down      | 26    | 16             |
+| `0x34` fdt_up        | 43    | 14             |
+| `0x36` fdt_manual    | 22    | 14             |
+| `0xae` get_mcu_state | 1     | 5              |
 
 Every one of those lengths matches the vendor payloads transcribed above, which is what the opcode
 payload rules in `internal/proto` are built on. 43 TLS packs, all exactly 7749 bytes of pack payload.
@@ -2132,12 +2136,12 @@ attachments.
 shutdown half of the Disable/Enable that is meant to produce an init. The two are the same sequence
 to the byte, differing only in the `ae` timestamp and the trailing counter of its reply:
 
-| t | direction | frame |
-|---|---|---|
-| +7.6 s | TX | `96` enable_chip, payload `00 02` |
-| +7.6 s | TX | `ae` get MCU state, payload `55` + timestamp |
-| +7.6 s | RX | 20-byte state, `isTlsConnected` still set |
-| +9.1 s / +9.8 s | — | the pending bulk IN completes with `USBD_STATUS_CANCELED`: the driver is unloading |
+| t               | direction | frame                                                                              |
+| --------------- | --------- | ---------------------------------------------------------------------------------- |
+| +7.6 s          | TX        | `96` enable_chip, payload `00 02`                                                  |
+| +7.6 s          | TX        | `ae` get MCU state, payload `55` + timestamp                                       |
+| +7.6 s          | RX        | 20-byte state, `isTlsConnected` still set                                          |
+| +9.1 s / +9.8 s | —         | the pending bulk IN completes with `USBD_STATUS_CANCELED`: the driver is unloading |
 
 **The init's `96` carries `01 02`; this one carries `00 02`** — the same command with its first byte
 cleared. So `enable_chip` does take a boolean, upstream's name is right, and the driver does have a
@@ -2151,7 +2155,7 @@ explicit Disable sends `enable_chip(0)`.
 re-enumerated the device, the `ae` at 23:25:41.273 read back
 `02 02 31 00 00 00 01 00 90 63 00 00 00 00 00 00 00 00 0e 0e` — byte for byte what the Disable read
 19 s earlier, `isTlsConnected` still set, trailing counter still `0e`. So a Device Manager
-Disable/Enable does not reset the EC's session; the driver re-handshakes because *it* lost its key
+Disable/Enable does not reset the EC's session; the driver re-handshakes because _it_ lost its key
 material, not because the EC did. (The counter's failure to move across this pair says little either
 way: the read happens inside the init that would have bumped it.)
 
@@ -2159,7 +2163,7 @@ No USB re-enumeration appears anywhere in either capture. The only control trans
 are the six of USBPcap's injected descriptor sweep at t=0, so Device Manager's Disable did not reset
 or re-address the USB device.
 
-**The Enable produces nothing *in the capture*.** `disable-enable3.pcapng` ran **84.6 s** — 74.7 s of
+**The Enable produces nothing _in the capture_.** `disable-enable3.pcapng` ran **84.6 s** — 74.7 s of
 it after the driver unloaded — and in that time the sensor sent and received not one byte, and no new
 device number appeared on the bus. Other devices on the same hub (a headset, a mouse, a disk) kept
 transferring to the last second of the file, so the capture itself was alive throughout.
@@ -2201,7 +2205,7 @@ d0 8c 9d df 01 15 d1 11 8c 7a 00 c0 4f c2 97 eb   provider GUID
 ```
 
 The provider GUID above is the well-known DPAPI constant `df9d8cd0-1501-11d1-8c7a-00c04fc297eb`,
-written in Microsoft's mixed-endian GUID layout. (The master-key GUID identifies *this* machine's key
+written in Microsoft's mixed-endian GUID layout. (The master-key GUID identifies _this_ machine's key
 and is not recorded.) **The blob is `CryptProtectData`
 output: DPAPI, not TPM- and not SGX-sealed.** That settles how the PSK is stored.
 
@@ -2294,10 +2298,10 @@ as corroboration — see below for why none of the three attempts produced one.
 
 Not the MCU's TLS flag — the driver's own lifecycle state. Both of these happened within 19 s:
 
-| time | driver state | `isTlsConnected` | what it sent |
-|---|---|---|---|
-| 23:25:22.459 | `DriverState:Uninstall`, "resume from S0 idle", prev state 4/5 | 1 | one `ae`, then "get pov images directly", then "Initialization done successfully" — **no config, no handshake** |
-| 23:25:41.224 | `DriverState:Install`, prev state `5(D3Final)` | 1 | the complete 13-frame sequence, `96` through `d4`, including the 224-byte `0x90` and a fresh TLS handshake |
+| time         | driver state                                                   | `isTlsConnected` | what it sent                                                                                                    |
+| ------------ | -------------------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| 23:25:22.459 | `DriverState:Uninstall`, "resume from S0 idle", prev state 4/5 | 1                | one `ae`, then "get pov images directly", then "Initialization done successfully" — **no config, no handshake** |
+| 23:25:41.224 | `DriverState:Install`, prev state `5(D3Final)`                 | 1                | the complete 13-frame sequence, `96` through `d4`, including the 224-byte `0x90` and a fresh TLS handshake      |
 
 So a resume short-circuits on `isTlsConnected`, exactly as the state-byte note above says, while a
 **fresh driver start runs the full init regardless of what the MCU reports** — at 23:25:41 the EC still
@@ -2318,10 +2322,10 @@ makes the correlation below trustworthy.
 time; the capture tool missed the result. Correlating the log's 9 complete inits against the capture
 windows:
 
-| capture | window | complete init in that window |
-|---|---|---|
-| `disable-enable2.pcapng` | 23:13:09.726 + 22.295 s | **23:13:23.144** |
-| `disable-enable3.pcapng` | 23:25:14.831 + 84.581 s | **23:25:41.462** |
+| capture                  | window                  | complete init in that window |
+| ------------------------ | ----------------------- | ---------------------------- |
+| `disable-enable2.pcapng` | 23:13:09.726 + 22.295 s | **23:13:23.144**             |
+| `disable-enable3.pcapng` | 23:25:14.831 + 84.581 s | **23:25:41.462**             |
 
 Both captures contained a complete init and neither recorded one byte of it. Taking
 `disable-enable3.pcapng` in detail: the sensor's last captured transfer is at 23:25:24.680, the init

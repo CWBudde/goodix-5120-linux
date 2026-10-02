@@ -14,17 +14,17 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 
 ## Done
 
-| Phase | Result | Runs |
-|---|---|---|
-| 1 — offline code fixes; send gate with payload rules | the empty `0xe4` that wedged the EC cannot be built | — |
-| 3 — passive research: driver log, USB captures, ACPI, `0x90` config, DPAPI | vendor init and handshake read from the Windows log | — |
-| 3b — bisect the wedge | `0xe4` without its argument | 2–4 |
-| 4 — live plaintext init | keyboard alive through every step | 5–10 |
-| 5 — PSK unsealed from Windows; init, TLS-PSK, frame, finger detection from Go | 64 × 80 frames; EC reset = charger in, 40 s hold | 11–22 |
-| 6a/6b — offline hardening; fake-USB lifecycle tests of the real driver | 280 C subtests, ASan/UBSan clean | — |
-| 6, C capture — TLS pacing (no two host writes < 10 ms apart) | first C image | 23–34 |
-| 6, matching — NBIS finds ≤ 5 minutiae; SIGFM in the driver | 14/15 genuine offline, no true impostor > 9 | 35–41 |
-| 6, integration — fprintd drop-in, PAM, 1 s open | `sudo` by finger | 42–45 |
+| Phase                                                                         | Result                                              | Runs  |
+| ----------------------------------------------------------------------------- | --------------------------------------------------- | ----- |
+| 1 — offline code fixes; send gate with payload rules                          | the empty `0xe4` that wedged the EC cannot be built | —     |
+| 3 — passive research: driver log, USB captures, ACPI, `0x90` config, DPAPI    | vendor init and handshake read from the Windows log | —     |
+| 3b — bisect the wedge                                                         | `0xe4` without its argument                         | 2–4   |
+| 4 — live plaintext init                                                       | keyboard alive through every step                   | 5–10  |
+| 5 — PSK unsealed from Windows; init, TLS-PSK, frame, finger detection from Go | 64 × 80 frames; EC reset = charger in, 40 s hold    | 11–22 |
+| 6a/6b — offline hardening; fake-USB lifecycle tests of the real driver        | 280 C subtests, ASan/UBSan clean                    | —     |
+| 6, C capture — TLS pacing (no two host writes < 10 ms apart)                  | first C image                                       | 23–34 |
+| 6, matching — NBIS finds ≤ 5 minutiae; SIGFM in the driver                    | 14/15 genuine offline, no true impostor > 9         | 35–41 |
+| 6, integration — fprintd drop-in, PAM, 1 s open                               | `sudo` by finger                                    | 42–45 |
 
 ## Open
 

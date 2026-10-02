@@ -103,6 +103,7 @@ func TestNativeStartDoesNotRequireExecutable(t *testing.T) {
 	}
 	defer s.Close()
 }
+
 func TestStartRequiresExactly32BytePSK(t *testing.T) {
 	for _, n := range []int{0, 1, 31, 33, 64} {
 		s, err := Start(context.Background(), Config{PSK: make([]byte, n)})

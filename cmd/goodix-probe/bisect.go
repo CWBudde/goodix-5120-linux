@@ -357,8 +357,8 @@ func defaultBisectSteps() string {
 // hangs its TLS bridge: it needs the device in the state the steps left it in.
 func runBisect(logger *log.Logger, host bisectHost, open func() (transport.Transport, error),
 	ops []proto.Opcode, timeout time.Duration, health healthMode,
-	after func(transport.Transport) error) error {
-
+	after func(transport.Transport) error,
+) error {
 	logger.Printf("bisect: attach, then %d command(s)", len(ops))
 
 	logger.Printf("\n--- baseline")

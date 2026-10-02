@@ -76,6 +76,7 @@ func Load(t testing.TB) Corpus {
 	}
 	return c
 }
+
 func (c Corpus) Prefix(prefix string) Corpus {
 	var out Corpus
 	for _, s := range c {
@@ -85,6 +86,7 @@ func (c Corpus) Prefix(prefix string) Corpus {
 	}
 	return out
 }
+
 func (c Corpus) Section(t testing.TB, name string) Section {
 	t.Helper()
 	for _, s := range c {
@@ -95,6 +97,7 @@ func (c Corpus) Section(t testing.TB, name string) Section {
 	t.Fatalf("missing fixture section %s", name)
 	return Section{}
 }
+
 func (s Section) String(t testing.TB, key string) string {
 	t.Helper()
 	v, ok := s.Values[key]
@@ -103,6 +106,7 @@ func (s Section) String(t testing.TB, key string) string {
 	}
 	return v
 }
+
 func (s Section) Hex(t testing.TB, key string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s.String(t, key))
@@ -111,6 +115,7 @@ func (s Section) Hex(t testing.TB, key string) []byte {
 	}
 	return b
 }
+
 func (s Section) Int(t testing.TB, key string) int {
 	t.Helper()
 	n, err := strconv.Atoi(s.String(t, key))
@@ -119,6 +124,7 @@ func (s Section) Int(t testing.TB, key string) int {
 	}
 	return n
 }
+
 func (s Section) Ints(t testing.TB, key string) []int {
 	t.Helper()
 	var out []int

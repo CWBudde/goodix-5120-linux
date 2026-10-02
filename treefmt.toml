@@ -1,0 +1,65 @@
+# run with treefmt --allow-missing-formatter
+
+[global]
+excludes = [
+  "go.sum",
+  "go.mod",
+  "**/.gitignore",
+  # written by release-please
+  "CHANGELOG.md",
+  ".release-please-manifest.json",
+  # vendored unmodified from the goodixtls fork
+  "libfprint/goodix5120/sigfm/**",
+  # the shared Go/C fixture corpus, byte-exact on purpose
+  "internal/testfixtures/testdata/**",
+  "libfprint/goodix5120/libfprint-register.patch",
+]
+
+### Misc
+
+[formatter.prettier]
+command = "prettier"
+options = ["-w", "--prose-wrap", "preserve"]
+includes = ["*.json", "*.md"]
+
+### Go
+
+[formatter.gofumpt]
+command = "gofumpt"
+options = ["-w"]
+includes = ["*.go"]
+
+[formatter.gci]
+command = "gci"
+options = ["write", "-s", "standard", "-s", "default", "-s", "localmodule"]
+includes = ["*.go"]
+# run after gofumpt
+priority = 1
+
+### Shell
+
+[formatter.shfmt]
+command = "shfmt"
+options = ["-w", "-i", "2"]
+includes = ["*.sh"]
+
+### Just
+
+[formatter.just]
+command = "just"
+options = ["--fmt", "--unstable", "--justfile"]
+includes = ["justfile"]
+
+### TOML
+
+[formatter.taplo]
+command = "taplo"
+options = ["fmt"]
+includes = ["*.toml"]
+
+### YAML
+
+[formatter.yamlfmt]
+command = "yamlfmt"
+options = ["format", "-"]
+includes = ["*.yaml", "*.yml"]

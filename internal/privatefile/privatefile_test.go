@@ -70,12 +70,14 @@ func (f *failingFile) Chmod(mode os.FileMode) error {
 	}
 	return f.File.Chmod(mode)
 }
+
 func (f *failingFile) Chown(uid, gid int) error {
 	if f.stage == "chown" {
 		return f.failure
 	}
 	return f.File.Chown(uid, gid)
 }
+
 func (f *failingFile) Write(data []byte) (int, error) {
 	if f.stage == "write" {
 		_, _ = f.File.Write(data[:1])
@@ -86,12 +88,14 @@ func (f *failingFile) Write(data []byte) (int, error) {
 	}
 	return f.File.Write(data)
 }
+
 func (f *failingFile) Sync() error {
 	if f.stage == "sync" {
 		return f.failure
 	}
 	return f.File.Sync()
 }
+
 func (f *failingFile) Close() error {
 	err := f.File.Close()
 	if f.stage == "close" {

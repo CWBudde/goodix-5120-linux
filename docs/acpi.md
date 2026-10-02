@@ -17,11 +17,11 @@ power cycle stays the only recovery. That was the open question in PLAN.md Phase
 
 ## Three host interfaces on one ITE part
 
-| interface | ACPI object | address | serves |
-|---|---|---|---|
-| i8042 keyboard | `\_SB.PCI0.LPC0.KBC0`, `_HID FUJ7401`, `_CID PNP0303` | I/O `0x60`/`0x64`, IRQ 1 | the internal keyboard |
-| ACPI EC | `\_SB.PCI0.LPC0.EC0`, `_HID PNP0C09`, `_GPE 3` | `_CRS` claims I/O `0x62`/`0x66` | battery, lid, thermal, Fn keys |
-| USB CDC | `\_SB.PCI0.GP17.XHC0.RHUB.PRT4` | PCI `0000:04:00.3` port 4 = Linux `1-4` | the fingerprint sensor |
+| interface      | ACPI object                                           | address                                 | serves                         |
+| -------------- | ----------------------------------------------------- | --------------------------------------- | ------------------------------ |
+| i8042 keyboard | `\_SB.PCI0.LPC0.KBC0`, `_HID FUJ7401`, `_CID PNP0303` | I/O `0x60`/`0x64`, IRQ 1                | the internal keyboard          |
+| ACPI EC        | `\_SB.PCI0.LPC0.EC0`, `_HID PNP0C09`, `_GPE 3`        | `_CRS` claims I/O `0x62`/`0x66`         | battery, lid, thermal, Fn keys |
+| USB CDC        | `\_SB.PCI0.GP17.XHC0.RHUB.PRT4`                       | PCI `0000:04:00.3` port 4 = Linux `1-4` | the fingerprint sensor         |
 
 Three independent host interfaces into one chip, on different ports with different interrupts. That
 is the shape of the keyboard incident: a USB command blocks the EC firmware, and the keyboard
@@ -73,7 +73,7 @@ The ITE part number is still only the device's own `GF_ITE_EC_20063` string — 
 ## The watchdog is not a way out
 
 `HWWD` (`_HID WDT0001`) is an EC watchdog: `OWDT` starts it (`HWF1`, `HWF0` = 1), `CWDT` stops it,
-`SWDT` sets the period, `FWDT` feeds it. It resets the *system*, not the EC's USB task, and it is a
+`SWDT` sets the period, `FWDT` feeds it. It resets the _system_, not the EC's USB task, and it is a
 service of the very firmware that is stuck. Not a recovery path.
 
 ## Nothing in ACPI knows about a fingerprint reader
@@ -103,6 +103,6 @@ the whole EC; a live counter with a dead keyboard would confine it to the parts 
 serve USB and i8042.
 
 Two limits, stated plainly. The battery block is RAM the EC writes, so this proves the firmware is
-still *running*, not that any particular interface still answers. And a `--replay` run reports
+still _running_, not that any particular interface still answers. And a `--replay` run reports
 `not observed`, so an offline rehearsal never exercises it; `TestSnapshotReportsTheECAndNotTheSCICount`
 covers it instead.

@@ -11,7 +11,9 @@ func main() {
 }
 
 func run(sysPath, secPath, blobPath, mkPath, mkDir, entropyHex string, goodix bool, out string, printPSK bool) error {
-	return execute(options{sysPath: sysPath, secPath: secPath, blobPath: blobPath,
+	return execute(options{
+		sysPath: sysPath, secPath: secPath, blobPath: blobPath,
 		mkPath: mkPath, mkDir: mkDir, entropyHex: entropyHex, goodix: goodix,
-		out: out, printPSK: printPSK}, os.Stdout, defaultDependencies())
+		out: out, printPSK: printPSK,
+	}, os.Stdout, defaultDependencies())
 }

@@ -6,9 +6,9 @@
 #
 # -buildvcs=false is used throughout the repo's docs, so it is used here too.
 
-pcap    := "dump.pcapng"
+pcap := "dump.pcapng"
 evtxlog := "captures/Goodix-FingerprintProvider%4Debug.evtx"
-pgm     := "/tmp/goodix-rehearsal.pgm"
+pgm := "/tmp/goodix-rehearsal.pgm"
 
 # List the available recipes.
 default:
@@ -41,8 +41,8 @@ clean:
 
 # ---------------------------------------------------------------------------- checks
 
-# Everything a change has to pass: format listing, vet, tests (both tags), build.
-check: fmt-check vet test test-destructive build
+# Everything a change has to pass: format, lint, vet, Go tests (both tags), C tests, build, tidy.
+check: fmt-check lint vet test test-destructive test-c build check-tidy
 
 # Run the whole test suite.
 test:
@@ -54,29 +54,51 @@ vet:
 
 # Run one test, e.g. `just test-one ./internal/transport TestReplayHappyPath`.
 test-one pkg test:
-    go test {{pkg}} -run {{test}}
+    go test {{ pkg }} -run {{ test }}
 
-# cmd/goodix-probe's safety tests intentionally fail under the goodix_destructive tag, so only the
-# two packages meant to build with it are listed here.
 # The tag-aware tests: the destructive opcodes that are compiled out of a default build.
+# cmd/goodix-probe's safety tests intentionally fail under this tag, so only the two packages meant
+
+# to build with it are listed.
 test-destructive:
     go test -tags goodix_destructive ./internal/proto ./internal/transport
 
-# gofmt's opinion. Listing only — internal/dpapi and internal/winreg are knowingly unformatted.
-fmt-check:
-    @gofmt -l .
-
-# Rewrite files with gofmt. Will also reformat the two files above; check the diff before keeping it.
+# Format everything with treefmt (gofumpt, gci, prettier, shfmt, taplo, yamlfmt, just).
 fmt:
-    gofmt -w .
+    treefmt --allow-missing-formatter
+
+# Fail if anything is not formatted.
+fmt-check:
+    treefmt --allow-missing-formatter --fail-on-change
+
+# golangci-lint, plus shellcheck on the shell scripts.
+lint:
+    golangci-lint run --timeout 5m
+    shellcheck libfprint/goodix5120/build/build-bundle.sh libfprint/goodix5120/fprintd/goodix5120-fprintd.sh
+
+# golangci-lint with fixes applied.
+lint-fix:
+    golangci-lint run --timeout 5m --fix
+
+# Fail if go.mod / go.sum are not tidy.
+check-tidy:
+    @go mod tidy
+    @git diff --exit-code go.mod go.sum || { echo "go.mod/go.sum not tidy. Run 'go mod tidy'."; exit 1; }
+
+# The C driver's offline tests: fake libfprint/USB and a synthetic EC, normal and under ASan/UBSan.
+test-c:
+    meson setup --reconfigure /tmp/g5120 libfprint/goodix5120 >/dev/null 2>&1 || meson setup /tmp/g5120 libfprint/goodix5120 >/dev/null
+    meson test -C /tmp/g5120 --print-errorlogs
+    meson setup --reconfigure /tmp/g5120-asan libfprint/goodix5120 -Db_sanitize=address,undefined >/dev/null 2>&1 || meson setup /tmp/g5120-asan libfprint/goodix5120 -Db_sanitize=address,undefined >/dev/null
+    meson test -C /tmp/g5120-asan --print-errorlogs
 
 # Check the payload rules against real vendor traffic. Needs the (gitignored) capture.
 test-capture:
-    go test ./internal/capture -capture "$PWD/{{pcap}}"
+    go test ./internal/capture -capture "$PWD/{{ pcap }}"
 
 # Re-derive the 17545 / 18 / 9 figures from the driver log. Needs the (gitignored) log.
 test-evtx:
-    go test ./internal/evtx -log "$PWD/{{evtxlog}}"
+    go test ./internal/evtx -log "$PWD/{{ evtxlog }}"
 
 # ---------------------------------------------------------------------------- offline probe runs
 
@@ -107,13 +129,13 @@ rehearse-rejection: probe
 # Rehearse the frame capture (PLAN.md 5c). The stand-in sends a gradient, so the PGM is a ramp.
 rehearse-capture: probe
     ./goodix-probe --bisect --replay --tls \
-      --allow-d0 --allow-d4 --allow-20 --steps a8 --capture {{pgm}}
+      --allow-d0 --allow-d4 --allow-20 --steps a8 --capture {{ pgm }}
 
 # Rehearse several touches in one TLS session (PLAN.md 5d/6). The stand-in plays a finger.
 rehearse-touches: probe
     ./goodix-probe --bisect --replay --tls \
       --allow-d0 --allow-d4 --allow-20 --allow-32 --allow-34 --steps a8 \
-      --capture {{pgm}} --wait-finger --touches 3 --finger-timeout 3s
+      --capture {{ pgm }} --wait-finger --touches 3 --finger-timeout 3s
 
 # All the rehearsals. rehearse-rejection is expected to exit 1, hence the `-`.
 rehearse: rehearse-handshake rehearse-capture rehearse-touches
@@ -131,14 +153,14 @@ bundle version=`git describe --tags --always --dirty`:
     if [ ! -d .cache/libfprint/.git ]; then
         git clone --quiet https://gitlab.freedesktop.org/libfprint/libfprint.git .cache/libfprint
     fi
-    git -C .cache/libfprint checkout --quiet --detach {{libfprint_rev}}
+    git -C .cache/libfprint checkout --quiet --detach {{ libfprint_rev }}
     docker buildx version >/dev/null 2>&1 || export DOCKER_BUILDKIT=0   # legacy builder without buildx
-    docker build --quiet -t {{build_image}} libfprint/goodix5120/build >/dev/null
-    out=dist/goodix5120-{{version}}
+    docker build --quiet -t {{ build_image }} libfprint/goodix5120/build >/dev/null
+    out=dist/goodix5120-{{ version }}
     mkdir -p "$out"
     docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
-        -e VERSION={{version}} -v "$PWD:/src:ro" -v "$PWD/.cache/libfprint:/libfprint:ro" -v "$PWD/$out:/out" \
-        {{build_image}} sh /src/libfprint/goodix5120/build/build-bundle.sh
+        -e VERSION={{ version }} -v "$PWD:/src:ro" -v "$PWD/.cache/libfprint:/libfprint:ro" -v "$PWD/$out:/out" \
+        {{ build_image }} sh /src/libfprint/goodix5120/build/build-bundle.sh
 
 # ---------------------------------------------------------------------------- live runs
 

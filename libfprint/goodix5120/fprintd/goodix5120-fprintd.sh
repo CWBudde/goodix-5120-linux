@@ -36,7 +36,10 @@ psk=${2:-${PSK:-}}
 lib=/opt/goodix5120/lib
 conf=/etc/systemd/system/fprintd.service.d/goodix5120.conf
 
-[ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || {
+  echo "run with sudo" >&2
+  exit 1
+}
 
 case ${1:-} in
 install)
@@ -60,7 +63,7 @@ install)
   install -d -m 700 /etc/goodix5120
   [ -z "$psk" ] || install -m 600 "$psk" /etc/goodix5120/psk.bin
   install -d -m 755 "$(dirname "$conf")"
-  cat > "$conf" <<'EOF'
+  cat >"$conf" <<'EOF'
 # goodix5120: fprintd with the 27c6:5120 driver build (goodix5120-fprintd.sh)
 [Service]
 Environment=LD_LIBRARY_PATH=/opt/goodix5120/lib
@@ -83,5 +86,5 @@ uninstall)
 esac
 
 systemctl daemon-reload
-systemctl stop fprintd.service 2>/dev/null || true   # D-Bus starts it again on first use
+systemctl stop fprintd.service 2>/dev/null || true # D-Bus starts it again on first use
 echo "fprintd ${1}ed; it loads the new setup on next use"

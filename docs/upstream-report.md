@@ -15,7 +15,7 @@ Conventions inside the drafts follow [`docs/protocol.md`](protocol.md):
 - **observed** — measured on this machine's wire, or read out of the vendor driver's own debug log or
   binary on this machine.
 - **transcribed** — taken from upstream `goodix-fp-dump` Python source, believed accurate for the 5110,
-  only *assumed* for the 5120.
+  only _assumed_ for the 5120.
 - **hypothesis** — inference. Not measured.
 
 ---
@@ -31,14 +31,14 @@ it in short form and a maintainer accepting the contribution should be able to s
 1. **It is very likely not protected expression in the first place.** Copyright protects expression,
    not function. These 224 bytes are a table of hardware register addresses and the values the chip
    requires — content dictated by the hardware, with no room for authorial choice. The EU standard is
-   the author's own intellectual creation (*Infopaq*, C-5/08), and *SAS Institute v World Programming*
+   the author's own intellectual creation (_Infopaq_, C-5/08), and _SAS Institute v World Programming_
    (C-406/10) held that a program's functionality, its language and its data formats are not protected
    as expression. A configuration table sits on the unprotected side of that line.
 2. **If it were protected, the interoperability exception covers it.** Directive 2009/24/EC Art. 6,
    transposed in Germany as § 69e UrhG, permits reproducing and translating code where indispensable to
    obtain the information needed to make an independently created program interoperable. Art. 6(2)(b)
-   restricts passing that information to others *"except when necessary for the interoperability of the
-   independently created computer program"* — so disclosure for that purpose is contemplated by the
+   restricts passing that information to others _"except when necessary for the interoperability of the
+   independently created computer program"_ — so disclosure for that purpose is contemplated by the
    exception, not merely tolerated. § 69e is unwaivable: § 69g(2) UrhG voids contrary licence terms.
    Art. 5(3) / § 69d(3) separately covers observing and testing the program, which is what the USB
    captures and the debug-log analysis are.
@@ -49,7 +49,7 @@ it in short form and a maintainer accepting the contribution should be able to s
    frame, not the driver's code; and it is used solely to make an independent Linux implementation work
    with the device, not to build a competing driver.
 
-**What this basis does *not* rest on.** Not the EU right-to-repair directive ((EU) 2024/1799) and not
+**What this basis does _not_ rest on.** Not the EU right-to-repair directive ((EU) 2024/1799) and not
 the Ecodesign rules. Those place obligations on manufacturers around spare parts and repair
 information; they do not grant third parties a right to redistribute extracted driver data. They are
 the wrong authority to cite here and citing them would only cloud the argument above.
@@ -76,8 +76,8 @@ them are security material.
 
 ## CHECK BEFORE POSTING — smaller calls, also not made here
 
-1. **`0x98 set_dac` payload.** The vendor sends 8 bytes that its own log says are *derived from the
-   OTP*. The OTP is on the never-publish list, so the drafts describe the frame ("8 bytes, computed
+1. **`0x98 set_dac` payload.** The vendor sends 8 bytes that its own log says are _derived from the
+   OTP_. The OTP is on the never-publish list, so the drafts describe the frame ("8 bytes, computed
    from the OTP, therefore per-unit") and do not print the bytes. If the owner judges DAC values not to
    be OTP material, they can be filled in; the value is low, since they are this unit's.
 2. **The unsolicited `0x32` frame, printed in full in Draft A.** It is an FDT-down (finger-detect)
@@ -113,7 +113,7 @@ nothing without it.
       `uploadConfigPayload` in `cmd/goodix-probe/vendor.go`** — so the drafts and the code cannot
       disagree.
 - [x] No PSK material: no PSK hash from the `0xe4` reply, no bytes of `Goodix_Cache.bin`, no DPAPI
-      master-key GUID. `Goodix_Cache.bin` is *named* twice, as a filename and a byte count; none of its
+      master-key GUID. `Goodix_Cache.bin` is _named_ twice, as a filename and a byte count; none of its
       contents appear, and the provider GUID appears nowhere.
 - [x] No OTP bytes, including the ASCII prefix, and no `0x98` DAC values. Neither the ASCII prefix nor
       the `sensorid` run appears in either draft, and `set_dac`'s bytes are absent — the frame is
@@ -133,6 +133,7 @@ nothing without it.
       them is posted.**
 
 ---
+
 ---
 
 # Draft A — for `goodix-fp-linux-dev/goodix-fp-dump`
@@ -175,7 +176,7 @@ a0 04 00 a4   e4 01 00 c5
   The device stays enumerated. From Linux's side nothing has happened, which is why it took three
   rounds to attribute. (observed)
 - **The EC stops serving i8042 within tens of milliseconds.** Twice the interrupt counter showed a key
-  *make* delivered and its *break* never arriving — the EC died between press and release, about 20 ms
+  _make_ delivered and its _break_ never arriving — the EC died between press and release, about 20 ms
   after accepting the frame. (observed)
 - **Recovery is a cold power cycle and nothing less:** full shutdown, charger unplugged, power button
   held ~30 s. A warm reboot does not reset the EC. Unbinding and rebinding `atkbd` recreates the input
@@ -197,20 +198,20 @@ Two further don'ts for any ITE EC part:
 - **Do not run `driver_51x0.main()`.** It flashes `GF_ST411SEC_APP_12117.bin` over IAP when the running
   firmware string does not match — and on this device it never matches, so the condition holds and the
   script would attempt the write. The target here is an EC that also runs the keyboard.
-- **Do not send `nop` (`0x00`).** The vendor driver deliberately does not: its own log says *"not to
-  send nop for ITE EC projects"*. On this device `nop` draws no reply at all — no ACK, no data — in
+- **Do not send `nop` (`0x00`).** The vendor driver deliberately does not: its own log says _"not to
+  send nop for ITE EC projects"_. On this device `nop` draws no reply at all — no ACK, no data — in
   three separate live runs. (observed)
 
 ### The device
 
-| | |
-|---|---|
-| USB ID | `27c6:5120`, `bcdDevice 2.00` |
-| Machine | Huawei MateBook, DMI product `HVY-WXX9` |
-| OS during the runs | Ubuntu 26.04, kernel 7.0.0-29-generic |
-| Firmware string (`0xa8`) | `GF_ITE_EC_20063` |
-| Chip ID (`0x82` read register) | `0x2504`, which the vendor driver calls "ChicagoHS", sensor type 12 |
-| Sensor geometry | **64 columns × 80 rows**, measured from a real frame — *not* upstream's `SENSOR_WIDTH 80` / `SENSOR_HEIGHT 88` |
+|                                |                                                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| USB ID                         | `27c6:5120`, `bcdDevice 2.00`                                                                                  |
+| Machine                        | Huawei MateBook, DMI product `HVY-WXX9`                                                                        |
+| OS during the runs             | Ubuntu 26.04, kernel 7.0.0-29-generic                                                                          |
+| Firmware string (`0xa8`)       | `GF_ITE_EC_20063`                                                                                              |
+| Chip ID (`0x82` read register) | `0x2504`, which the vendor driver calls "ChicagoHS", sensor type 12                                            |
+| Sensor geometry                | **64 columns × 80 rows**, measured from a real frame — _not_ upstream's `SENSOR_WIDTH 80` / `SENSOR_HEIGHT 88` |
 
 ```
 bNumInterfaces 2
@@ -254,12 +255,12 @@ sent 0xa8  →  b0 03 00 | a8 01 | 4e      ACK for 0xa8, status 01
 sent 0xe4  →  b0 03 00 | e4 01 | 12      ACK for 0xe4, status 01
 ```
 
-Keep this apart from the *pack*-layer flag `0xb0` (`FlagTLSData`). Same value, different field,
+Keep this apart from the _pack_-layer flag `0xb0` (`FlagTLSData`). Same value, different field,
 different layer. `0xb0` is receive-only — there is no reason to ever send it.
 
 **2. Each command produces two transfers: ACK first, then the data response, separately.** A reader
 that reads once per command runs permanently one transfer behind, and the symptom is confusing — the
-firmware string arrives while you are reading for the *next* command. Read until the data message
+firmware string arrives while you are reading for the _next_ command. Read until the data message
 arrives or the device goes quiet, and drain the IN endpoint before you exit.
 
 Two exceptions on record: `0xae` (get MCU state) answers with its 20-byte state and **no ACK**, and
@@ -293,24 +294,24 @@ frame, reply lengths included. (observed)
 
 Payloads are message payloads, checksum omitted. "ACK" means a `b0` message `[cmd] 01`.
 
-| # | TX | payload | reply |
-|---|---|---|---|
-| 1 | `96` enable chip | `01 02` | none; the driver does not wait for one |
-| 2 | `a8` firmware version | `00 00` | ACK, `GF_ITE_EC_20063` |
-| 3 | `ae` get MCU state | `55` + `uint32` LE host timestamp (ms) | **no ACK**, 20-byte state |
-| 4 | `e4` read production data | `03 00 02 bb 00 00 00 00` | ACK, 41 bytes |
-| 5 | `a2` reset | `01 14` | ACK, `01 00 08` |
-| 6 | `82` read register | `00 00 00 04 00` | ACK, `a2 04 25 00` → chip ID `0x2504` |
-| 7 | `a6` read OTP | `00 00` | ACK, 64-byte OTP (~35 ms) |
-| 8 | `a2` reset | `01 14` | ACK, `01 00 08` |
-| 9 | `70` MCU to idle | `14 00` | ACK |
-| 10 | `98` set DAC | 8 bytes, computed from the OTP (per-unit; not reproduced here) | ACK, `01 01` |
-| 11 | `90` upload config | 224 bytes — see below | ACK, `01 01` |
-| 12 | `d0` request TLS | `00 00` | no ACK; the EC opens the handshake |
-| 13 | `d4` TLS established | `00 00` | ACK |
-| 14 | `ae` get MCU state | as #3 | state with `isTlsConnected = 1` |
-| 15 | `36`, `50`, `36`, `82 00 82 00 02 00`, `20`, `36` | calibration | — |
-| 16 | `32` FDT down | armed; the driver now waits for a finger | ACK, then an event on touch |
+| #   | TX                                                | payload                                                        | reply                                  |
+| --- | ------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------- |
+| 1   | `96` enable chip                                  | `01 02`                                                        | none; the driver does not wait for one |
+| 2   | `a8` firmware version                             | `00 00`                                                        | ACK, `GF_ITE_EC_20063`                 |
+| 3   | `ae` get MCU state                                | `55` + `uint32` LE host timestamp (ms)                         | **no ACK**, 20-byte state              |
+| 4   | `e4` read production data                         | `03 00 02 bb 00 00 00 00`                                      | ACK, 41 bytes                          |
+| 5   | `a2` reset                                        | `01 14`                                                        | ACK, `01 00 08`                        |
+| 6   | `82` read register                                | `00 00 00 04 00`                                               | ACK, `a2 04 25 00` → chip ID `0x2504`  |
+| 7   | `a6` read OTP                                     | `00 00`                                                        | ACK, 64-byte OTP (~35 ms)              |
+| 8   | `a2` reset                                        | `01 14`                                                        | ACK, `01 00 08`                        |
+| 9   | `70` MCU to idle                                  | `14 00`                                                        | ACK                                    |
+| 10  | `98` set DAC                                      | 8 bytes, computed from the OTP (per-unit; not reproduced here) | ACK, `01 01`                           |
+| 11  | `90` upload config                                | 224 bytes — see below                                          | ACK, `01 01`                           |
+| 12  | `d0` request TLS                                  | `00 00`                                                        | no ACK; the EC opens the handshake     |
+| 13  | `d4` TLS established                              | `00 00`                                                        | ACK                                    |
+| 14  | `ae` get MCU state                                | as #3                                                          | state with `isTlsConnected = 1`        |
+| 15  | `36`, `50`, `36`, `82 00 82 00 02 00`, `20`, `36` | calibration                                                    | —                                      |
+| 16  | `32` FDT down                                     | armed; the driver now waits for a finger                       | ACK, then an event on touch            |
 
 Notes:
 
@@ -322,8 +323,8 @@ Notes:
   unconfirmed on the wire.
 - **`0xd2` does not appear anywhere** — not in the log, not in either capture.
 - **No firmware-related opcode is ever sent:** none of the 9 complete inits uses `0xe0`, `0xf0`,
-  `0xf2`, `0xf4` or `0xf6`. The driver's log says *"no firmware update for EC projects"*. (observed)
-- **`96 enable_chip` takes a boolean.** The init sends `01 02`; a Device Manager *Disable* sends
+  `0xf2`, `0xf4` or `0xf6`. The driver's log says _"no firmware update for EC projects"_. (observed)
+- **`96 enable_chip` takes a boolean.** The init sends `01 02`; a Device Manager _Disable_ sends
   `00 02` — the same command with its first byte cleared — then one `ae`, then the driver unloads.
   So upstream's name for it is right, and there is a quiesce command. (observed, twice)
 - **On idle the driver sends nothing at all.** No shutdown, no D3Final sequence; it stops reading and
@@ -351,8 +352,8 @@ bytes). It was recovered statically from the vendor DLL. (observed)
 **Provenance and basis for sharing this.** These bytes were obtained by static analysis of the vendor's
 Windows driver on hardware I own, under the interoperability exception in Directive 2009/24/EC Art. 6
 (§ 69e UrhG in Germany), for the sole purpose of making an independent Linux implementation work with
-the device. They are a hardware register/value table rather than program logic, which on the *SAS
-Institute* (C-406/10) reasoning is unlikely to be protected expression at all. Nothing of the driver's
+the device. They are a hardware register/value table rather than program logic, which on the _SAS
+Institute_ (C-406/10) reasoning is unlikely to be protected expression at all. Nothing of the driver's
 code is reproduced here, and no per-device secret is included — the device PSK hash, the OTP and the
 sealed key blob are all deliberately withheld. If a maintainer would rather this material were not
 carried in your tracker, say so and I will remove it.
@@ -419,7 +420,7 @@ thresholds were far off, and the driver immediately re-arms with fresh ones — 
 (observed, except where marked)
 
 - After `d0`, pack flag `0xb0` carries raw TLS records in both directions, and **the EC is the TLS
-  client**: it sends the ClientHello and the *host* is the server.
+  client**: it sends the ClientHello and the _host_ is the server.
 - TLS 1.2, exactly one suite offered: `0x00ae` = `TLS_PSK_WITH_AES_128_CBC_SHA256`. PSK identity
   `Client_identity`.
 - **The PSK is not upstream's zero key.** On this machine it is 32 random bytes the Windows driver
@@ -467,6 +468,7 @@ payload-rule enforcement that makes the `0xe4` frame unsendable — is at
 <https://github.com/CWBudde/goodix-5120-linux>.
 
 ---
+
 ---
 
 # Draft B — for the libfprint issue tracker
@@ -518,15 +520,15 @@ What makes this a driver-author problem rather than a curiosity:
 
 - **Linux observes nothing.** No USB disconnect, no i8042 or atkbd message, no ACPI SCI. The device
   stays enumerated. The kernel log cannot tell you which command did it. (observed)
-- **The EC stops serving i8042 within tens of milliseconds** — twice a key *make* was delivered and its
-  *break* never arrived. (observed)
+- **The EC stops serving i8042 within tens of milliseconds** — twice a key _make_ was delivered and its
+  _break_ never arrived. (observed)
 - **Nothing in firmware can recover it.** On this machine the sensor's USB port
   (`\_SB.PCI0.GP17.XHC0.RHUB.PRT4`) carries `_ADR`, `_UPC` and `_PLD` and nothing else: no `_PRW`, no
   power resource, no `_DSM`. There is no ACPI method and no driver-reachable path that can drop power
-  to the port or reset the sensor. The EC's watchdog resets the *system*, and is itself a service of
+  to the port or reset the sensor. The EC's watchdog resets the _system_, and is itself a service of
   the stuck firmware. (observed)
 - **The opcode is not the hazard; the missing argument is.** The Windows driver sends `0xe4` with an
-  8-byte argument in all 9 of its complete initialisations and is answered normally. *Why* the EC
+  8-byte argument in all 9 of its complete initialisations and is answered normally. _Why_ the EC
   blocks on the empty form is a hypothesis — presumably its handler reads an argument that is not there
   and blocks after having queued the ACK. The same shape shows in `read_otp` (`0xa6`), whose empty form
   draws no reply at all. (observed; the mechanism is hypothesis)
@@ -541,17 +543,17 @@ deliberately never sends `nop` to these parts ("not to send nop for ITE EC proje
 
 ### Device
 
-| | |
-|---|---|
-| USB ID | `27c6:5120`, `bcdDevice 2.00` |
-| Machine | Huawei MateBook, DMI product `HVY-WXX9`; BIOS 1.08, EC firmware release 1.8 |
-| OS during the runs | Ubuntu 26.04, kernel 7.0.0-29-generic |
-| Firmware string (`0xa8`) | `GF_ITE_EC_20063` |
-| Chip ID (`0x82`) | `0x2504` — vendor calls it "ChicagoHS", sensor type 12 |
-| Sensor geometry | **64 columns × 80 rows**, measured from a real frame; not upstream's 80 × 88 |
-| Transport | USB bulk. **Not SPI** — there is no `/dev/spidev*` on this machine, so `goodix-fp-dump`'s `run_5120_spi.py` path does not apply |
-| Kernel driver bound | none, on either interface. No `/dev/ttyACM*`; the `driver` symlinks under `/sys/bus/usb/devices/1-4:1.{0,1}/` do not resolve |
-| Access | free for userspace libusb, but root-only: an unprivileged open fails `LIBUSB_ERROR_ACCESS` |
+|                          |                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| USB ID                   | `27c6:5120`, `bcdDevice 2.00`                                                                                                   |
+| Machine                  | Huawei MateBook, DMI product `HVY-WXX9`; BIOS 1.08, EC firmware release 1.8                                                     |
+| OS during the runs       | Ubuntu 26.04, kernel 7.0.0-29-generic                                                                                           |
+| Firmware string (`0xa8`) | `GF_ITE_EC_20063`                                                                                                               |
+| Chip ID (`0x82`)         | `0x2504` — vendor calls it "ChicagoHS", sensor type 12                                                                          |
+| Sensor geometry          | **64 columns × 80 rows**, measured from a real frame; not upstream's 80 × 88                                                    |
+| Transport                | USB bulk. **Not SPI** — there is no `/dev/spidev*` on this machine, so `goodix-fp-dump`'s `run_5120_spi.py` path does not apply |
+| Kernel driver bound      | none, on either interface. No `/dev/ttyACM*`; the `driver` symlinks under `/sys/bus/usb/devices/1-4:1.{0,1}/` do not resolve    |
+| Access                   | free for userspace libusb, but root-only: an unprivileged open fails `LIBUSB_ERROR_ACCESS`                                      |
 
 Descriptor, abridged to the fields that matter (observed):
 
@@ -583,14 +585,14 @@ Device Descriptor:
   bcdUSB               2.00
   bDeviceClass            2 Communications
   bDeviceSubClass         1 Direct Line
-  bDeviceProtocol         1 
+  bDeviceProtocol         1
   bMaxPacketSize0        64
   idVendor           0x27c6 Shenzhen Goodix Technology Co.,Ltd.
   idProduct          0x5120 Unknow device
   bcdDevice            2.00
-  iManufacturer           1 
+  iManufacturer           1
   iProduct                2 Unknow device
-  iSerial                 0 
+  iSerial                 0
   bNumConfigurations      1
   Configuration Descriptor:
     bLength                 9
@@ -598,7 +600,7 @@ Device Descriptor:
     wTotalLength       0x0043
     bNumInterfaces          2
     bConfigurationValue     1
-    iConfiguration          0 
+    iConfiguration          0
     bmAttributes         0x60
       (Missing must-be-set bit!)
       Self Powered
@@ -612,8 +614,8 @@ Device Descriptor:
       bNumEndpoints           1
       bInterfaceClass         2 Communications
       bInterfaceSubClass      1 Direct Line
-      bInterfaceProtocol      1 
-      iInterface              0 
+      bInterfaceProtocol      1
+      iInterface              0
       CDC Header:
         bcdCDC               1.10
       CDC Call Management:
@@ -624,7 +626,7 @@ Device Descriptor:
           line coding and serial state
       CDC Union:
         bMasterInterface        0
-        bSlaveInterface         1 
+        bSlaveInterface         1
       Endpoint Descriptor:
         bLength                 7
         bDescriptorType         5
@@ -643,8 +645,8 @@ Device Descriptor:
       bNumEndpoints           2
       bInterfaceClass        10 CDC Data
       bInterfaceSubClass      0 [unknown]
-      bInterfaceProtocol      0 
-      iInterface              0 
+      bInterfaceProtocol      0
+      iInterface              0
       Endpoint Descriptor:
         bLength                 7
         bDescriptorType         5
@@ -724,8 +726,8 @@ re-encoding to the logged frame byte for byte.
 **Provenance and basis for sharing this.** These bytes were obtained by static analysis of the vendor's
 Windows driver on hardware I own, under the interoperability exception in Directive 2009/24/EC Art. 6
 (§ 69e UrhG in Germany), for the sole purpose of making an independent Linux implementation work with
-the device. They are a hardware register/value table rather than program logic, which on the *SAS
-Institute* (C-406/10) reasoning is unlikely to be protected expression at all. Nothing of the driver's
+the device. They are a hardware register/value table rather than program logic, which on the _SAS
+Institute_ (C-406/10) reasoning is unlikely to be protected expression at all. Nothing of the driver's
 code is reproduced here, and no per-device secret is included — the device PSK hash, the OTP and the
 sealed key blob are all deliberately withheld. If a maintainer would rather this material were not
 carried in your tracker, say so and I will remove it.
@@ -777,7 +779,7 @@ Not a proposal — an honest list of the gates, in the order they bite.
 1. **A PSK.** After `d0` the EC becomes the TLS **client** and the host is the **server**: TLS 1.2,
    one suite offered, `0x00ae` = `TLS_PSK_WITH_AES_128_CBC_SHA256`, identity `Client_identity`. Images
    arrive only as TLS application data. On this machine the key is **32 random bytes generated by the
-   Windows driver at provisioning**, sealed host-side with DPAPI and written into the EC — *not*
+   Windows driver at provisioning**, sealed host-side with DPAPI and written into the EC — _not_
    upstream's zero key. A Linux driver therefore needs either that key off the Windows install, or to
    re-provision the EC with `0xe0`, which overwrites the device's PSK and breaks Windows Hello until
    Windows re-provisions. Until one of those is answered, **no image can be read**, and everything
@@ -832,16 +834,17 @@ payload-rule enforcement that makes the `0xe4` frame unsendable — is at
 <https://github.com/CWBudde/goodix-5120-linux>.
 
 ---
+
 ---
 
 ## Deliberately not in either draft
 
 Recorded so the omissions are visible rather than accidental, per the never-publish rule in `PLAN.md`:
 
-- The 32-byte PSK hash returned by `0xe4`. The drafts describe the reply's *shape* (type, length, a
+- The 32-byte PSK hash returned by `0xe4`. The drafts describe the reply's _shape_ (type, length, a
   32-byte hash) and no bytes.
 - Any byte of `C:\ProgramData\Goodix\Goodix_Cache.bin`, its DPAPI master-key GUID, and its size-and-date
-  metadata beyond "332 bytes, written once in 2021". The well-known DPAPI *provider* GUID is not
+  metadata beyond "332 bytes, written once in 2021". The well-known DPAPI _provider_ GUID is not
   included either: it is a public Microsoft constant, but it is only needed to prove the claim, and the
   claim is stated plainly instead.
 - OTP bytes, including the ASCII prefix the vendor log shows, and the 8 DAC values in the `0x98` frame,

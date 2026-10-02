@@ -186,7 +186,8 @@ type preparedTLS struct {
 }
 
 func prepareTLS(ctx context.Context, cfg tlsConfig, replay bool,
-	start func(context.Context, tlspsk.Config) (*tlspsk.Session, error)) (*preparedTLS, error) {
+	start func(context.Context, tlspsk.Config) (*tlspsk.Session, error),
+) (*preparedTLS, error) {
 	if !cfg.enabled {
 		return nil, nil
 	}
@@ -230,8 +231,8 @@ func (p *preparedTLS) close() {
 // wrongPSK to rehearse the rejection path instead, which is worth seeing once
 // before the live run so its output is familiar.
 func startRehearsal(ctx context.Context, logger *log.Logger, prepared *preparedTLS,
-	opts transport.Options, wrongPSK bool) (transport.Transport, *session.LoopbackEC, error) {
-
+	opts transport.Options, wrongPSK bool,
+) (transport.Transport, *session.LoopbackEC, error) {
 	psk := append([]byte(nil), prepared.rehearsalPSK...)
 	defer clear(psk)
 	if wrongPSK {
@@ -260,7 +261,8 @@ func startRehearsal(ctx context.Context, logger *log.Logger, prepared *preparedT
 // the bisect step loop has finished, and everything below is half duplex, so
 // nothing writes to the device while the bridge is reading from it.
 func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg tlsConfig,
-	rehearsal *session.LoopbackEC, host *tlspsk.Session) error {
+	rehearsal *session.LoopbackEC, host *tlspsk.Session,
+) error {
 	logger.Printf("\n--- TLS-PSK bridge (PLAN.md Phase 5b)")
 	logger.Printf("  using the preflighted in-process TLS endpoint (key contents withheld)")
 
@@ -312,8 +314,8 @@ func runTLS(ctx context.Context, logger *log.Logger, tr transport.Transport, cfg
 // captureFrame is PLAN.md Phase 5c: ask for one frame, decrypt it, and write it
 // out as a PGM.
 func captureFrame(ctx context.Context, logger *log.Logger, tr transport.Transport,
-	bridge *session.Bridge, path string, rehearsal *session.LoopbackEC) error {
-
+	bridge *session.Bridge, path string, rehearsal *session.LoopbackEC,
+) error {
 	st, ok := stepFor(opGetImage)
 	if !ok {
 		return fmt.Errorf("no catalogue entry for mcu_get_image (0x%02x)", byte(opGetImage))

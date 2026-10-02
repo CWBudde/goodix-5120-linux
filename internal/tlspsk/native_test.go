@@ -197,7 +197,7 @@ func TestOpenSSLSystemPolicyLevels(t *testing.T) {
 		t.Run(level, func(t *testing.T) {
 			conf := filepath.Join(t.TempDir(), "openssl.cnf")
 			content := "openssl_conf = init\n[init]\nssl_conf = ssl\n[ssl]\nsystem_default = policy\n[policy]\nCipherString = DEFAULT:@SECLEVEL=" + level + "\n"
-			if err := os.WriteFile(conf, []byte(content), 0600); err != nil {
+			if err := os.WriteFile(conf, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -443,7 +443,7 @@ func TestOpenSSLSystemProtocolAndCipherRestrictions(t *testing.T) {
 		t.Run(restriction, func(t *testing.T) {
 			conf := filepath.Join(t.TempDir(), "openssl.cnf")
 			content := "openssl_conf = init\n[init]\nssl_conf = ssl\n[ssl]\nsystem_default = policy\n[policy]\n" + restriction + "\n"
-			if err := os.WriteFile(conf, []byte(content), 0600); err != nil {
+			if err := os.WriteFile(conf, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

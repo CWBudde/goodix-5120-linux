@@ -13,7 +13,7 @@ func TestCaptureReplacesPublicSymlinkWithoutFollowing(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "other")
 	output := filepath.Join(dir, "capture.pgm")
-	if err := os.WriteFile(target, []byte("untouched"), 0644); err != nil {
+	if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, output); err != nil {
@@ -26,7 +26,7 @@ func TestCaptureReplacesPublicSymlinkWithoutFollowing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("capture mode %v", info.Mode())
 	}
 	b, err := os.ReadFile(target)
@@ -111,7 +111,7 @@ func TestCaptureSudoOwnershipOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	stat := info.Sys().(*syscall.Stat_t)
-	if int(stat.Uid) != owner.UID || int(stat.Gid) != owner.GID || info.Mode().Perm() != 0600 {
+	if int(stat.Uid) != owner.UID || int(stat.Gid) != owner.GID || info.Mode().Perm() != 0o600 {
 		t.Fatalf("published capture owner %d:%d mode %v, want %d:%d 0600", stat.Uid, stat.Gid, info.Mode(), owner.UID, owner.GID)
 	}
 }
