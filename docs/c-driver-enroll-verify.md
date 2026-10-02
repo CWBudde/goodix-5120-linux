@@ -166,3 +166,7 @@ a candidate for improving both matchers, but it needs its own live step first.
 **Run 38** (`docs/protocol.md`) ran this tool, but all twelve touches used the same finger (right index), so it
 measured repeatability only. Every frame had 82–147 keypoints. All six A touches matched each other, but 3 of the
 6 later touches matched no A frame at threshold 24. Impostor scores still need a run with a different finger for B.
+
+**Run 39** used two fingers. All impostor pairs scored 0, but only 3 of 6 genuine attempts matched the other five
+A views. The next run is the same command with `15` instead of `6` (30 touches): it shows whether a larger template
+fixes the genuine rejections.

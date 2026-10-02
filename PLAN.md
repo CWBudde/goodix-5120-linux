@@ -193,7 +193,10 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    Run 38 scored SIGFM offline-built and owner-run, with 12 touches. All of them turned out to be the same finger, so the run gave
    repeatability only and no impostor data. Every frame had plenty of keypoints (82–147). All six early touches
    matched each other, but 3 of the 6 later touches matched none of them at the fork's threshold of 24 (likely
-   placement, so more enroll views are needed). Next: rerun with a genuinely different finger for B.
+   placement, so more enroll views are needed).
+   Run 39 used two fingers: all 36 impostor pairs scored 0 (no false accepts), but only 3 of 6 genuine attempts
+   matched a 5-view template, which points to coverage. Next: `g5120-sigfm 15` (14-view template, 15
+   impostors) to see whether acceptance rises with template size; if so, integrate SIGFM with ~15–20 enroll stages.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

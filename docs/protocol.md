@@ -1509,6 +1509,34 @@ still subtracts a no-finger frame (`docs/c-driver-enroll-verify.md`), and this d
 
 **Open:** a run with a genuinely different finger for B, to measure impostor scores at all.
 
+### Run 39 — 2026-10-02 02:52, SIGFM with two fingers: no false accepts, half the genuine attempts rejected (observed)
+
+The owner reran `examples/g5120-sigfm 6` (same bundle as Run 38), about 15 minutes later, with no EC reset. Finger A
+was the right index, and finger B a genuinely different finger (the runbook suggested the left thumb). Open, all
+captures and close completed without error. In the pasted part, five touches were discarded for having no NBIS
+minutiae and repeated, and one base-invalid event was re-armed correctly. Stretch bounds ranged from 999..2412 to 1216..2531
+(highest 1179..2704). One finger-up arm carried the untouched-zone `0x19` for zone 1.
+
+Keypoints: ×1 91–163 (median 127), ×3 92–169 (median 138), all far above 25.
+
+| | A pairs (30) | A: best of the other 5 | B vs A pairs (36) | B: best over 6 A | at 24 |
+|---|---|---|---|---|---|
+| ×1 | 25 zero; others 15, 249, 360, 817, 1021 | 0, 0, 0, 249, 817, 1021 | **all 0** | all 0 | genuine 3/6, impostor 0/6 |
+| ×3 | 25 zero; others 2, 485, 617, 1893, 2140 | 0, 0, 0, 485, 1893, 2140 | **all 0** | all 0 | genuine 3/6, impostor 0/6 |
+
+**SIGFM discriminates:** all 36 impostor pairs scored exactly 0 at both scales, so there were no false accepts. Read
+together with Run 38 (one finger, 2.6 million between two of its frames), large scores come from real overlap of the same finger, not from the
+sensor. The fixed-pattern hypothesis is effectively ruled out for this matcher.
+
+**But coverage is the limit:** only 5 of 30 genuine pairs scored at all, and these come in near-symmetric pairs
+(1021/817, 360/249), so only two or three A touches overlapped any other. With a six-view template, half of the
+genuine attempts would fail. Each touch images about 3 × 4 mm, so a template must cover much more of the finger
+than five or six views do. The fork enrols 20.
+
+**Next:** measure genuine acceptance against template size with the same tool and no rebuild: `g5120-sigfm 15`.
+Each A frame is then scored against 14 other views, and B gives 15 impostor attempts. If acceptance rises well above
+3/6 with impostors staying at 0, integration with about 15–20 enroll stages is the path.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
