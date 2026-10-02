@@ -86,11 +86,27 @@ check-tidy:
     @git diff --exit-code go.mod go.sum || { echo "go.mod/go.sum not tidy. Run 'go mod tidy'."; exit 1; }
 
 # The C driver's offline tests: fake libfprint/USB and a synthetic EC, normal and under ASan/UBSan.
+
+# Uses a local meson if there is one, else the bundle build image.
 test-c:
-    meson setup --reconfigure /tmp/g5120 libfprint/goodix5120 >/dev/null 2>&1 || meson setup /tmp/g5120 libfprint/goodix5120 >/dev/null
-    meson test -C /tmp/g5120 --print-errorlogs
-    meson setup --reconfigure /tmp/g5120-asan libfprint/goodix5120 -Db_sanitize=address,undefined >/dev/null 2>&1 || meson setup /tmp/g5120-asan libfprint/goodix5120 -Db_sanitize=address,undefined >/dev/null
-    meson test -C /tmp/g5120-asan --print-errorlogs
+    #!/usr/bin/env bash
+    set -euo pipefail
+    run() {
+        for t in g5120 g5120-asan; do
+            opts=(); [ "$t" = g5120 ] || opts=(-Db_sanitize=address,undefined)
+            rm -rf "/tmp/$t"
+            meson setup "/tmp/$t" libfprint/goodix5120 "${opts[@]}" >/dev/null
+            ASAN_OPTIONS=detect_leaks=1 meson test -C "/tmp/$t" --print-errorlogs
+        done
+    }
+    if command -v meson >/dev/null; then
+        run
+    else
+        docker buildx version >/dev/null 2>&1 || export DOCKER_BUILDKIT=0
+        docker build --quiet -t {{ build_image }} libfprint/goodix5120/build >/dev/null
+        docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" -w /src \
+            {{ build_image }} bash -c "$(declare -f run); run"
+    fi
 
 # Check the payload rules against real vendor traffic. Needs the (gitignored) capture.
 test-capture:
