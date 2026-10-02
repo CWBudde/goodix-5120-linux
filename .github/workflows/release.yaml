@@ -1,0 +1,68 @@
+name: release
+
+# Builds the driver bundle for a tag and attaches it to the tag's GitHub release (created here if
+# it doesn't exist yet), with SHA256SUMS and a build provenance attestation.
+#
+# Triggers: pushing a v* tag, a call from release-please.yaml, or a manual run for an existing tag.
+# The bundle is built for Ubuntu 26.04 on amd64: it links that release's glib, GUsb and OpenCV.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release (vX.Y.Z)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-bundle.yaml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum goodix5120-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          gh release upload "$TAG" dist/goodix5120-*.tar.gz dist/SHA256SUMS --clobber

@@ -1,0 +1,63 @@
+name: release-please
+
+# Keeps a release PR open that bumps the version and CHANGELOG.md from the conventional commits
+# on main. Merging it tags vX.Y.Z and creates the GitHub release; release.yaml then builds and
+# attaches the driver bundle.
+#
+# With the default GITHUB_TOKEN, the tag push starts no workflow (events caused by GITHUB_TOKEN
+# never do), so this workflow calls release.yaml itself. CI doesn't run on the release PR either;
+# set the RELEASE_PLEASE_TOKEN secret (a fine-grained PAT with contents and pull-requests write)
+# to change that. With the PAT, the tag push triggers release.yaml, and this workflow doesn't
+# call it, so that the release runs only once.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      uses_pat: ${{ steps.token.outputs.uses_pat }}
+
+    steps:
+      # Secrets can't be used in a job's `if`, so the release job reads this output instead.
+      - name: Check for the release-please PAT
+        id: token
+        env:
+          PAT: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: echo "uses_pat=${{ env.PAT != '' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  release:
+    needs: release-please
+    # With the PAT, the tag push has already started release.yaml.
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.release-please.outputs.uses_pat != 'true'
+    uses: ./.github/workflows/release.yaml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    secrets: inherit
