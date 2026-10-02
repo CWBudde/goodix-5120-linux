@@ -215,6 +215,9 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    Run 42 used the quiet-log build: a second session against the Run 41 template, index `MATCH!` (score 43918) and
    other finger `NO MATCH!` (0). Next: fprintd through a reversible drop-in that loads this libfprint build, with no
    package replaced ([docs/fprintd.md](docs/fprintd.md)). That is the first live identify. PAM comes after it.
+   Run 43 did that: fprintd enrolled the right index in 15 stages, plus one extra touch for fprintd's duplicate check
+   (identify). `fprintd-verify` matched the index (score 527) and rejected another finger twice (0, 0).
+   **The reader works through fprintd.** Next: PAM (`pam-auth-update --enable fprintd`).
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

@@ -1630,6 +1630,23 @@ in a new session.
   that ignores modes. Repeat runs now read the root-only copy `/etc/goodix5120/psk.bin`
   ([fprintd.md](fprintd.md)).
 
+### Run 43 — 2026-10-02, fprintd: 15-stage enrollment, verify 1/1 genuine, 2/2 impostors rejected (observed)
+
+This was the first run through the system fprintd 1.94.5, with the `730668a` drop-in (`docs/fprintd.md`) loading
+the `ac43d30` driver build. `fprintd-list` showed the device. `fprintd-enroll -f right-index-finger` reported 15
+`enroll-stage-passed`, then `enroll-completed`. `fprintd-verify` returned `verify-match` for the right index, then
+`verify-no-match` twice for another finger. The PSK came from `/etc/goodix5120/psk.bin`, and no warning was logged.
+
+- **One extra touch before enrollment.** The journal has 16 extractions for 15 stages. The first touch (109
+  keypoints) produced no `enroll view` line and no score line. That fits fprintd's duplicate check before enrolling:
+  an identify against an empty gallery. So enrollment under fprintd takes 16 touches. This is the first live identify.
+- **Keypoints per enroll view:** 116, 128, 116, 112, 100, 119, 111, 137, 123, 99, 96, 97, 106, 104, 84.
+- **Overlap scores** (best score against the earlier views), views 2–15: 31710, 34155, 212438, 49641, 544609,
+  74016, 314695, 648728, 105, 938, 324, 48158, 0, 0. Views 14 and 15 overlap no earlier view, presumably placed
+  further off; they still add coverage.
+- **Verify scores:** genuine 527 (114 keypoints), the lowest genuine score so far but 22 times the threshold of 24.
+  Impostors 0 (83 keypoints) and 0 (132 keypoints).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
