@@ -19,8 +19,8 @@ frame's contrast instead (257 offline tests). Run 34 ran that build from a bit-c
 complete C capture, with the stretched frame passing minutiae detection and saved. Run 35 enrolled a
 finger with libfprint's `enroll` example (5/5 stages, one retry, in one session). Run 36's verify
 scored 0 on every attempt, and Run 37 measured at most 5 minutiae per frame at any scale. NBIS needs 10,
-so matching needs a different matcher. Runs 38–39 tried SIGFM: no false accepts between two fingers,
-but only half the genuine attempts matched a 5-view template (coverage).**
+so matching needs a different matcher. Runs 38–40 tried SIGFM offline: with a 14-view template, 14/15
+genuine attempts matched, and no true impostor scored above 9 (threshold 24). SIGFM integration is next.**
 The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
 has offline evidence. Its protocol evidence comes from the Go reference,
 from Runs 8, 18 and 20–22 in

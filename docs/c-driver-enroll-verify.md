@@ -170,3 +170,6 @@ measured repeatability only. Every frame had 82–147 keypoints. All six A touch
 **Run 39** used two fingers. All impostor pairs scored 0, but only 3 of 6 genuine attempts matched the other five
 A views. The next run is the same command with `15` instead of `6` (30 touches): it shows whether a larger template
 fixes the genuine rejections.
+
+**Run 40** (`15`): 14/15 genuine attempts matched the other 14 views. One B touch was accidentally the index finger and
+matched; the other 14 B touches scored at most 9.

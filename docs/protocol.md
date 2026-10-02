@@ -1537,6 +1537,35 @@ than five or six views do. The fork enrols 20.
 Each A frame is then scored against 14 other views, and B gives 15 impostor attempts. If acceptance rises well above
 3/6 with impostors staying at 0, integration with about 15–20 enroll stages is the path.
 
+### Run 40 — 2026-10-02 ~02:55, SIGFM with 15 views: 14/15 genuine, no true impostor above 9 (observed)
+
+The owner ran `examples/g5120-sigfm 15` (same bundle as Runs 38–39), a few minutes after Run 39, with no EC reset.
+Only the end of the log was pasted: open, 30 kept captures and close completed without error. Finger A was the right
+index. Finger B was another finger, **except one B touch, which the owner reports was accidentally the right index**.
+
+Keypoints: ×1 88–159 (median 126), ×3 91–165 (median 129).
+
+| | genuine: each A vs the other 14 (best) | B vs 15 A (best) | at 24 |
+|---|---|---|---|
+| ×1 | 0, 3526, 4294, 5489, 8436 … 89432, 140736 | 12 × 0, 3, 9, **50059** | genuine 14/15, "impostor" 1/15 |
+| ×3 | 0, 6643, 13766, 13975 … 147055, 249328 | 12 × 0, 1, 2, **228300** | genuine 14/15, "impostor" 1/15 |
+
+- **The one accepted B touch is the mislabelled index touch.** Exactly one B frame scored above 9. All 11 nonzero
+  ×1 B-vs-A pair scores (1, 3, 6, 9, 132 … 50059) are consistent with that frame matching several A views plus four tiny values.
+  The other 14 B frames' best scores were ≤ 9 (×1) and ≤ 2 (×3). **With that frame set aside: 0/14 false accepts, and the
+  largest true-impostor score was 9, under the threshold of 24.** The attribution rests on the owner's report; the tool does
+  not record which frame was which.
+- **Genuine acceptance rose with template size:** 3/6 against 5 views (Run 39), and 14/15 against 14 views. The one
+  rejected A frame scored 0 against all 14 others, a placement that no other touch covered. Of the 210 A pairs,
+  about half scored 0, as expected when each touch images a different part of the finger.
+- **Margin:** with the mislabelled frame excluded, the gap between the highest true-impostor score (9 / 2) and the lowest nonzero genuine best (3526 / 6643)
+  is more than two orders of magnitude, so the fork's 24 is not critical here. Both scales behave the same; ×1 is ~9× cheaper
+  to extract.
+
+**Limits:** one session, minutes apart, two fingers, 15 + 14 attempts. Nothing yet on another day, other
+fingers, dry/wet skin, or a real enroll/verify flow with stored templates. **Conclusion:** SIGFM with roughly 15
+enroll views is a workable matcher for this sensor; NBIS is not (Run 37).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

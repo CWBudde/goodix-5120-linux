@@ -197,6 +197,8 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    Run 39 used two fingers: all 36 impostor pairs scored 0 (no false accepts), but only 3 of 6 genuine attempts
    matched a 5-view template, which points to coverage. Next: `g5120-sigfm 15` (14-view template, 15
    impostors) to see whether acceptance rises with template size; if so, integrate SIGFM with ~15–20 enroll stages.
+   Run 40 did: genuine 14/15 against a 14-view template. One B touch (accidentally the index finger) matched. The
+   other 14 B touches scored ≤ 9, so there were no true false accepts. Decision: integrate SIGFM (~15 enroll stages).
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before
