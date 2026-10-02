@@ -4,19 +4,6 @@ A Linux driver for the **Goodix `27c6:5120`** fingerprint reader in the Huawei M
 distribution supports. The reader sits behind an **ITE embedded controller** (`GF_ITE_EC_20063`) that also drives the
 internal keyboard, and it talks to the host over TLS-PSK.
 
-**Status (2026-10-02): it works on this machine.** The libfprint driver in [`libfprint/goodix5120/`](libfprint/goodix5120/README.md)
-enrolls (15 touches), verifies and identifies through the system's own fprintd, and `sudo` accepts the finger through
-`pam_fprintd` (Runs 43–45 in [`docs/protocol.md`](docs/protocol.md)). An open takes about 1 s. Not yet tested live:
-cancellation mid-open, suspend/resume, and the login screen after a cold boot ([`PLAN.md`](PLAN.md)).
-
-> ## ⚠ The reader shares a chip with the keyboard
->
-> A wrong frame has wedged the EC and killed the internal keyboard, and once an unfinished TLS handshake left it stuck
-> through a normal cold power cycle. The fix that worked: shut down, **leave the charger plugged in, hold the power
-> button 40 s** (`docs/protocol.md`, "Recovering the EC"). Keep a USB keyboard within reach until the remaining
-> lifecycle tests have passed. Never run upstream `driver_51x0.main()` or any firmware-write path against this
-> device. It would flash 5110 firmware onto an ITE EC.
-
 ## Install
 
 **Requirements:**
