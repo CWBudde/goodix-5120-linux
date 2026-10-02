@@ -125,3 +125,38 @@ sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
 Touch at each `arming 0x32` and lift at `arming 0x34`. Use one finger and press firmly so that all six
 zones are covered. Ctrl-C (external keyboard) cancels. Report the `frame N:` lines and the `summary` line.
 A frame whose driver count is 0 is discarded by libfprint, so it has no rescale columns.
+
+## SIGFM scores (after Run 37)
+
+Run 37 measured at most 5 NBIS minutiae per frame, so Bozorth3 cannot match on this sensor.
+`dist/goodix-owner-c-sigfm/` adds `examples/g5120-sigfm` (`libfprint/goodix5120/tools/g5120-sigfm.cpp`). It
+uses SIGFM, the SIFT-based matcher that the community `goodixtls` fork uses for its 64 × 80 `goodix511`.
+SIGFM is compiled from the fork's pinned source (commit `07306bb`, LGPL-2.1+, copied into the bundle,
+not into this repository). It links the host's OpenCV 4.10. The driver and libfprint are unchanged.
+
+The tool opens once and captures K frames (default 6) of finger A, then K frames of a different finger B.
+For the driver's ×3 image and for a 64 × 80 reduction of it, it prints:
+
+- keypoints per frame (the fork rejects frames with fewer than 25);
+- genuine pair scores (A against A) and impostor pair scores (B against A);
+- a verify simulation: each A frame against the other A frames, and each B frame against all A frames
+  (best score). The fork accepts at a score of at least 24.
+
+It prints numbers only, and writes no image, feature or template. A touch that libfprint discards for
+having no NBIS minutiae is repeated.
+
+```sh
+repo=/mnt/Projekte/Code/systems/goodix-5120-linux
+build="$repo/dist/goodix-owner-c-sigfm"
+sudo ./goodix-probe --bisect --read-state          # health check first, from the repo root
+sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
+  FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+  "$build/examples/g5120-sigfm" 6 2>&1 | tee "$HOME/goodix-sigfm.log"
+```
+
+Report the `keypoints:` lines and everything from `=== SIGFM scores` onward.
+
+**Not yet in the driver: background subtraction.** The fork's `goodix511` driver subtracts a no-finger
+calibration frame from every frame before its min–max scaling. It takes that frame before each scan with
+FDT-up, nav `0x50` and `0x20`, a sequence never sent to this EC. This driver has no such subtraction. It is
+a candidate for improving both matchers, but it needs its own live step first.
