@@ -199,6 +199,11 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    impostors) to see whether acceptance rises with template size; if so, integrate SIGFM with ~15–20 enroll stages.
    Run 40 did: genuine 14/15 against a 14-view template. One B touch (accidentally the index finger) matched. The
    other 14 B touches scored ≤ 9, so there were no true false accepts. Decision: integrate SIGFM (~15 enroll stages).
+   Done offline in `9c682a6`. The driver is now a plain `FpDevice` with its own enroll (15 stages), verify, identify and
+   capture. It matches with the vendored SIGFM at threshold 24, stores a validated raw-print template, and sends an
+   unchanged wire sequence. 280 offline subtests pass. Next: the owner runs `dist/goodix-owner-c-sigfm-driver/` (Run 41,
+   [docs/c-driver-enroll-verify.md](docs/c-driver-enroll-verify.md) "SIGFM driver"): one 15-stage enrollment, then
+   verify attempts with the enrolled finger and with another finger.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

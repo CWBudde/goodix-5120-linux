@@ -173,3 +173,73 @@ fixes the genuine rejections.
 
 **Run 40** (`15`): 14/15 genuine attempts matched the other 14 views. One B touch was accidentally the index finger and
 matched; the other 14 B touches scored at most 9.
+
+## SIGFM driver: enroll and verify (after Run 40)
+
+`dist/goodix-owner-c-sigfm-driver/` (ignored by Git, local only) is a **new driver build**, commit `9c682a6`.
+The driver matches with SIGFM itself instead of NBIS (`libfprint/goodix5120/README.md`, "Matching"). It is
+compiled into the pinned libfprint `6f9479c3` in `goodix-offline-build-opencv:26.04`, `--network none`. The bundle
+contains libfprint's own `enroll`, `verify`, `identify` and `img-capture` from that build. They link the host's
+OpenCV 4.10, and `ldd` on the host resolves every library. `provenance.txt` and `SHA256SUMS` record the build.
+No executable was invoked during preparation.
+
+What changed for the owner, and what did not:
+
+- **The wire sequence is unchanged:** the open, health check, TLS and touch frames are those of Runs 34–40.
+  One difference: every touch now waits for the finger-up event, including the last enrollment stage. The old
+  image-device class cancelled that last wait (Run 35). Close still sends nothing.
+- **Enrollment needs 15 touches** in one session (Run 40 did 30 captures in one session). Lift the finger after
+  each touch, and shift the placement a little between touches, so the views cover more of the finger.
+  A touch with too few SIFT features is a retry (`Enroll stage N of 15 failed with error … press the finger
+  flat`); touch again.
+- **No update question.** This driver does not offer `FP_DEVICE_FEATURE_UPDATE_PRINT`, so `enroll` does not ask
+  "Should an existing fingerprint be updated". It prints a line saying old prints will be erased.
+- **Use a fresh directory.** The template from Run 35 is an NBIS print, which this driver refuses with
+  `DATA_INVALID` before sending anything. The new `test-storage.variant` holds SIGFM features, about 200 KB per
+  finger. That is biometric data. No `enrolled.pgm` or `verify.pgm` is written any more: the prints carry no image.
+
+Health check first, from the repository root, with the external keyboard attached:
+
+```sh
+go build -buildvcs=false ./cmd/goodix-probe
+sudo ./goodix-probe --bisect --read-state
+```
+
+Enroll the right index (finger number `6`):
+
+```sh
+repo=/mnt/Projekte/Code/systems/goodix-5120-linux
+build="$repo/dist/goodix-owner-c-sigfm-driver"
+umask 077
+run=$(mktemp -d "$HOME/goodix-c-sigfm-XXXXXX")
+sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
+  FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+  sh -c 'umask 077; cd "$1" || exit 1; shift; exec "$@"' sh "$run" \
+  stdbuf -oL "$build/examples/enroll" 2>&1 | tee "$run/enroll.log"
+```
+
+Then verify in the same terminal (same `$run`). Choose finger `6`, and at each `Verify again? [Y/n]` answer `y`:
+
+```sh
+sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
+  FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+  sh -c 'umask 077; cd "$1" || exit 1; shift; exec "$@"' sh "$run" \
+  "$build/examples/verify" 2>&1 | tee "$run/verify.log"
+```
+
+Decide both fingers before starting. Make **five attempts with the right index**, placed differently each time,
+then **five with the left thumb**, then answer `n`. Expect `MATCH!` for the index and `NO MATCH!` for the thumb.
+A `retry error reported` line is a quality retry, not a fault. Ctrl-C on the external keyboard stops at any
+warning or error other than the known PSK-permission warning, or if the keyboard misbehaves.
+
+Report these lines from both logs. They contain no pixels, keys or templates:
+
+- every `Enroll stage N of 15` line, and the final result;
+- `SIGFM: N keypoints`, `enroll view N: best SIGFM score …` and `print 0: best SIGFM score N, threshold 24`;
+- every `MATCH!` / `NO MATCH!` / `retry error reported` line, in order, saying which finger each attempt used;
+- every `image: stretched 12-bit samples LO..HI` line;
+- any warning or error, and keyboard behaviour during and after each run.
+
+Never post `test-storage.variant`. Results go in `docs/protocol.md` as Run 41 and in PLAN.md Phase 6c.
+Ten attempts in one session say nothing about another day; repeat verify later from the same `$run` before
+calling the threshold settled.
