@@ -1,0 +1,33 @@
+name: test-lint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install cgo dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev libssl-dev pkg-config shellcheck
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+          args: --timeout=5m
+
+      - name: shellcheck
+        run: shellcheck libfprint/goodix5120/build/build-bundle.sh libfprint/goodix5120/fprintd/goodix5120-fprintd.sh

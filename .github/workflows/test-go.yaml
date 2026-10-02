@@ -1,0 +1,45 @@
+name: test-go
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # gousb and the TLS-PSK endpoint are cgo: libusb and OpenSSL headers are needed.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install cgo dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libusb-1.0-0-dev libssl-dev pkg-config
+
+      - name: Build
+        run: go build -buildvcs=false ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      # The destructive opcodes are compiled out of a default build; these two packages check both builds.
+      # cmd/goodix-probe's safety tests fail under this tag on purpose.
+      - name: Test with goodix_destructive
+        run: go test -count=1 -tags goodix_destructive ./internal/proto ./internal/transport
+
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum

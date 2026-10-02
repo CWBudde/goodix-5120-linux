@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-go:
+    uses: ./.github/workflows/test-go.yaml
+
+  test-lint:
+    uses: ./.github/workflows/test-lint.yaml
+
+  test-format:
+    uses: ./.github/workflows/test-format.yaml
+
+  # Runs the C driver's offline tests (normal and ASan/UBSan) before it builds libfprint.
+  build-bundle:
+    uses: ./.github/workflows/build-bundle.yaml

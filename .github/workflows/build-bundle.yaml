@@ -1,0 +1,65 @@
+name: build-bundle
+
+# Builds the driver bundle: pinned libfprint with goodix5120 compiled in, the fprintd installer, the
+# sources and SHA256SUMS, in the Ubuntu 26.04 image from libfprint/goodix5120/build/. The build
+# script runs the C driver's offline tests (normal and ASan/UBSan) first. tests.yaml runs it on
+# every push; release.yaml calls it for a tag and attaches the tarball to the release.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to build; empty builds the triggering commit
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  LIBFPRINT_REV: 6f9479c3d55f847c1b3769f28ceb99227f9858cf
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Cache the libfprint checkout
+        uses: actions/cache@v4
+        with:
+          path: .cache/libfprint
+          key: libfprint-${{ env.LIBFPRINT_REV }}
+
+      - name: Check out libfprint
+        run: |
+          if [ ! -d .cache/libfprint/.git ]; then
+            git clone --quiet https://gitlab.freedesktop.org/libfprint/libfprint.git .cache/libfprint
+          fi
+          git -C .cache/libfprint checkout --quiet --detach "$LIBFPRINT_REV"
+
+      - name: Build the image
+        run: docker build --quiet -t goodix5120-build libfprint/goodix5120/build
+
+      - name: Build the bundle
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version=${TAG:-$(git rev-parse --short HEAD)}
+          name=goodix5120-$version-ubuntu26.04-amd64
+          mkdir -p "dist/$name"
+          docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -e VERSION="$version" \
+            -v "$PWD:/src:ro" -v "$PWD/.cache/libfprint:/libfprint:ro" -v "$PWD/dist/$name:/out" \
+            goodix5120-build sh /src/libfprint/goodix5120/build/build-bundle.sh
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: dist/${{ env.NAME }}.tar.gz
+          if-no-files-found: error
