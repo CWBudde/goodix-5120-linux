@@ -1437,6 +1437,34 @@ they stand. **Next:** measure the minutiae count per frame locally, without shar
 between image processing (enlargement factor, filtering) and a matcher suited to small-area sensors.
 NBIS cannot do anything with fewer than 10 minutiae.
 
+### Run 37 — 2026-10-02 02:09, minutiae count: at most 5 per frame at any scale (observed)
+
+The owner ran `examples/g5120-minutiae 10` from `dist/goodix-owner-c-minutiae/` (same driver as Runs 34–36),
+twelve minutes after Run 36, no EC reset. Open, ten captures and close completed without error. Byte 1 was
+`0x02` after the listen (counter `1b 1b`). One base-invalid event came 30 ms after a re-arm and was re-armed
+correctly. Stretch bounds ranged from 1063..2423 to 1219..2648.
+
+| Frame | driver (×3) | x1 | x2 | x3 | x4 | x5 | inv |
+|---|---|---|---|---|---|---|---|
+| 1 | 4 | 1 | 4 | 2 | 0 | 0 | 3 |
+| 2, 3, 5, 6 | 0 (no minutiae; image discarded) | | | | | | |
+| 4 | 1 | 0 | 2 | 0 | 0 | 0 | 1 |
+| 7 | 1 | 0 | 1 | 0 | 0 | 0 | 2 |
+| 8 | 4 | 0 | 3 | 0 | 0 | 0 | 2 |
+| 9 | 5 | 1 | 1 | 1 | 0 | 0 | 4 |
+| 10 | 2 | 0 | 1 | 1 | 0 | 0 | 0 |
+
+**Summary: 0 of 10 frames reached 10 minutiae; the maximum was 5 and the mean 1.7.** No rescale helps:
+×4/×5 found nothing, and ×1/×2 found no more than the driver's ×3. The tool's own ×3, rebuilt from a box-reduced
+frame, finds fewer than pixman's ×3, so the enlargement is not the bottleneck. Inverting the colours is not
+consistently better (3 frames higher, 3 lower), so polarity does not explain the shortfall.
+
+**Interpretation.** If the pixel pitch is the usual ~50 µm (assumed, not measured), 64 × 80 pixels cover about
+3.2 × 4 mm, roughly 13 mm². Fingerprints carry on the order of 0.2–0.5 minutiae per mm², which gives about 3–6 per
+frame — what this run measured. Bozorth3 needs at least 10 on each print, so **NBIS minutiae matching cannot work on
+this sensor at any enlargement**. That matches the community `goodixtls` fork's move to SIGFM for similar small
+Goodix parts. The pinned libfprint contains no non-minutiae matcher.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
