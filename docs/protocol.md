@@ -1753,6 +1753,20 @@ ran `sudo -k; sudo true`, pasting the prompts and the journal. sudo for the inst
 **Limits:** one open on the new library. The brush retry (`7ada9a7`) has still not been tried: no touch under
 180 ms happened.
 
+### Run 47 — 2026-10-02 19:08, two more 500 ms opens; a deliberate brush still matched (observed)
+
+Still `38f52b2`. The owner ran `sudo -k; sudo true` and brushed the sensor as quickly as they could, to try the
+too-short retry. The journal held two prompts, each in a fresh fprintd process.
+
+- **19:08:04:** open 506 ms. Finger-down came 51 ms after open (the finger was presumably already on), a 443 ms touch,
+  score 5124, match. The pasted terminal output shows only one sudo prompt, so this was probably another prompt
+  (not identified).
+- **19:09:04, the sudo with the brush:** open 503 ms, a **424 ms** touch, score 512, match.
+- **Brush retry still untested:** even a deliberate quick brush stayed on the sensor for 424 ms, well over the
+  180 ms limit, and its image was good enough to match. The 144 ms touch that prompted `7ada9a7` (lock screen,
+  17:41) was presumably an accidental graze, so the retry path may rarely fire. Opens so far on `38f52b2`: 498,
+  506, 503 ms, with no warnings.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by

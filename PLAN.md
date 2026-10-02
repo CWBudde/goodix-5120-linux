@@ -38,8 +38,9 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
       sessions upsets the EC.
 - [ ] **Cold-boot login screen** (GDM through `pam_fprintd`).
 - [ ] **Brush retry.** A touch under 180 ms is now a "too short" retry, not a no-match. Check on the lock screen
-      that a quick brush asks again instead of falling back to the password.
-- [x] **Faster open:** 498 ms, from ~965 ms (Run 46, one open). Watch later opens for pre-TLS errors.
+      that a quick brush asks again instead of falling back to the password. A deliberate brush lasted 424 ms
+      and matched (Run 47), so this needs a real graze, under 180 ms.
+- [x] **Faster open:** 498–506 ms, from ~965 ms (Runs 46–47, three opens, no warnings).
 - [ ] Record the recovery behaviour of each in `docs/protocol.md`.
 
 ### Phase 6c — portability and upstreaming
