@@ -33,3 +33,6 @@ kernel-after-wedge.txt
 *.pcap
 *.pcapng
 /windows-driver/
+
+# Claude Code local state (settings, agent worktrees)
+/.claude/
