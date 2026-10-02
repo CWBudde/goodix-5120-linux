@@ -204,6 +204,8 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    unchanged wire sequence. 280 offline subtests pass. Next: the owner runs `dist/goodix-owner-c-sigfm-driver/` (Run 41,
    [docs/c-driver-enroll-verify.md](docs/c-driver-enroll-verify.md) "SIGFM driver"): one 15-stage enrollment, then
    verify attempts with the enrolled finger and with another finger.
+   Run 41 enrolled with it: 15/15 stages in one session (about 1.4 s per touch), every touch including the last
+   ended by its lift, 101–172 keypoints per view, clean close. Verification is next.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

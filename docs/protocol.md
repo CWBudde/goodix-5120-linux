@@ -1566,6 +1566,30 @@ Keypoints: ×1 88–159 (median 126), ×3 91–165 (median 129).
 fingers, dry/wet skin, or a real enroll/verify flow with stored templates. **Conclusion:** SIGFM with roughly 15
 enroll views is a workable matcher for this sensor; NBIS is not (Run 37).
 
+### Run 41 — 2026-10-02 12:00, first enrollment with the SIGFM driver: 15/15 stages, clean close (observed)
+
+The owner ran `examples/enroll` from `dist/goodix-owner-c-sigfm-driver/` (driver `9c682a6`), finger 6 (right index),
+in a fresh private directory. The pasted log starts at stage 5. Every stage shown is one complete touch:
+`0x32` arm, ACK, finger-down event, `0x20`, ACK, one 7749-byte TLS pack decrypted to 7693 bytes, `0x34` arm, ACK,
+finger-up event, and only then the progress report. That includes stage 15, which the image-device class used to
+cut short (Run 35). Then came enroll completion, the example's first-run `Error loading storage` message, and close
+(nothing sent). No other warning or error appeared, and no retry stage in the pasted part.
+
+- **Pace:** stages 6–15 took 13.0 s, about 1.4 s per touch: 0.7–0.9 s until finger-down, 85 ms from `0x20` to the
+  image pack, and 0.5–0.65 s until finger-up. Extraction took 8–16 ms per view.
+- **Keypoints** per view: 139, 103, 111, 104, 107, 101, 152, 172, 113, 150 (stages 6–15), all far above 25.
+- **Stretch bounds** ranged from 952..2580 to 1144..2824.
+- **Overlap with earlier views** (best SIGFM score of each new view against the views before it), stages 6–15:
+  127613, 9935, 3794, **0**, 9394, 95, **0**, 6, **0**, 64296. Three views overlapped no earlier view, and one
+  scored 6, below the threshold of 24. Each touch images a different part of the finger, which is what a
+  15-view template is for. A view that never overlaps may also be a poor frame; verification will show.
+- **FDT** behaved as in Runs 34–40. Untouched-zone thresholds `0x19` appeared in three up arms (stages 8, 11, 12).
+  Down arms came back from each lift's readings, for example `b8 c5 ab b9 aa b9`. There were no base-invalid events
+  in the pasted part.
+
+**Open:** verification with the enrolled finger and with another finger against this template (runbook "SIGFM
+driver"), and keyboard behaviour during the run (not reported yet).
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
