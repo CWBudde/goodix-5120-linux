@@ -98,3 +98,30 @@ From each log, report the lines below, which contain no pixels, keys or template
 Never post `test-storage.variant` or the `.pgm` files. Review logs before sharing.
 Results are recorded in `docs/protocol.md` (next run number) and `PLAN.md` Phase 6c.
 One genuine match and one impostor rejection do not validate the match threshold. Repeated attempts come after this.
+
+## Minutiae count (after Run 36)
+
+Run 36 scored `0/24` on every compared attempt. That is Bozorth3's value when either print has fewer
+than 10 minutiae. `dist/goodix-owner-c-minutiae/` adds `examples/g5120-minutiae`
+(`libfprint/goodix5120/tools/g5120-minutiae.c`), built against the same unchanged driver and library.
+It opens the device once, captures N frames, and prints for each frame:
+
+- `driver`: libfprint's own minutiae count on the driver's ×3 image (what enroll and verify use).
+- `x1`…`x5`: the same frame reduced to 64 × 80 and re-enlarged ×k bilinearly, re-detected.
+- `inv`: the ×3 image with inverted colours, which tests ridge polarity.
+
+It prints counts only, and writes no image, template or file. `--selftest` exercises the analysis on a
+synthetic pattern without opening anything.
+
+```sh
+repo=/mnt/Projekte/Code/systems/goodix-5120-linux
+build="$repo/dist/goodix-owner-c-minutiae"
+sudo ./goodix-probe --bisect --read-state          # health check first, from the repo root
+sudo env -u FP_DEBUG_TRANSFER G_MESSAGES_DEBUG=all \
+  FP_DRIVERS_ALLOWLIST=goodix5120 GOODIX5120_PSK_FILE="$repo/captures/goodix-psk.bin" \
+  "$build/examples/g5120-minutiae" 10 2>&1 | tee "$HOME/goodix-minutiae.log"
+```
+
+Touch at each `arming 0x32` and lift at `arming 0x34`. Use one finger and press firmly so that all six
+zones are covered. Ctrl-C (external keyboard) cancels. Report the `frame N:` lines and the `summary` line.
+A frame whose driver count is 0 is discarded by libfprint, so it has no rescale columns.
