@@ -1783,7 +1783,21 @@ the password.
   long the finger stays. A touch whose first image misses is lost, whether it lasts 0.6 s or 7 s. The Windows driver
   images the same touch again (next section), which led to the re-check in the driver.
 
-### Recovering the EC (researched offline, 2026-09-30)
+### Run 49 — 2026-10-02 19:55, a match before the lift; reopen with the finger still on (observed)
+
+`6bfc625`, installed with `sudo` this time (the installed library's SHA-256 matches the bundle). The owner ran
+`sudo -k; sudo true` twice, keeping the finger on: a normal touch, then one placed a little off-centre. Both
+prompts passed by finger. One fprintd process, no warnings.
+
+- **19:55:08:** open 506 ms, finger-down 1.65 s later, 129 keypoints, score 6167. `match on image 1, 115 ms after
+finger-down; not waiting for the lift`. No `0x34` was armed.
+- **19:55:10, the second sudo:** its open started 37 ms after that match and took 505 ms. Finger-down came 50 ms
+  after open: the finger had not lifted since the first prompt, so the second prompt imaged the same resting finger
+  (122 keypoints, score 15567, `match on image 1, 103 ms after finger-down`). So the "off-centre" placement probably
+  never happened.
+- **Reopen with the finger still on works:** the first session ended with the finger on and nothing armed. The next
+  open, health check, handshake and `0x32` arm went through, and the arm fired at once on the resting finger.
+- **Not exercised:** the re-check (`0x36`, image 2 or 3). Both first images matched.
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
 Run 16: shut down, leave the charger plugged in, hold the power button 40 s** (item 2, variant 1). The rest
