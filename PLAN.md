@@ -34,8 +34,9 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 - [ ] **Cancel and immediate reuse.** Ctrl-C during the finger wait, and within the first second (mid-handshake),
       each followed by `sudo true`. The second is the riskiest test left: an unfinished handshake is the one state
       known to leave the EC stuck.
-- [ ] **Suspend / resume**, then unlock by finger. Also whether USB autosuspend (`ID_AUTOSUSPEND=1`) between
-      sessions upsets the EC.
+- [x] **Suspend / resume:** the reader opened in 501 ms after resume and matched (Run 50). The unlock screen's
+      timeout was a PAM race between `gdm-password` and `gdm-fingerprint`, fixed in the installer. Check that the next
+      resume shows the fingerprint prompt at once. Still open: USB autosuspend (`ID_AUTOSUSPEND=1`) between sessions.
 - [ ] **Cold-boot login screen** (GDM through `pam_fprintd`).
 - [ ] **Brush retry.** A touch under 180 ms is now a "too short" retry, not a no-match. Check on the lock screen
       that a quick brush asks again instead of falling back to the password. A deliberate brush lasted 424 ms

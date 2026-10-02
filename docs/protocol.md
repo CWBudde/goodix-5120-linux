@@ -1799,6 +1799,27 @@ finger-down; not waiting for the lift`. No `0x34` was armed.
   open, health check, handshake and `0x32` arm went through, and the arm fired at once on the resting finger.
 - **Not exercised:** the re-check (`0x36`, image 2 or 3). Both first images matched.
 
+### Run 50 — 2026-10-02 22:10, suspend/resume: the reader works, the unlock screen timed out (observed)
+
+`6bfc625`. The owner suspended the laptop (22:02:23, `deep`) and woke it at 22:10. The unlock screen showed
+"Zeitüberschreitung"; a later attempt unlocked by finger.
+
+- **The reader came back:** fprintd was started for gnome-shell at 22:10:11.67, 0.3 s after `PM: suspend exit`. The
+  first open (health check, init, TLS-PSK handshake) took 501 ms, and a second one at 22:10:37 took 497 ms. Finger-down,
+  score 16985, `match on image 1, 119 ms after finger-down`. No warnings. So suspend/resume needs nothing from the
+  driver.
+- **The timeout was a PAM race:** at 22:10:12.78 fprintd refused `gdm-fingerprint`'s claim: "Device was already
+  claimed". The claim holder was the `gdm-password` conversation, which runs `pam_fprintd` through `common-auth`.
+  GNOME starts both at once. The fingerprint conversation failed, and the password conversation sat in `pam_fprintd`
+  (`timeout=10`) with no fingerprint prompt on screen. No finger-down came in that session, so the owner presumably
+  did not touch then. `pam_fprintd`'s "Verification timed out" is the "Zeitüberschreitung". A password attempt failed
+  at 22:10:31; the next `gdm-password` conversation at 22:10:37 got the reader, and the finger matched.
+- **Fix, in the installer:** skip `pam_fprintd` for `gdm-password` (`docs/fprintd.md`), leaving the GNOME screens to
+  `gdm-fingerprint`. The profile swap and its reversal were rehearsed with `pam-auth-update --root` on a copy of this
+  machine's PAM files; the other `common-*` files stay byte-identical.
+
+### Recovering the EC (researched offline, 2026-09-30)
+
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
 Run 16: shut down, leave the charger plugged in, hold the power button 40 s** (item 2, variant 1). The rest
 of this section is the research that led there, and the fallbacks if it ever stops working.
