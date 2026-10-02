@@ -263,8 +263,8 @@ Whether this 5120 accepts the zero key is unverified and is a Tier 2 question.
 
 ### Run 1 — 2026-08-17, `sudo ./goodix-probe -v`
 
-The first live run. It wedged the embedded controller and killed the internal keyboard; see
-[`../FINDINGS.md`](../FINDINGS.md) before considering another.
+The first live run. It wedged the embedded controller and killed the internal keyboard (the incident is
+below the frames).
 
 ```
 transport: opened 27c6:5120 interface 1 (in 0x83, out 0x01)
@@ -284,6 +284,29 @@ RX 10 bytes                 a0 06 00 a6 b0 03 00 e4 01 12
 
 **Every checksum verifies.** Worked by hand: `0x4e`, `0xe2`, `0x73`, `0x12` — all four match. The
 framing above is therefore confirmed against hardware, not merely transcribed.
+
+**The incident.** Right after the run the internal keyboard stopped working. The journal of that boot
+(read back 2026-09-19, times CEST):
+
+| Time | Event |
+|---|---|
+| 20:31:41.32 | `sudo goodix-probe -v` starts; it exits 0.13 s later |
+| 20:31–21:08 | **no kernel message at all**: no USB disconnect, no i8042 or atkbd error |
+| 21:05:09 | external USB keyboard plugged in |
+| 21:08:28 | `atkbd` unbind → `i8042: Can't write CTR while closing KBD port` (first i8042 error) |
+| 21:08:52 | `usbreset 27c6:5120` → `usb 1-4: USB disconnect`, re-enumeration fails with `error -71` |
+| 21:09:44 | suspend attempt → on resume, i8042 selftest timeouts and `failed to resume: error -5` |
+
+The EC failed **silently**: Linux noticed nothing until it wrote to the i8042 itself, so the kernel log
+cannot name the command. The device stayed enumerated until the `usbreset`. Rebinding `atkbd` recreated
+the input node, so the Linux side was healthy; the EC simply sent no scancodes. A warm reboot did not
+help. A cold power cycle (charger unplugged, power button ~30 s) did. ACPI offers no software reset for
+the port or the EC (`docs/acpi.md`). Runs 2 and 4 then found the cause: `0xe4` sent with an **empty
+payload**, where the vendor always sends an 8-byte argument.
+
+The lesson: opcodes had been classed by what they do *to the sensor* (read versus write flash). On a
+controller that also runs the keyboard, the risk is collateral, so every opcode now also carries a
+payload rule.
 
 ### Run 2 — 2026-09-19, `sudo ./goodix-probe --bisect` (observed)
 

@@ -56,7 +56,7 @@ Wrong frames have **wedged the EC and killed the internal keyboard** (Runs 1, 2,
   image decode (`image`), offline parsers (`capture`, `evtx`, `dpapi`, `winreg`), shared Go/C fixtures (`testfixtures`).
 - `docs/protocol.md`: wire format and every run, each fact marked transcribed (from upstream) or observed.
   `docs/fprintd.md`: install and PAM. `docs/acpi.md`: firmware tables. `docs/upstream-report.md`: unposted drafts.
-  `FINDINGS.md`: historical account of the first incident. `PLAN.md`: open work.
+  `PLAN.md`: open work.
 
 ## Commands (offline)
 

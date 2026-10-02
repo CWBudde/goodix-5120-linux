@@ -11,7 +11,7 @@ fprintd with [`docs/fprintd.md`](../../docs/fprintd.md).
 ## Read this first: the hardware can be wedged
 
 The sensor sits behind the ITE embedded controller that also drives the internal keyboard. A wrong frame has wedged
-that EC and killed the keyboard until a cold power cycle, several times (see [`FINDINGS.md`](../../FINDINGS.md)). The
+that EC and killed the keyboard until a cold power cycle, several times (`docs/protocol.md`, Runs 1–4 and 12). The
 driver is built around that:
 
 - **One way to build a command frame.** `g5120_command_frame()` refuses any opcode that is not in the send table and

@@ -1,7 +1,7 @@
 # Plan: `27c6:5120`
 
-**This file is the plan, not the record.** Every run and finding is in [`docs/protocol.md`](docs/protocol.md); the
-first incident is in [`FINDINGS.md`](FINDINGS.md). The step-by-step history of this file is in git.
+**This file is the plan, not the record.** Every run and finding is in [`docs/protocol.md`](docs/protocol.md),
+the first incident included (Run 1). The step-by-step history of this file is in git.
 
 Standing rules: the owner runs everything live, never Claude. Never run upstream `driver_51x0.main()` or any IAP /
 firmware-write path. `write_firmware` (`0xf0`) and `preset_psk_write` (`0xe0`) stay out of every default build.

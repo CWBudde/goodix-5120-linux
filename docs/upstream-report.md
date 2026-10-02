@@ -82,7 +82,7 @@ them are security material.
    be OTP material, they can be filled in; the value is low, since they are this unit's.
 2. **The unsolicited `0x32` frame, printed in full in Draft A.** It is an FDT-down (finger-detect)
    event: six per-zone `uint16` readings, not image data, and it is already recorded verbatim in
-   `FINDINGS.md` and `docs/protocol.md`. Judged non-biometric here, but it is the one place a draft
+   `docs/protocol.md`. Judged non-biometric here, but it is the one place a draft
    prints sensor readings, so it is called out rather than assumed.
 3. **Short verbatim strings from the vendor driver's debug log** — "not to send nop for ITE EC
    projects", "no firmware update for EC projects". Quoted in both drafts because they are the evidence

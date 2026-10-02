@@ -325,7 +325,7 @@ func collectFrom(logger *log.Logger, tr transport.Transport, sent proto.Opcode, 
 
 // drain reads until the device goes quiet, so the probe never exits with a
 // response left queued in the EC. Run 1 did exit that way; whether it
-// contributed to the wedge is unknown (FINDINGS.md), so this is hygiene, not a
+// contributed to the wedge is unknown (docs/protocol.md, Run 1), so this is hygiene, not a
 // safety guarantee.
 func drain(logger *log.Logger, tr transport.Transport, timeout time.Duration) {
 	logger.Printf("\n--- drain")

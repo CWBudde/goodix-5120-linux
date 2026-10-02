@@ -44,7 +44,6 @@ docs/protocol.md        the wire protocol and every live run, each fact marked t
 docs/fprintd.md         installing for fprintd and PAM
 docs/acpi.md            what the ACPI tables say about the EC, the keyboard and the port
 docs/upstream-report.md drafts for goodix-fp-dump and libfprint, not posted yet
-FINDINGS.md             the account of the first live run (2026-08-17) and the keyboard incident
 PLAN.md                 what is done and what is still open
 ```
 

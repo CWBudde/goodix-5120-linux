@@ -125,7 +125,7 @@ rehearse: rehearse-handshake rehearse-capture rehearse-touches
 live-help:
     @echo 'There is no recipe that runs against the device, on purpose.'
     @echo
-    @echo 'A live run wedged the ITE EC and killed the internal keyboard (FINDINGS.md). The'
+    @echo 'A live run wedged the ITE EC and killed the internal keyboard (Run 1). The'
     @echo 'safety of this repository is friction: one command per run, every state-changing'
     @echo 'frame behind its own --allow-XX flag, the 0xa8 health check, an external keyboard,'
     @echo 'and a human'
