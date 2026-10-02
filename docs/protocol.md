@@ -175,7 +175,7 @@ authentication.
 PSK provenance varies across the family — sealed (hardware-specific), white-box, or all-zero. This 5120
 uses a **sealed, hardware-specific** key: Windows provisioned a random 32-byte PSK and sealed it with
 DPAPI in `Goodix_Cache.bin`. It has been recovered offline; see
-[`dpapi-runbook.md`](dpapi-runbook.md).
+"Unsealing the PSK offline" below.
 
 **Confirmed offline (2026-09-20).** The suite the family uses, `PSK-AES128-CBC-SHA256` (`0x00ae`,
 `TLS_PSK_WITH_AES_128_CBC_SHA256`), is offered by this machine's openssl (3.5.5) and negotiates at the
@@ -222,7 +222,7 @@ kept, struck, because knowing a question *is* settled is worth as much as the an
 | ~~Firmware version string~~ | **Resolved** — `GF_ITE_EC_20063`, via `0xa8` |
 | ~~Sensor resolution~~ | **Resolved — 64 columns × 80 rows.** 5120 samples from the driver log (chip ID `0x2504`, "ChicagoHS", sensor type 12), and independently corroborated by the TLS record length; see "How big is an image, really". The orientation is measured, from the first real frame (Run 20) Upstream `driver_51x0.py` declares 80 × **88**, which is a different part — do not assume it |
 | ~~12-bit sample packing for image decode~~ | **Resolved** — transcribed from upstream `tool.py`, see below. Corroborated by the record-length arithmetic, still unverified against a real plaintext |
-| PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see `dpapi-runbook.md`) and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
+| PSK variant | **The device key is recovered; acceptance is still the wall.** The upstream zero key is not this device's — Windows sealed a random PSK (`Goodix_Cache.bin`, DPAPI), now unsealed offline (see "Unsealing the PSK offline") and wired into `internal/tlspsk`. Run 11 reached a live handshake but stalled **before** any key material was used, so this remains untested |
 | What the 224-byte `0x90` config actually *does* | **Open**, but it is *accepted*: Run 11 sent it live and the EC answered `01 01`. The bytes are known and the entry structure is a reasonable reading; no register in it has been identified. See "The 224-byte `0x90` config — recovered" |
 | ~~How the EC wants a server flight framed~~ | **Resolved — one pack per record**, from the driver log of a completed handshake (see "The vendor's handshake, read from the driver log"). That is Run 11's framing, so the framing did not cause Run 11's stall; Run 17 found the cause in the bridge's read timing. The bridge sends one pack per record; `--tls-coalesce-flight` keeps the other |
 
@@ -287,7 +287,7 @@ framing above is therefore confirmed against hardware, not merely transcribed.
 
 ### Run 2 — 2026-09-19, `sudo ./goodix-probe --bisect` (observed)
 
-Run by the user per [`bisect-runbook.md`](bisect-runbook.md), with an external keyboard attached. No usbmon
+Run by the user per the bisect runbook (since removed), with an external keyboard attached. No usbmon
 capture. **Result: the internal keyboard stopped after step 3, `preset_psk_read` (`0xe4`).** Baseline,
 attach, `nop` and `0xa8` each passed their keyboard check.
 
@@ -346,7 +346,7 @@ baseline      —                           —                                 
 
 ### Run 4 — 2026-09-19 22:41, `sudo ./goodix-probe --bisect --allow-e4 --steps e4 --timeout 30s` (observed)
 
-The run [`bisect-runbook.md`](bisect-runbook.md) prescribes for settling whether `0xe4` wedges the EC
+The run the bisect runbook (since removed) prescribed for settling whether `0xe4` wedges the EC
 **on its own**: attach, then `0xe4` and nothing else. Run by the user with an external keyboard attached. No
 usbmon capture. **Result: the internal keyboard stopped after step 1, `preset_psk_read` (`0xe4`) —
 with no `nop` and no `0xa8` before it.**
@@ -1505,7 +1505,7 @@ compares only `y`, so its de-duplication keeps one match per image row.
 
 **Fixed-pattern noise is not ruled out but now has little support.** The sensor's fixed pattern sits at the
 same pixel positions in every frame, so it would make most pairs match. Here 26 of 36 A–B pairs scored 0. The fork
-still subtracts a no-finger frame (`docs/c-driver-enroll-verify.md`), and this driver does not.
+still subtracts a no-finger frame (driver README, "Matching"), and this driver does not.
 
 **Open:** a run with a genuinely different finger for B, to measure impostor scores at all.
 
@@ -1732,7 +1732,7 @@ to unplug it and hold for 30 s. No Huawei source describes an EC reset.
 
 What is left, least invasive first:
 
-1. **Read the state first** — `--bisect --read-state` (`docs/bisect-runbook.md`). It sends one `0xae`
+1. **Read the state first** — `--bisect --read-state`. It sends one `0xae`
    after the failed health check. Status `0x08` and a counter above `0x14` mean the stuck handshake is
    still there. A counter below `0x14` means the EC *was* reset and something new is wrong.
 2. **Power-button variants**: charger plugged in with a 40 s hold, and charger unplugged with a 60 s
@@ -1799,7 +1799,7 @@ position exactly: the EC went quiet at the one point where the vendor's EC sends
 Timing is the other remaining difference, and a small one: the vendor answered the ClientHello in 1 ms,
 Run 11 in 8 ms, well inside the vendor's own 1100 ms handshake budget (`time_wait_for_tls 1100`).
 
-The next `--tls` run therefore sends the vendor's init in full, `e4` included (`docs/bisect-runbook.md`),
+The next `--tls` run therefore sends the vendor's init in full, `e4` included,
 with the vendor's framing. A live `--tls` run whose steps leave out part of that init now logs a warning,
 and a stall names the missing commands first (`missingFromVendorInit` in `cmd/goodix-probe/tls.go`).
 
@@ -2187,6 +2187,36 @@ needs that master key, which is a separate question and not answered here. The r
 bytes are deliberately **not** recorded: they are the sealed PSK. The file stays gitignored and
 unpublished.
 
+### Unsealing the PSK offline (observed, 2026-09-20)
+
+`cmd/goodix-dpapi` (`internal/dpapi`, `internal/winreg`) recovers the PSK from the Windows partition alone: no
+device, no password, Windows Hello untouched. Each stage verifies its result, so a wrong input fails loudly:
+
+1. **Boot key**, from the class names of `ControlSet00N\Control\Lsa\{JD,Skew1,GBG,Data}` in `SYSTEM`.
+2. **LSA key**, `Policy\PolEKList` in `SECURITY`, AES-decrypted with the boot key (32 bytes at offset 52).
+3. **DPAPI_SYSTEM**, `Policy\Secrets\DPAPI_SYSTEM\CurrVal`, split into the 20-byte machine and user keys.
+4. **Master key**, `…\Microsoft\Protect\S-1-5-18\<GUID>`, verified by its own HMAC. The key stretch is not RFC
+   PBKDF2: each round feeds the XOR accumulator back into the PRF, and a SHA-512 key's tag is truncated to 16 bytes.
+5. **Blob**, verified by its Sign HMAC. It is sealed with **secondary entropy** that `gfusb.dll` derives
+   (`generate_entropy2`, RVA `0x32760`) from the 8 bytes trailing the blob in `Goodix_Cache.bin`:
+
+   ```
+   root    = SHA256(seed)                              // seed = the 8 trailing bytes
+   entropy = root[16:32] || SHA256(root[0:16] || K)    // 48 bytes
+   ```
+
+   `K` folds three 16-byte `.data` constants (`0x312cb0`/`0x312cc0`/`0x312cd0`); `internal/dpapi/goodix.go`
+   keeps them verbatim so `K` can be audited against the binary.
+
+```sh
+./goodix-dpapi -sys …/config/SYSTEM -sec …/config/SECURITY \
+  -mkdir …/Microsoft/Protect/S-1-5-18 \
+  -blob …/ProgramData/Goodix/Goodix_Cache.bin -goodix -out captures/goodix-psk.bin
+```
+
+The result is a 32-byte, HMAC-verified plaintext, and Run 18 confirmed it is the device's key. The PSK, the seed
+and the boot key are machine secrets and stay in gitignored `captures/`.
+
 ### The 224-byte `0x90` config — recovered (observed, 2026-09-20)
 
 **The last outbound frame of the vendor init that nobody had the bytes for is now known in full.**
@@ -2281,7 +2311,7 @@ complete init, 22:25:05.889, falls outside its window in any case.)
 
 The consequence for the runbook is that **more re-enumeration is not the fix** — Uninstall plus "Scan
 for hardware changes" is a stronger PnP removal and would fail the same way. See
-[`docs/windows-capture-runbook.md`](windows-capture-runbook.md).
+the Windows capture runbook (since removed; see git history).
 
 ### Power
 

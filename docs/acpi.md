@@ -82,7 +82,7 @@ A search of the DSDT and all 13 SSDTs finds no `fingerprint`, `Goodix`, `FPRT`-s
 is a plain USB device; the firmware knows only which port it sits on. So there is no vendor power
 sequencing to imitate and nothing for a Linux driver to hook.
 
-## What this changes for the bisect runbook
+## What this changes for `--bisect`
 
 **The ACPI SCI counter is not a liveness signal for the EC.** `--bisect` logs it after every step, but
 it stood still at 300 through all of Run 2 and at 118 through both 18:2x runs — healthy runs, every

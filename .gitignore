@@ -19,7 +19,7 @@
 *.swp
 .DS_Store
 
-# Bisect run output (docs/bisect-runbook.md)
+# Bisect run output (goodix-probe --bisect)
 goodix-bisect-*.log
 usbmon-*.txt
 kernel-after-wedge.txt
@@ -29,7 +29,7 @@ kernel-after-wedge.txt
 *.dsl
 *.aml
 
-# Windows vendor-driver capture (docs/windows-capture-runbook.md)
+# Windows vendor-driver capture (USBPcap)
 *.pcap
 *.pcapng
 /windows-driver/

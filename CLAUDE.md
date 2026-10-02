@@ -4,21 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Hardware safety — read first
 
-This is bring-up work for the Goodix `27c6:5120` fingerprint reader in a Huawei MateBook (`HVY-WXX9`). The one live run
-(2026-08-17) **wedged the ITE embedded controller and killed the internal keyboard**; only a cold power cycle (full
-shutdown, charger unplugged, power button held ~30 s) recovered it. The device reports `GF_ITE_EC_20063`: it is an EC that
-bridges to the sensor *and* drives the keyboard over i8042.
+A driver for the Goodix `27c6:5120` fingerprint reader in a Huawei MateBook (`HVY-WXX9`). The device reports
+`GF_ITE_EC_20063`: an ITE embedded controller that bridges to the sensor *and* drives the keyboard over i8042. Wrong
+frames have **wedged the EC and killed the internal keyboard** (Runs 1, 2, 4, 12). The C libfprint driver in
+`libfprint/goodix5120/` now works through fprintd and PAM (Runs 43–45); the Go code is its offline reference.
 
-- **Never run the probe against live hardware** (`sudo ./goodix-probe`, no `--dry-run`/`--replay`), and never run upstream
-  `driver_51x0.main()` or any IAP/firmware-write path. All verification is offline, against the replay transport.
-- `FINDINGS.md` is the full account and recommendation; `PLAN.md` is the phased plan (Phase 1 = offline code fixes,
-  Phase 4 live runs are gated on a vendor-driver USB capture); `docs/protocol.md` records the wire format, with each fact
-  marked as transcribed from upstream or observed. Append new observations there.
-- `--bisect` (`cmd/goodix-probe/bisect.go`, `host.go`) is the one sanctioned live mode, per
-  `docs/bisect-runbook.md`. The **user** runs it with an external keyboard attached; Claude never does.
-  Offline it runs as `--bisect --replay`.
-- No firmware blobs (`*.bin`) or captures (`*.pgm`, `*.raw`, `captures/`) go into the repo — captures may contain
-  biometric data.
+- **Claude never touches the device.** The user runs every live tool: the probe without `--dry-run`/`--replay`,
+  libfprint's examples, the `fprintd-*` tools, `sudo` through PAM, and `libfprint/goodix5120/fprintd/goodix5120-fprintd.sh`.
+  Never run upstream `driver_51x0.main()` or any IAP/firmware-write path. All verification is offline (replay
+  transport, fake-USB driver tests).
+- `PLAN.md` is what is open; `docs/protocol.md` records the wire format and every run, with each fact marked as
+  transcribed from upstream or observed. Append new runs there (before "Recovering the EC"), with the user's own
+  description of what they did. `FINDINGS.md` is the historical account of the first incident; `docs/fprintd.md` is
+  the install procedure.
+- If the EC wedges: shut down with the charger **plugged in**, hold the power button **40 s** (`docs/protocol.md`,
+  "Recovering the EC").
+- No firmware blobs (`*.bin`), captures (`*.pgm`, `*.raw`, `captures/`), templates or logs with biometric data go into
+  the repo. Never print the PSK, the `0xe4` reply or the `0xa6` reply.
 
 ## Commands
 
@@ -51,17 +53,33 @@ go test -tags goodix_destructive ./internal/proto ./internal/transport   # tag-a
 go build -buildvcs=false ./cmd/goodix-pcap
 ./goodix-pcap -in dump.pcapng                   # counts only, no payload bytes; reads a file, opens nothing
 ./goodix-pcap -in dump.pcapng -devices          # every device address in the capture: which hub, who kept transferring
-go test ./internal/capture -capture "$PWD/dump.pcapng"   # checks the payload rules against real vendor traffic
+go test ./internal/capture -capture "$PWD/dump.pcapng"   # checks the payload rules against real vendor traffic (needs a local capture)
 
 go build -buildvcs=false ./cmd/goodix-evtx
 ./goodix-evtx -in log.evtx                      # summary only: counts, id range, span, message shapes; no record text
 ./goodix-evtx -in log.evtx -grep "Send data::0xa0e4"     # record text needs -grep or -text, and is bounded by -n
 go test ./internal/evtx -log "$PWD/captures/Goodix-FingerprintProvider%4Debug.evtx"   # re-derives the 17545 / 18 / 9 figures
+
+# The C driver, offline: the real goodix5120.c against a fake libfprint/USB adapter and a synthetic EC
+meson setup /tmp/g5120 libfprint/goodix5120 && meson test -C /tmp/g5120 --print-errorlogs
+meson setup /tmp/g5120-asan libfprint/goodix5120 -Db_sanitize=address,undefined && meson test -C /tmp/g5120-asan
 ```
+
+The full libfprint build (pinned libfprint `6f9479c3`, `libfprint-register.patch`, OpenCV for SIGFM) runs offline in
+the docker image `goodix-offline-build-opencv:26.04` with `--network none`; its output bundle goes to the gitignored
+`dist/goodix-owner-c-sigfm-driver/`, which the fprintd installer reads.
 
 ## Architecture
 
-The safety guarantee is structural, and changes must preserve it:
+**The C driver (`libfprint/goodix5120/`)** is a plain `FpDevice` (not an image device: NBIS finds too few minutiae on
+64 × 80) with its own enroll (15 stages) / verify / identify / capture, matching with vendored SIGFM at threshold 24.
+`goodix5120_proto.c` is pure framing and the send gate (`g5120_command_frame()` refuses unknown opcodes and wrong
+payload lengths); `goodix5120_tls.c` is a TLS 1.2 PSK server on OpenSSL memory BIOs; `goodix5120.c` holds the
+`FpiSsm` state machines. Its README lists the timing rules that hardware runs established (TLS pacing: no two host
+writes under 10 ms apart) and the logging rules (`GOODIX5120_TRACE` for wire detail; secrets never). It mirrors the Go
+rules below; the Go and C tests share one fixture corpus in `internal/testfixtures/testdata/`.
+
+The Go safety guarantee is structural, and changes must preserve it:
 
 - **`internal/proto`** is pure (no I/O): two nested framings — pack `[flags][len LE16][checksum][payload]` wrapping message
   `[cmd][len LE16][payload][checksum]` — plus the opcode registry. Every opcode carries a `Class`: `ClassSafe` <
@@ -96,7 +114,7 @@ The safety guarantee is structural, and changes must preserve it:
   `TestEveryAboveCeilingVendorFrameIsCatalogued` pins that table against the vendor catalogue in both directions. A
   flag admits its opcode only when the run actually sends it (a `--steps` entry, or one of the commands `--tls` sends
   itself); the ceiling stays `ClassSafe` and no flag can admit a destructive opcode. `--allow-e4` sends the vendor's
-  8-byte payload; the empty frame that wedged the EC is refused by the payload rule. See `docs/bisect-runbook.md`.
+  8-byte payload; the empty frame that wedged the EC is refused by the payload rule.
 - **`cmd/goodix-probe`** has one mode that sends anything, `--bisect`; without it the probe only does
   `--dry-run`. It is the reference the C driver on `libfprint-driver` follows byte for byte, and the only
   tool that can rehearse the whole path offline. The default `--steps` is `steps` (`a8` only);
@@ -108,7 +126,7 @@ The safety guarantee is structural, and changes must preserve it:
   `internal/session` is the bridge between that and the device, **half duplex on purpose** so nothing writes to the
   OUT endpoint while something else reads from it. Their one caller is `goodix-probe --tls`, which runs as the tail of
   a bisect run and is therefore behind the same health-checked procedure as any live step
-  (`docs/bisect-runbook.md`, PLAN.md Phase 5b/5c).
+  (`docs/protocol.md`, Runs 11–22).
 - **An unfinished TLS handshake leaves the EC answering nothing but `0xae`, and the power-button cold
   power cycle did not clear it in Run 14** (Run 12: sending the init into that state cost the keyboard).
   What did clear it (Run 16): shutdown with the charger **plugged in** and a **40 s** power-button hold —

@@ -298,7 +298,7 @@ func TestSyntheticFrameMatchesTheSensor(t *testing.T) {
 }
 
 // TestVendorInitBeforeTLS pins the vendor's pre-0xd0 order, which the stall
-// diagnosis and the runbook's --tls command line are both read against. The
+// diagnosis and the Run 18 --tls command line are both read against. The
 // driver log shows it in every init, 0xe4 included, ahead of every handshake
 // that completed.
 func TestVendorInitBeforeTLS(t *testing.T) {
@@ -308,7 +308,7 @@ func TestVendorInitBeforeTLS(t *testing.T) {
 	}
 
 	// The whole list has to be sendable as --steps, each above-ceiling opcode
-	// behind its own flag, or the runbook's command line cannot be typed.
+	// behind its own flag, or that command line cannot be typed.
 	var allow []proto.Opcode
 	for _, u := range unlockable {
 		allow = append(allow, u.op)

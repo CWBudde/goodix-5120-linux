@@ -130,9 +130,8 @@ live-help:
     @echo 'frame behind its own --allow-XX flag, the 0xa8 health check, an external keyboard,'
     @echo 'and a human'
     @echo 'deciding each step. A recipe that hides `sudo --allow-90` behind a short name'
-    @echo 'removes exactly the friction that is the safeguard, so the command lines stay'
-    @echo 'where the procedure around them is written down:'
-    @echo
-    @echo '    docs/bisect-runbook.md'
+    @echo 'removes exactly the friction that is the safeguard. The driver runs through'
+    @echo 'fprintd (docs/fprintd.md); every live probe command line is in its run record in'
+    @echo 'docs/protocol.md, and "Recovering the EC" there says what to do if it wedges.'
     @echo
     @echo 'Rehearse offline first: just rehearse'

@@ -4,15 +4,15 @@
 
 - `cmd/`: Go commands for probing, USB capture analysis, Windows event logs, and DPAPI unsealing.
 - `internal/`: protocol, gated transports, TLS sessions, image decoding, and offline parsers. Go tests sit beside source as `*_test.go`.
-- `libfprint/goodix5120/`: experimental C image driver, protocol/TLS helpers, GLib tests in `tests/`, and libfprint registration patch.
-- `docs/`: protocol evidence and runbooks. `FINDINGS.md` records findings; `PLAN.md` tracks work.
+- `libfprint/goodix5120/`: the libfprint driver (protocol, TLS-PSK server, SIGFM matching), GLib tests in `tests/`, the libfprint registration patch and the fprintd installer.
+- `docs/`: protocol evidence and every live run (`protocol.md`), fprintd install (`fprintd.md`). `FINDINGS.md` is the historical first-incident account; `PLAN.md` tracks open work.
 - `captures/`: ignored local secrets and biometric artifacts; never commit them.
 
 ## Hardware Safety & Architecture
 
-Read `CLAUDE.md`, `FINDINGS.md`, and the relevant runbook before changing device communication. The ITE controller also drives the keyboard; incorrect commands have disabled it.
+Read `CLAUDE.md` and the driver README before changing device communication. The ITE controller also drives the keyboard; incorrect commands have disabled it.
 
-Agents must verify offline and never access live hardware. Owner-run experiments require the external-keyboard procedure in `docs/bisect-runbook.md`; C-driver experiments also follow its README and the review gate in `PLAN.md`.
+Agents must verify offline and never access live hardware. Live tests are run by the owner only: the driver through fprintd (`docs/fprintd.md`), the Go probe through `--bisect` as recorded per run in `docs/protocol.md`. If the EC wedges, follow "Recovering the EC" there.
 
 Preserve opcode/payload gates, half-duplex exchanges, secret redaction, and destructive opcodes being excluded from default builds. Keep offline parsers independent of USB transports. Never publish PSKs, boot keys, OTP data, firmware blobs, or biometric captures.
 

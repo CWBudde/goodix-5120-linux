@@ -1,37 +1,12 @@
 # goodix5120: libfprint driver for the Goodix `27c6:5120` behind an ITE EC
 
-This is PLAN.md Phase 6, layer 2: a libfprint driver in C for the fingerprint reader in the Huawei MateBook
-`HVY-WXX9`. The Go code in this repository is the reference, and this driver follows its command sequence.
+A libfprint driver in C for the fingerprint reader in the Huawei MateBook `HVY-WXX9`. It follows the command sequence
+of the Go reference in `cmd/goodix-probe` byte for byte, runs the TLS-PSK session itself, and matches with SIGFM.
 
-**Status: the driver compiles inside a libfprint tree and passes offline lifecycle tests. Run 23's `0xe4` check
-is corrected; Runs 24 and 25 passed the full init but the EC rejected the first TLS server flight with
-`decode_error`. Both keyboards survived. Completed 64-byte OUT writes did not resolve the rejection;
-a successful capture remains pending. The original pacing bundle also crashed the EC; its final error
-is unavailable. Run 26's reviewed `2b77542` bundle completed authenticated TLS with 60 ms host-record
-intervals, then stopped at an overly strict immediate MCU-state gate. Both keyboards worked.
-The corrected gate accepts the observed status `0x00` after authentication and positive `0xd4` ACK;
-Run 27 then reached the touch, but `0x20` drew no image and the TLS bit stayed clear; the final
-flight and `0xd4` follow the Go timing, which Runs 28/29 showed was not enough. The current source
-also listens briefly after the `0xd4` ACK before `0xae` (5 s until Run 43, now 50 ms) and paces every pair of host records; Run 33 confirmed
-that pacing is what lets `0x20` answer (an unpaced final flight from the same EC state drew nothing). Run 32 drew and
-decrypted the first C image, but NBIS found no minutiae in its `>> 4` frame; the current source stretches each
-frame's contrast instead (257 offline tests). Run 34 ran that build from a bit-clear EC: the first
-complete C capture, with the stretched frame passing minutiae detection and saved. Run 35 enrolled a
-finger with libfprint's `enroll` example (5/5 stages, one retry, in one session). Run 36's verify
-scored 0 on every attempt, and Run 37 measured at most 5 minutiae per frame at any scale. NBIS needs 10,
-so matching needs a different matcher. Runs 38–40 tried SIGFM offline: with a 14-view template, 14/15
-genuine attempts matched, and no true impostor scored above 9 (threshold 24). The driver now matches with SIGFM
-itself: it is a plain `FpDevice` with its own enroll (15 stages), verify, identify and capture, and the wire
-sequence is unchanged ([Matching](#matching-sigfm)). It passes the offline tests (280 with OpenCV). Run 41
-enrolled 15 stages and then verified the enrolled finger 6/6 (scores ≥ 1031) and rejected another finger 3/3
-(scores 0), with the template stored and loaded by libfprint's `verify` example.**
-The successful live Go runs used its historical OpenSSL subprocess; the current in-process Go endpoint
-has offline evidence. Its protocol evidence comes from the Go reference,
-from Runs 8, 18 and 20–22 in
-[`docs/protocol.md`](../../docs/protocol.md), and from the vendor's capture and debug log. The Go probe has run this
-driver's whole wire sequence live, including the capture loop three times in one TLS session (Run 22), and
-`/goodix5120/fdt/run22-session` checks that this driver derives the same arms from the same events. The corrected
-capture attempt remains gated on investigation and review, following the procedure below.
+**Status (2026-10-02):** enroll, verify and identify work on this machine through fprintd and PAM (Runs 41–45 in
+[`docs/protocol.md`](../../docs/protocol.md)). Genuine scores so far 36–258594, other fingers 0–9, threshold 24.
+An open takes about 965 ms. Cancellation during open, suspend/resume and autosuspend are untested live. Install for
+fprintd with [`docs/fprintd.md`](../../docs/fprintd.md).
 
 ## Read this first: the hardware can be wedged
 
@@ -58,7 +33,7 @@ driver is built around that:
   awaited.
 - **Completed 64-byte writes.** Each padded frame is sent one packet at a time, with the next packet submitted
   after completion. Short/zero completions stop the frame; all packets share its original write budget.
-- **Experimental TLS pacing.** Between every pair of host TLS records (ServerHello/ServerHelloDone and
+- **TLS pacing.** Between every pair of host TLS records (ServerHello/ServerHelloDone and
   ChangeCipherSpec/Finished), a 60 ms interval permits alert reads. Stale input preserves the deadline;
   fragmented TLS input is completed before more output. A 10 ms settle read precedes `0xd4`; a record
   arriving after the local handshake completed fails open. The total handshake budget bounds all states
@@ -69,7 +44,7 @@ driver is built around that:
   It was 5 s (after Go's `collect` in Run 18) until Run 43. Run 30 ruled that hypothesis out, Runs 32/33
   pinned the cause on sub-millisecond write pairs, and the EC was silent in every 5 s window.
 - **Open time.** Only the attach drain waits 200 ms for silence; the drains between open steps wait 20 ms,
-  since each exchange has read its replies in full. Open logs `open: N ms` (about 8 s before this change).
+  since each exchange has read its replies in full. Open logs `open: N ms` (961–968 ms in Run 44; 8 s before).
 - **Immediate MCU state.** After authenticated TLS, completed host records and a positive `0xd4` ACK,
   the final reply must be 20 bytes and have the TLS bit set or exactly status `0x00` (Run 26).
   This exception does not reinterpret the clear bit. Other bit-clear states, including stuck `0x08`, stop open.
@@ -101,8 +76,9 @@ driver is built around that:
 | `tests/test-goodix5120-sigfm.cpp` | Real SIGFM on synthetic patterns: extraction, and that storing a view changes no score (built only with OpenCV) |
 | `meson.build` | Standalone helper and driver tests, without linking libfprint or USB |
 | `libfprint-register.patch` | Registers the driver in a libfprint tree |
+| `fprintd/goodix5120-fprintd.sh` | Points the system fprintd at this build, reversibly ([`docs/fprintd.md`](../../docs/fprintd.md)) |
 
-## Dropping it into a libfprint tree
+## Building
 
 ```sh
 cd libfprint                                  # a libfprint source checkout
@@ -124,7 +100,7 @@ The driver is registered as **optional**, so only `-Ddrivers=...,goodix5120` bui
 - `pixman` is already required by the `aes3k` family. It is used here to enlarge the image (see below).
 - `opencv` (≥ 4.4, `opencv4.pc`) is **new**: SIGFM uses OpenCV's SIFT and brute-force matcher. It also adds C++
   sources to libfprint, whose meson project already declares C++. Upstream libfprint has no such dependency, so this
-  build stays local until matching is settled (PLAN.md Phase 6c).
+  build stays local until upstreaming is decided.
 
 `27c6:5120` is still in libfprint's generated "known unsupported" list. The patch leaves it there while the driver
 is optional, and the hwdb tool warns about the overlap.
@@ -136,25 +112,24 @@ libfprint's warning flags.
 ## The PSK
 
 The EC and the host share a 32-byte TLS pre-shared key. The driver reads it as a **raw 32-byte file, not hex**, the
-form `goodix-dpapi -out` writes:
+form `goodix-dpapi -out` writes ([`docs/protocol.md`](../../docs/protocol.md), "Unsealing the PSK offline"):
 
 1. from the path in `GOODIX5120_PSK_FILE`, if set;
 2. otherwise from `/var/lib/fprint/goodix5120/psk.bin`.
 
 If the file is missing or is not exactly 32 bytes (a 64-character hex file is refused, not truncated), open fails
 with a message naming both locations, and no USB traffic happens. A file readable by group or others draws a
-warning. It should be `0600 root:root`. For fprintd, set the variable with `systemctl edit fprintd`
-(`[Service]` / `Environment=GOODIX5120_PSK_FILE=...`), or use the default path, which sits inside fprintd's own
-state directory.
+warning. It should be `0600 root:root`. The fprintd installer copies it to `/etc/goodix5120/psk.bin` and sets
+`GOODIX5120_PSK_FILE` in its drop-in.
 
-### PSK provisioning (open Phase 6 decision)
+### PSK provisioning (open decision)
 
 **TODO(provisioning):** the driver does not provision a PSK and cannot. The only known way to write one is `0xe0`
 (`preset_psk_write`). That opcode is destructive: it overwrites the key Windows provisioned and breaks Windows Hello
 until Windows provisions again. It is absent from this driver on purpose. Until the decision in PLAN.md Phase 6 is
 made with upstream:
 
-- **dual-boot machines:** unseal the key from Windows with `goodix-dpapi` (`docs/dpapi-runbook.md`);
+- **dual-boot machines:** unseal the key from Windows with `goodix-dpapi`;
 - **Linux-only machines:** unsupported. Provisioning would need `0xe0`, and it would first have to be shown that the
   device recovers afterwards.
 
@@ -194,7 +169,7 @@ ServerKeyExchange, and the vendor's flight has none either. Records are forwarde
 generates is **not** sent to the EC; the Go bridge does the same.
 
 Touch. Every action is one touch (enroll: one per stage), and a touch is the same three steps the image-device
-class drove before Phase 6c:
+class drove in the earlier image-device build:
 
 ```
 finger down       32 0c 01 (80 t)x6 <u16 ms>   ACK, then wait (no timeout) for the 0x32 event
@@ -253,11 +228,10 @@ libfprint's heat model is switched off (`temp_hot_seconds = -1`, as the match-on
 an action after about 4 minutes of use, which a slow 15-touch enroll can reach, and this sensor images only on a
 touch.
 
-Not validated: other days, other fingers, dry or wet skin, and a stored template read back across sessions. The
-fork also subtracts a no-finger background frame; this driver does not (that needs a new live step).
-`tools/g5120-minutiae.c` and `tools/g5120-sigfm.cpp` were written for the image-device build: against this one,
-captures no longer pass through NBIS, so the minutiae tool's `driver` column and the SIGFM tool's discard retries
-no longer apply.
+Validated so far: one owner, two sessions per template, stored templates read back across sessions and through
+fprintd (Runs 41–45). A template whose views overlap poorly scores low (36 in Run 44); re-enrolling with varied
+placements fixed it. Not validated: dry or wet skin, other people. The fork also subtracts a no-finger background
+frame; this driver does not (that needs a new live step).
 
 ## Tests (offline, no device)
 
@@ -306,9 +280,6 @@ tests cover:
 
 ## What is not done, or stubbed
 
-- **Agents never run hardware.** The Phase 6a/6b offline gate is complete; only the owner may perform the
-  first capture under the procedure below. Nothing has checked this driver's timing or its `libusb`/GUsb
-  transfer behaviour against this EC. The FDT loop has run live only through the Go probe (Runs 21 and 22).
 - `0x98` (set DAC) sends **this unit's** OTP-derived values, and `fdt_delta` is **this unit's**. Both have to be
   derived from the `0xa6` OTP reply before the driver can serve a second machine, and the derivation is not known.
   PLAN.md also lists the OTP-derived DAC values as something never to publish. That makes them a blocker for
@@ -316,81 +287,28 @@ tests cover:
 - **The vendor's post-init calibration is not sent:** step 15 of its init (`36`, `50`, `36`, `82 …`, `20`, `36`).
   Neither is the `0x50` "nav mode" it sends after each finger-up, which appears only in the driver log.
 - No suspend/resume handling, and no command that ends a session on close. The EC keeps its TLS session and last FDT
-  arm, as Windows leaves it.
+  arm, as Windows leaves it. Each open repeats the full init and handshake; fprintd opens per operation, and many
+  opens in a row have worked (Runs 43–45).
 - PSK provisioning (see above).
 - No umockdev recording under `tests/` in libfprint style, because making one needs the device. Captures also must
   not enter this repository.
 
-## Open questions and risks for the live bring-up
+## Open questions
 
-1. **Matching quality.** 64 × 80 is about 3.3 × 4 mm at the usual 50.8 µm pitch. NBIS finds too few minutiae
-   (Run 37), so the driver matches with SIGFM ([Matching](#matching-sigfm)). Its threshold (24) and 15 enroll
-   stages rest on one session with two fingers (Runs 38–40).
-2. **Ridge polarity and contrast.** Unknown whether ridges are dark. If they are not, set
-   `FPI_IMAGE_COLORS_INVERTED`. `>> 4` uses half the range: Run 22's three frames span 52–179 after it, with a
-   standard deviation of about 23, and Run 32's `>> 4` frame yielded no minutiae. The per-frame stretch is not a
-   calibration: without a background frame, uneven sensor response is stretched along with the ridges.
-3. **Timing.** The live Go runs waited seconds between steps. The vendor waits for nothing. This driver waits for
-   each reply plus 20 ms of quiet. The handshake itself has no host-side waits, which is the part that mattered
-   (Runs 11 and 17).
-4. **The drain at open** consumes a stale `0x32` event from an EC Windows left armed. An event that arrives
-   between that drain and the first arm is dropped as stale before the arm's ACK.
-5. **Base invalid with zeros.** Tonight's reading is that a base-invalid event carries current readings. The older
-   note in `internal/proto/fdt.go` says zeroes. If it is zeroes, the driver keeps its previous thresholds, and gives
-   up after 8 in a row. Each action resets that retry budget, including after cancellation or close/reopen;
-   rearming within an operation keeps the count. No live run has seen the event yet: Runs 21 and 22 armed down
-   four times without one.
-6. **ACK status.** Only `0x01` has ever been seen, and anything else stops the driver. That may be too strict.
-7. **What the EC is left in after a failure.** A handshake failure (wrong PSK, timeout) probably leaves the EC stuck.
+1. **Cancellation during open.** A command in flight finishes, then the action ends; a cancel during the finger wait
+   leaves the session usable. A cancel in the middle of the TLS handshake has not been tried live. An unfinished
+   handshake is the one state known to leave the EC stuck (`docs/protocol.md`, "Recovering the EC").
+2. **What the EC is left in after a failure.** A handshake failure (wrong PSK, timeout) probably leaves the EC stuck.
    The driver says so and sends nothing more; the next open's health check then refuses. Sending a TLS fatal alert
-   to unstick it is untested ("Recovering the EC", item 4) and deliberately not done.
-   After an image, TLS or transport failure during an operation, the driver discards its TLS session and refuses
-   every action until close/reopen, sending nothing. This also applies to unrelated errors while cancelling;
-   normal cancellation of a healthy operation remains reusable. Reopening repeats
-   the health check and full init, but recovery after a failed operation has only been tested with a synthetic EC.
-8. **Autosuspend.** The hwdb gives this device `ID_AUTOSUSPEND=1` (already true today through the unsupported list).
-   Whether USB autosuspend between sessions upsets the EC is unknown.
-9. **Kernel driver.** `cdc_acm` is not bound on this machine. If it binds elsewhere, the claim detaches it
-   (`G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`). Close and failed-open rollback use the same flag to
-   request reattachment, only after a successful claim. Offline tests cover a bound driver and both release/
-   attachment failure paths; real kernel-driver restoration remains unverified. A cleanup failure prevents
-   reopening that device object: recreate it before retrying, without assuming that fixes kernel binding.
-   [GUsb detaches before claiming](https://github.com/hughsie/libgusb/blob/0.4.9/gusb/gusb-device.c#L1602)
-   and performs no rollback if the claim itself fails; its public API offers no separate attach operation.
-10. **Re-init after a completed session.** Each open repeats the full init and handshake. Runs 18, 20, 21 and 22
-    did that four times with no EC reset in between (the `0xae` counter rose by 2 each time), each run a separate
-    process that exited without closing TLS. Those opens were minutes to hours apart. Many opens in quick
-    succession, as fprintd makes them, have not been tried.
-
-## First live run (owner only, keyboard-safe procedure)
-
-The [first-capture runbook](../../docs/c-driver-first-capture.md) provides the pinned build,
-exact owner commands, expected log milestones, private output handling, and result checks.
-The current driver has been rebuilt against real libfprint `6f9479c3d55f847c1b3769f28ceb99227f9858cf`
-with only `goodix5120` enabled after aligning OUT submissions with the Go reference. The candidate
-in `dist/goodix-owner-c-packet-writes/` has compile/offline evidence but reproduced the TLS rejection
-in Run 25. It is retained for diagnosis; do not repeat it as a proposed fix. The record-pacing
-bundle `dist/goodix-owner-c-pacing/` also failed with an owner-reported EC crash; its final error
-is unavailable. The reviewed minimum-interval driver `2b77542` completed TLS in Run 26 but rejected
-the immediate status `0x00`; retain that bundle for diagnosis. `d6a9701` (Run 27) reached `0x20` but got
-no image, as did the Go-timed settle build (Runs 28/29). The current source, which adds a 5 s
-listen after the `0xd4` ACK, drew Run 32's image with paced records; the current source adds the
-contrast stretch and has 257 passing
-standalone C tests normally and under ASan/UBSan (leak detection disabled). Use the new revision
-prepared in the capture runbook. No successful live C capture is established yet.
-
-Since Run 41 repeat runs follow the short procedure in
-[`docs/c-driver-enroll-verify.md`](../../docs/c-driver-enroll-verify.md#repeat-runs-after-run-41): no separate
-health check (open does its own), the USB keyboard to hand rather than attached. The first bring-up went as
-follows. As with `--bisect`, the owner ran this with an **external keyboard attached** and a passing firmware
-health check. Recovery is required for a failed health check or an unfinished/crashed TLS session;
-Run 26's local gate failure alone is not evidence that recovery is needed:
-
-1. Check the EC answers with `goodix-probe --bisect --read-state` first, per `docs/bisect-runbook.md`.
-2. Build libfprint with only this driver. Run a single capture with libfprint's `examples/img-capture` (not fprintd),
-   with `G_MESSAGES_DEBUG=all` and `GOODIX5120_PSK_FILE` pointing at the key in `captures/`.
-   Ensure `FP_DEBUG_TRANSFER` is unset (`env -u FP_DEBUG_TRANSFER ...`); do not enable raw transfer dumps.
-3. Compare the debug log against Runs 20–22 step by step (arm thresholds, event headers, the 7753-byte image
-   pack, the lift). Stop at the first difference.
-4. Record the capture, lift, close, and keyboard outcome before proceeding to Phase 6c's lifecycle and
-   enrollment / matching tests. fprintd integration and PAM remain separate validation steps.
+   to unstick it is untested ("Recovering the EC", item 4) and deliberately not done. After an image, TLS or
+   transport failure during an operation, the driver discards its TLS session and refuses every action until
+   close/reopen, sending nothing. Reopening after a failed operation has only been tested with a synthetic EC.
+3. **Suspend and autosuspend.** The hwdb gives this device `ID_AUTOSUSPEND=1`. Whether a suspend or USB autosuspend
+   between sessions upsets the EC is unknown.
+4. **ACK status.** Only `0x01` has ever been seen, and anything else stops the driver. That may be too strict.
+5. **Base invalid.** Run 35 saw one base-invalid event and the driver re-armed from its readings. If an event ever
+   carries zeroes instead, the driver keeps its previous thresholds and gives up after 8 in a row per action.
+6. **Kernel driver.** `cdc_acm` is not bound on this machine. If it binds elsewhere, the claim detaches it
+   (`G_USB_DEVICE_CLAIM_INTERFACE_BIND_KERNEL_DRIVER`), and close requests reattachment. Real restoration is
+   unverified; [GUsb](https://github.com/hughsie/libgusb/blob/0.4.9/gusb/gusb-device.c#L1602) has no rollback if the
+   claim itself fails.

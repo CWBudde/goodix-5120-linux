@@ -1,7 +1,10 @@
 # Findings: Goodix `27c6:5120` on a Huawei MateBook
 
-Everything established on 2026-08-17, in one session. Read this before running anything in this
-repository.
+Everything established on 2026-08-17, in one session: the first live run and the keyboard incident.
+
+> **Historical.** Its recommendation to stop was overtaken: the wedge was traced to an `0xe4` sent without its
+> argument (Runs 2–4), and the reader now works through fprintd and PAM. Current state: [`README.md`](README.md)
+> and [`PLAN.md`](PLAN.md). What still holds: the EC also drives the keyboard, and a wrong frame can stop both.
 
 ---
 
@@ -148,8 +151,8 @@ Two corrections follow from this. First, the EC failed **silently**: Linux notic
 it wrote to the i8042 itself, so the kernel log cannot tell which command caused the wedge. Second,
 the probe did not knock the device off the bus. It stayed enumerated until the `usbreset`, and only
 then failed to come back. So the USB side of the EC was stuck as well, but the reset is what made
-`1-4` vanish. `docs/bisect-runbook.md` describes a run that finds the step, using a keyboard check
-after each one.
+`1-4` vanish. The `--bisect` runs that followed found the step: an `0xe4` without its argument
+(`docs/protocol.md`, Runs 2–4).
 
 **Why.** The ITE EC serves both the fingerprint sensor over USB and the internal keyboard over
 i8042. Four read-only fingerprint commands left it in a state where it stopped servicing either.

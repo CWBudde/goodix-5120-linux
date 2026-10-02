@@ -4,10 +4,10 @@
 // It began as a read-only probe and is now the reference implementation of the
 // whole path: the vendor init, the TLS-PSK handshake, image capture and finger
 // detection, each confirmed on hardware (docs/protocol.md, Runs 11-21). The C
-// libfprint driver follows its command sequence; its live TLS path remains
-// under investigation.
+// libfprint driver (libfprint/goodix5120) follows its command sequence and is
+// what runs day to day; this probe stays as the offline reference.
 //
-// Every live run goes through --bisect (docs/bisect-runbook.md), which refuses
+// Every live run goes through --bisect, which refuses
 // to start the steps if the EC does not answer the initial 0xa8 health check.
 // --dry-run and --bisect --replay run offline. Every frame
 // passes the transport's safety gate; firmware-write opcodes are not compiled
@@ -47,7 +47,7 @@ func main() {
 		dryRun  = flag.Bool("dry-run", false, "print the frames a run can send, then exit; opens no USB device")
 		timeout = flag.Duration("timeout", 5*time.Second, "per-transfer timeout")
 
-		bisect    = flag.Bool("bisect", false, "attach, then one command per step, logging every reply. The only mode that sends anything (docs/bisect-runbook.md)")
+		bisect    = flag.Bool("bisect", false, "attach, then one command per step, logging every reply. The only mode that sends anything (docs/protocol.md)")
 		replay    = flag.Bool("replay", false, "--bisect: run against the replay fake (or, with --tls, a local openssl stand-in) instead of the device")
 		stepList  = flag.String("steps", defaultBisectSteps(), "--bisect: comma-separated hex opcodes to send after attach, in order")
 		logPath   = flag.String("log", "", "--bisect: log file, flushed after every line (default goodix-bisect-<time>.log)")
@@ -78,7 +78,7 @@ func main() {
 		return
 	}
 	if !*bisect {
-		logger.Print("nothing to do: live and replayed runs go through --bisect (docs/bisect-runbook.md).\n" +
+		logger.Print("nothing to do: live and replayed runs go through --bisect (docs/protocol.md).\n" +
 			"Offline: --dry-run, or --bisect --replay")
 		os.Exit(2)
 	}

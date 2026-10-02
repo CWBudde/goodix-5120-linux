@@ -1,171 +1,89 @@
 # goodix-5120-linux
 
-Bring-up work for the **Goodix `27c6:5120`** fingerprint sensor on Linux — the reader in a Huawei
-MateBook (`HVY-WXX9`), which has no working driver on any distribution.
+A Linux driver for the **Goodix `27c6:5120`** fingerprint reader in the Huawei MateBook `HVY-WXX9`, which no
+distribution supports. The reader sits behind an **ITE embedded controller** (`GF_ITE_EC_20063`) that also drives the
+internal keyboard, and it talks to the host over TLS-PSK.
 
-> ## ⚠ Do not run the probe on this hardware
+**Status (2026-10-02): it works on this machine.** The libfprint driver in [`libfprint/goodix5120/`](libfprint/goodix5120/README.md)
+enrolls (15 touches), verifies and identifies through the system's own fprintd, and `sudo` accepts the finger through
+`pam_fprintd` (Runs 43–45 in [`docs/protocol.md`](docs/protocol.md)). An open takes about 1 s. Not yet tested live:
+cancellation mid-open, suspend/resume, and the login screen after a cold boot ([`PLAN.md`](PLAN.md)).
+
+> ## ⚠ The reader shares a chip with the keyboard
 >
-> The one live run **wedged the embedded controller and killed the internal keyboard.** Only a cold
-> power cycle recovered it — a warm reboot does not.
->
-> The device identifies as `GF_ITE_EC_20063`: an **ITE embedded controller** that bridges to the
-> sensor *and* drives the internal keyboard over i8042. Commands harmless to a fingerprint MCU are
-> not harmless here.
->
-> **Read [`FINDINGS.md`](FINDINGS.md) first.** It records what was established, and why the
-> recommendation is to stop.
+> A wrong frame has wedged the EC and killed the internal keyboard, and once an unfinished TLS handshake left it stuck
+> through a normal cold power cycle. The fix that worked: shut down, **leave the charger plugged in, hold the power
+> button 40 s** (`docs/protocol.md`, "Recovering the EC"). Keep a USB keyboard within reach until the remaining
+> lifecycle tests have passed. Never run upstream `driver_51x0.main()` or any firmware-write path against this
+> device. It would flash 5110 firmware onto an ITE EC.
 
-## Why this exists
+## Using it
 
-The sensor is unsupported everywhere:
+1. **The PSK.** The EC only talks to a host that knows its 32-byte pre-shared key, which Windows provisioned and sealed
+   with DPAPI. On a dual-boot machine, `goodix-dpapi` unseals it offline from the Windows partition
+   ([`docs/protocol.md`](docs/protocol.md), "Unsealing the PSK offline"). A Linux-only machine has no way to get it
+   yet ([PSK provisioning](libfprint/goodix5120/README.md#psk-provisioning-open-decision)).
+2. **The library.** Build libfprint with this driver ([driver README](libfprint/goodix5120/README.md#building)).
+3. **fprintd.** `libfprint/goodix5120/fprintd/goodix5120-fprintd.sh install` points the system fprintd at that build
+   with a systemd drop-in. It replaces no package and `uninstall` undoes it. See [`docs/fprintd.md`](docs/fprintd.md).
 
-| | |
-|---|---|
-| Ubuntu archive | `libfprint-2-tod1` is only the wrapper; `/usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/` does not exist |
-| Vendor TOD blob | Huawei never shipped one; the Dell/Lenovo `libfprint-2-tod1-goodix` packages cover different PIDs |
-| Upstream libfprint | `goodixmoc` targets the match-on-chip `27c6:58xx`/`6xxx` parts, not this one |
-
-`fprintd-list` reports **"No devices available"** on an otherwise complete stack (`fprintd` 1.94.5,
-`libfprint-2-2`, `libpam-fprintd` all installed).
-
-The upstream reverse-engineering project [goodix-fp-dump][dump] *does* cover PID `0x5120` — but only
-as an **SPI-wired** part (`run_5120_spi.py` → `/dev/spidev0.0` + `gpiochip0` line 279). This machine
-has no `/dev/spidev*` at all.
-
-## The hypothesis under test
-
-This machine's sensor is **USB-attached**:
-
-```
-idVendor 0x27c6  idProduct 0x5120   bcdDevice 2.00
-  interface 0: class 2  (Communications)  EP 0x82 IN, 8 bytes
-  interface 1: class 10 (CDC Data)        EP 0x01 OUT / EP 0x83 IN, bulk, 64 bytes
-```
-
-No kernel driver is bound to either interface, so it is free for userspace libusb access.
-
-Upstream separates transport from command layer, and the USB-side sibling `driver_51x0.py` — used by
-`run_5110.py`, which is literally `driver_51x0.main(0x5110)` — targets the same **51x0 /
-MILAN_ST411SEC** family.
-
-> **If the 5120 answers the 51x0 command set over USB bulk, the whole stack becomes reachable.**
-
-Confirming or refuting that, cheaply and without risking the hardware, was the entire goal of this
-increment.
-
-**Answered: it does answer, but the reachable thing is not the sensor.** What responds is an ITE
-embedded controller shared with the keyboard. The framing assumption held; the "without risking the
-hardware" half did not. See [`FINDINGS.md`](FINDINGS.md).
-
-## Safety
-
-`driver_51x0.main()` upstream will flash `GF_ST411SEC_APP_12117.bin` — **5110** firmware — over IAP if
-the chip is not already running expected firmware. Writing that to a **5120** could brick the sensor
-permanently.
-
-So the guarantee here is structural, not a promise to be careful:
-
-1. **Opcodes carry a safety class.** `ClassSafe` (read-only) · `ClassStateChanging` (alters runtime
-   state, no flash write) · `ClassDestructive` (can write flash).
-2. **The transport is the chokepoint.** `Send` refuses any opcode whose class exceeds the configured
-   ceiling — default `ClassSafe` — and refuses unregistered opcodes outright. The refusal happens
-   before any byte reaches the device.
-3. **Destructive opcodes are not in the binary.** `write_firmware` (`0xf0`) and `preset_psk_write`
-   (`0xe0`) are registered only behind the `goodix_destructive` build tag. A unit test asserts the
-   default build cannot name them.
-4. **Opcodes carry a payload rule, and the transport enforces it.** Each opcode records the payload
-   length the Windows driver was observed to send; `Send` refuses anything else, before a byte is
-   written. This is not theoretical tidiness. An `0xe4` with an *empty* payload wedged the embedded
-   controller and killed the laptop's internal keyboard three times, while the vendor's `0xe4` with
-   its 8-byte argument is answered normally. That frame can no longer be built.
-5. **No firmware blob is vendored** into this repository.
-6. **Nothing but the probe can reach the device.** `cmd/goodix-pcap` reads capture files and imports
-   only `internal/proto`; a test parses the source to prove it cannot import a USB library.
-
-## Requirements
-
-- Go 1.25+ (see `go.mod`)
-- OpenSSL >= 3.0 development headers and `pkg-config` (`libssl-dev` on Debian/Ubuntu)
-- `libusb-1.0-0-dev` (`sudo apt install libusb-1.0-0-dev`)
-- Root for live runs — there is deliberately no udev rule yet, so an unprivileged run fails with
-  `libusb: bad access [code -3]`
-
-## Usage
-
-These are safe — none of them opens the device:
-
-```sh
-go build -buildvcs=false ./cmd/goodix-probe
-
-./goodix-probe --dry-run                          # print the frames a run can send
-./goodix-probe --bisect --replay    # the step loop against the Run 1 capture
-just rehearse                                     # real TLS with synthetic keys; no device or PSK file
-```
-
-Every live run goes through `--bisect`, with an external keyboard attached, following
-[`docs/bisect-runbook.md`](docs/bisect-runbook.md). The probe has no other live mode: the one it used
-to have (`sudo ./goodix-probe -v`, Run 1) is what wedged the embedded controller.
-
-## Findings
-
-*Populated as the probe runs. See [`docs/protocol.md`](docs/protocol.md) for raw frame captures.*
-
-One live run, 2026-08-17. Raw capture in [`docs/protocol.md`](docs/protocol.md); full account in
-[`FINDINGS.md`](FINDINGS.md).
-
-| Question | Answer |
-|---|---|
-| Does the 5120 respond on bulk EP 0x01/0x83? | **Yes** |
-| Does the 51x0 framing decode? | **Yes** — all four checksums verify by hand |
-| Does it ACK per the `cmd \| 0x01` convention? | **No** — ACK is a `0xb0` message carrying `[cmd][status]` |
-| Does `firmware_version` (`0xa8`) return a plausible string? | **Yes** — `GF_ITE_EC_20063` |
-| Does `read_otp` (`0xa6`) return sane data? | No reply at all — unimplemented or still queued |
-| What is it? | An **ITE embedded controller**, not the Goodix sensor MCU |
-| Sensor resolution | Still unknown. Upstream `driver_51x0.py` declares 80x88 for different silicon |
-
-**Verdict: the protocol assumption held, and the conclusion is still to stop.** The framing is
-confirmed, but it is answered by a controller that also drives the keyboard — which the probe wedged.
-Tier 2 would need `mcu_get_image` and a TLS session against that same controller.
+The driver refuses any firmware other than `GF_ITE_EC_20063`, and two of its init values (`0x98` DAC, FDT delta) are
+calibrated for this one unit. It is not yet known how to derive them for another machine.
 
 ## Layout
 
 ```
-cmd/goodix-probe/     Tier 1 entry point — the only thing that opens a device
-cmd/goodix-pcap/      offline reader for USBPcap captures; cannot reach hardware
-internal/proto/       packet framing, checksums, opcode registry, safety classes, payload rules
-internal/transport/   gousb USB transport, replay fake, ceiling + payload enforcement
-internal/capture/     pcapng and USBPcap decoding (stdlib + proto only)
-internal/tlspsk/      in-process OpenSSL TLS-PSK endpoint (cgo, no listener or subprocess)
-internal/image/       sensor decoding and PGM output helpers
-docs/protocol.md      observed wire format, appended as we learn
-docs/acpi.md          what the ACPI tables say about the EC, the keyboard and the port
+libfprint/goodix5120/   the libfprint driver (C): protocol, TLS-PSK server, SIGFM matching, offline tests
+  fprintd/              the reversible fprintd drop-in installer
+cmd/goodix-probe/       Go reference implementation; --bisect is its only live mode (owner only)
+cmd/goodix-dpapi/       unseals the PSK from a Windows partition, offline
+cmd/goodix-pcap/        reads USBPcap captures of the Windows driver; never prints secrets
+cmd/goodix-evtx/        reads the Windows driver's ETW debug log
+internal/               framing, the send gate, transports, TLS-PSK, image decode, parsers
+docs/protocol.md        the wire protocol and every live run, each fact marked transcribed or observed
+docs/fprintd.md         installing for fprintd and PAM
+docs/acpi.md            what the ACPI tables say about the EC, the keyboard and the port
+docs/upstream-report.md drafts for goodix-fp-dump and libfprint, not posted yet
+FINDINGS.md             the account of the first live run (2026-08-17) and the keyboard incident
+PLAN.md                 what is done and what is still open
 ```
 
-## Roadmap
+## Safety by construction
 
-- **Tier 1** — read-only probe. **Done.** The protocol decodes; the device is an EC bridge.
-- **Tier 2** — IAP check → PSK → TLS → `mcu_get_image`. The scaffold exists and is not linked into
-  any binary. **Not recommended on this hardware** — it would drive the controller that owns the
-  keyboard, and upstream's IAP path would try to flash ST411SEC firmware onto an ITE EC.
-- **Tier 3** — a real [libfprint][libfprint] driver so `fprintd` and PAM work. **Must be C** —
-  libfprint is C/GLib. Out of scope, and blocked behind Tier 2 regardless.
+The Go code and the C driver share the same rules, each enforced in code and pinned by tests:
 
-The useful next step is not code. It is posting these findings to the
-[libfprint issue tracker][issues] and [goodix-fp-dump][dump], so the next person to try this does not
-repeat the keyboard incident.
+- **One send gate.** Every frame goes through a single function that refuses unknown opcodes and payloads whose
+  length differs from what the Windows driver sends. An argument-less `0xe4` wedged the EC three times. That frame
+  can no longer be built.
+- **No destructive opcodes.** `write_firmware` (`0xf0`) and `preset_psk_write` (`0xe0`) are absent from the driver
+  and compiled out of the Go binaries unless the `goodix_destructive` build tag is set.
+- **Health check first.** Open sends `0xa8` and stops if the EC does not answer. A handshake that cannot succeed
+  (missing PSK, OpenSSL policy without suite `0x00ae`) fails before the first USB byte.
+- **Secrets stay out of logs.** The PSK, the `0xe4` reply (PSK hash), the `0xa6` reply (OTP), TLS application data
+  and images are never logged. Captures, keys and templates live in gitignored `captures/` and never enter the repo.
+
+## Development (offline, no device)
+
+```sh
+just check                                    # Go: build, vet, tests under both opcode tags
+meson setup build-c libfprint/goodix5120 && meson test -C build-c   # C driver tests (fake USB, synthetic EC)
+just rehearse                                 # Go: full TLS-PSK session against an in-process fake EC
+```
+
+Requirements: Go (see `go.mod`), `libusb-1.0-0-dev`, OpenSSL ≥ 3 headers and `pkg-config`. The C tests need
+GLib/GIO and OpenSSL headers; with OpenCV 4 the real SIGFM test runs too. Agents never run anything against the
+device. Live tests are the owner's (see `CLAUDE.md`).
 
 ## Credit
 
-The protocol knowledge comes from [goodix-fp-linux-dev/goodix-fp-dump][dump] and the associated
-[libfprint fork][fork]. This project is an independent Go re-implementation for a USB-attached 5120,
-which upstream does not cover.
+The protocol starts from [goodix-fp-linux-dev/goodix-fp-dump][dump] (which covers the 5120 only as an SPI part) and
+its [libfprint fork][fork]. SIGFM, in `libfprint/goodix5120/sigfm/`, is vendored unmodified from the `goodixtls`
+fork under LGPL-2.1+.
 
 [dump]: https://github.com/goodix-fp-linux-dev/goodix-fp-dump
 [fork]: https://github.com/goodix-fp-linux-dev/libfprint
-[libfprint]: https://gitlab.freedesktop.org/libfprint/libfprint
-[issues]: https://gitlab.freedesktop.org/libfprint/libfprint/-/issues
 
 ## Licence
 
-Not yet chosen. Upstream goodix-fp-dump is GPL-licensed; if any code is ported rather than
-reimplemented from the protocol description, that constrains the choice here.
+Not yet chosen. Vendored SIGFM is LGPL-2.1+. Upstream goodix-fp-dump is GPL-licensed, which constrains the choice
+if code is ported rather than reimplemented from the protocol description.

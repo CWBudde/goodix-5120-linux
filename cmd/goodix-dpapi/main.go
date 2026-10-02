@@ -1,7 +1,7 @@
 // Command goodix-dpapi unseals a machine-scoped DPAPI blob offline.
 // It reads existing files, opens no device, and never prints keys, identifiers,
 // descriptions, or plaintext hashes by default. Plaintext is emitted only with
-// -out or -print-psk. See docs/dpapi-runbook.md.
+// -out or -print-psk. See docs/protocol.md, "Unsealing the PSK offline".
 package main
 
 import "os"

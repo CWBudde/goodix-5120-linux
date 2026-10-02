@@ -267,8 +267,8 @@ type unlock struct {
 // state-changing frame cannot appear with no flag and no explanation.
 var unlockable = []unlock{
 	{opEnableChip, "allow-96", "bisect: also accept enable_chip (0x96) in --steps. The vendor's FIRST frame on every init, payload 01 02; the driver does not wait for a reply. State-changing"},
-	{opPSKRead, "allow-e4", "bisect: also accept preset_psk_read (0xe4) in --steps. Sent with the vendor's 8-byte payload; the EMPTY form wedged the EC in Runs 1, 2 and 4 and is now refused outright (see docs/bisect-runbook.md). Its reply contains a hash of the device PSK — keep it out of the repo"},
-	{opReset, "allow-a2", "bisect: also accept reset (0xa2) in --steps. State-changing; the vendor sends it before reading the chip ID, which without it reads a pre-reset value (Run 9). Sent with the vendor payload 01 14 (see docs/bisect-runbook.md)"},
+	{opPSKRead, "allow-e4", "bisect: also accept preset_psk_read (0xe4) in --steps. Sent with the vendor's 8-byte payload; the EMPTY form wedged the EC in Runs 1, 2 and 4 and is now refused outright (see docs/protocol.md). Its reply contains a hash of the device PSK — keep it out of the repo"},
+	{opReset, "allow-a2", "bisect: also accept reset (0xa2) in --steps. State-changing; the vendor sends it before reading the chip ID, which without it reads a pre-reset value (Run 9). Sent with the vendor payload 01 14 (see docs/protocol.md)"},
 	{opIdle, "allow-70", "bisect: also accept mcu_switch_to_idle_mode (0x70) in --steps. Payload 14 00; the vendor's frame 9, the first of the three config frames that precede the TLS request (PLAN.md Phase 5a)"},
 	{opSetDAC, "allow-98", "bisect: also accept set_dac (0x98) in --steps. Payload c8 0b be 00 bc 00 bc 00 — DAC values the vendor derives from THIS machine's OTP, so they are specific to this sensor (PLAN.md Phase 5a)"},
 	{opUploadConfig, "allow-90", "bisect: also accept upload_config_mcu (0x90) in --steps. Writes the vendor's 224-byte register script into the sensor MCU. It writes no flash, but it is the largest state change in the init — promote it on a run of its own (PLAN.md Phase 5a)"},
@@ -337,7 +337,7 @@ func needsAllow(op proto.Opcode) error {
 		return fmt.Errorf("opcode 0x%02x is above the safe ceiling and cannot be sent by bisect", byte(op))
 	}
 	class, _ := op.Class()
-	return fmt.Errorf("opcode 0x%02x (%s) is %s; it needs --%s (see docs/bisect-runbook.md)",
+	return fmt.Errorf("opcode 0x%02x (%s) is %s; it needs --%s (see docs/protocol.md)",
 		byte(op), op.Name(), class, u.flag)
 }
 

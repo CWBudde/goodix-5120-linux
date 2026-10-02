@@ -144,7 +144,7 @@ func (c tlsConfig) validate(steps []proto.Opcode, allowed map[proto.Opcode]bool,
 	}
 	if !replay && c.pskPath == "" {
 		return errors.New("--tls needs --psk FILE: the 32-byte device key, as written by " +
-			"`goodix-dpapi -out` (see docs/dpapi-runbook.md). Keep it in gitignored captures/")
+			"`goodix-dpapi -out` (see docs/protocol.md, 'Unsealing the PSK offline'). Keep it in gitignored captures/")
 	}
 	if !allowed[opRequestTLS] {
 		return fmt.Errorf("--tls sends request_tls_connection (0x%02x), which needs --allow-d0", byte(opRequestTLS))
@@ -476,7 +476,7 @@ func explainHandshakeFailure(logger *log.Logger, err error, cfg tlsConfig, toHos
 	case errors.Is(err, session.ErrPSKMismatch):
 		logger.Printf("\n  TLS authentication failed: a PSK mismatch or corrupted records are possible.")
 		logger.Printf("  Local TLS policy passed preflight. Check authentication evidence before changing the key:")
-		logger.Printf("    1. Re-audit the unseal — secondary entropy and master key (docs/dpapi-runbook.md).")
+		logger.Printf("    1. Re-audit the unseal — secondary entropy and master key (docs/protocol.md, 'Unsealing the PSK offline').")
 		logger.Printf("       This run is the first real test of the recovered key.")
 		logger.Printf("    2. Read the PSK or the entropy from the running Windows driver; local analysis only.")
 		logger.Printf("    3. Provision our own PSK with 0xe0 — DESTRUCTIVE, breaks Windows Hello, last resort.")
