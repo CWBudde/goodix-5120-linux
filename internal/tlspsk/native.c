@@ -163,7 +163,8 @@ ssl_result(g5120_endpoint *e, int ret)
     int reason = ERR_GET_REASON(code);
     if (reason == SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC ||
         reason == SSL_R_PSK_IDENTITY_NOT_FOUND ||
-        reason == SSL_R_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY ||
+        /* SSL_R_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY; OpenSSL 3.0 lacks the name. */
+        reason == SSL_AD_REASON_OFFSET + TLS1_AD_UNKNOWN_PSK_IDENTITY ||
         reason == SSL_R_SSLV3_ALERT_BAD_RECORD_MAC ||
         reason == SSL_R_TLSV1_ALERT_DECRYPT_ERROR)
       result = MISMATCH;
