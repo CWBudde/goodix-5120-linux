@@ -188,9 +188,12 @@ finger up         34 0e 01 (80 t)x6             ACK, then wait for 0x34 00 02 00
 
 A verify or identify match is reported as soon as the image has been scored (about 115 ms after finger-down: 86 ms
 to the image, 26 ms for features, 2–4 ms to score), with the finger still on. No `0x34` is armed, so nothing is
-outstanding; Runs 20–22 also ended sessions after the image with no `0x34` and reopened cleanly. Every other touch
-(each enroll stage, the last included, a no-match, a retry, a capture) waits for the finger-up event before the action
-reports: the lift decides whether a no-match was a brush (under 180 ms), and the next touch must not image the same
+outstanding; Runs 20–22 also ended sessions after the image with no `0x34` and reopened cleanly. A verify or identify
+touch that did not match is imaged again while the finger stays on, as the Windows driver does (`docs/protocol.md`,
+"Capture retry"): `0x34` arm, `0x36` manual check with the down thresholds, and if its event's touch flags are set,
+another `0x20`. That is at most three images per touch, about 140 ms apart. A manual event with no touch flags
+counts as the finger-up event. Every other touch (each enroll stage, the last included, a no-match after the last
+image, a retry, a capture) waits for the finger-up event before the action reports: the lift decides whether a no-match was a brush (under 180 ms), and the next touch must not image the same
 placement. So an action always ends with nothing outstanding. (The image-device class ended an enrollment during the last lift: in Run 35
 it cancelled the up wait and left the EC armed with `0x34`.) Cancellation finishes a command in flight and cancels a
 wait for the finger; the session stays usable. Close sends nothing.

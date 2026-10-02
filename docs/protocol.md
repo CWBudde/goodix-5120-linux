@@ -1767,6 +1767,22 @@ too-short retry. The journal held two prompts, each in a fresh fprintd process.
   17:41) was presumably an accidental graze, so the retry path may rarely fire. Opens so far on `38f52b2`: 498,
   506, 503 ms, with no warnings.
 
+### Run 48 — 2026-10-02 19:41, the install did not run; three held touches scored 0 (observed)
+
+The owner meant to try `c8e7570` (match before the lift): they ran the installer, then `sudo -k; sudo true` twice,
+keeping the finger on the sensor. Both prompts failed ("Fehler beim Abgleich des Fingerabdrucks") and fell back to
+the password.
+
+- **Still `38f52b2`:** the installer was started without `sudo` and only printed `run with sudo`. The installed
+  library's SHA-256 is that of `dist/goodix5120-38f52b2`, and the journal has no `match … after finger-down` line.
+- **Three sessions in one fprintd process, all score 0:** 19:41:46 (open 512 ms, a 5542 ms touch, 116 keypoints),
+  19:42:24 (open 498 ms, finger-down 51 ms after open, so the finger was already on; 690 ms, 96 keypoints) and
+  19:42:28 (open 496 ms, 6989 ms, 93 keypoints). That is one session more than the two pasted prompts; the third was
+  not identified. Matches earlier today had 89–148 keypoints. An earlier prompt at 19:37:03 matched (score 4697).
+- **Holding the finger did not help, and could not:** the driver images once, about 86 ms after finger-down, however
+  long the finger stays. A touch whose first image misses is lost, whether it lasts 0.6 s or 7 s. The Windows driver
+  images the same touch again (next section), which led to the re-check in the driver.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
@@ -2080,6 +2096,41 @@ bit 1 (`0x02`), which the driver logs as 1 for `0x13` and `0x02` and 0 for `0x11
 cannot be attributed: bit 0 (`0x01`) and bit 4 (`0x10`) are set together in `0x11` and `0x13` and clear
 together in `0x02`, so the evidence cannot separate them, and they may be one two-bit field.
 `internal/proto.DecodeMCUState` offers bit 0 under that caveat and keeps all 20 bytes raw.
+
+### Capture retry: up to three images per touch (observed, vendor log, 2026-10-02)
+
+The capture loop's optional `36` → `20` branch is the vendor's retry after a failed match. Read offline from
+`Goodix-FingerprintProvider%4Debug.evtx` with `goodix-evtx` (FDT records only), log time 2026-09-19 21:07:23, one
+touch:
+
+| t (ms) | step                                                                                            |
+| ------ | ----------------------------------------------------------------------------------------------- |
+| 0      | `32` finger-down event, touch flags `0x3f`                                                      |
+| 7      | `20`; ACK 2 ms later; the image after 87 ms                                                     |
+| 99     | `34` armed with the up thresholds, ACK                                                          |
+| 194    | match fails against both enrolled prints (logged 194–213); "to retry matching 2 times"          |
+| 213    | `36` armed with the current down thresholds (`b4 c3 a7 b7 a6 b7`), ACK 1 ms later               |
+| 224    | the `36` event: touch flags `0x3f`                                                              |
+| 240    | "set FDT MANUAL befor retry … touched count 6, fdt_is_down 1"; `20` again, `34` after the image |
+| 369    | match fails; "to retry matching 3 times, image index:2"; `36` with `5e 77 61 63 60 7c`          |
+| 395    | `20` a third time, `34` armed again; the match fails                                            |
+| 1000   | the `34` finger-up event, touch flags `0`; `32` armed with the untouched thresholds             |
+
+- **At most three images per touch:** "max count 3" in the engine's retry lines. In `dump.pcapng` there are 43
+  images, 43 `34` arms and 22 `36` arms, but only 21 finger-down events. The 22 `36` arms match the 22 "set FDT
+  MANUAL befor retry" lines in the log.
+- **The `36` thresholds:** the first `36` of a touch carries the down thresholds of the last `32` (true in every
+  other retry in the log). Each manual event then sets the next `36`'s thresholds from its own readings >> 1
+  (`fdt_downbase`). A finger-up event resets them.
+- **The `36` event follows its ACK by about 10 ms.** Its touch flags say whether the finger is still on: `0x3f` in
+  every retry, `0x0` with no finger (the manual readings after init at 17:29:14). The vendor takes the next image
+  only with the finger on.
+- **The `36` supersedes the outstanding `34` arm.** No `34` event arrives for the arms a `36` followed: 43 arms,
+  21 events.
+
+The driver follows this order on verify and identify since this change: no match → `34` → `36` → event with flags →
+`20`, at most three images. A manual event with flags `0` stands for the finger-up event: the finger has gone, and
+its readings set the next down thresholds. Not yet run live.
 
 ### Finger detection: where the thresholds come from (observed, 2026-09-30)
 

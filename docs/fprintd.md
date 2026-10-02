@@ -33,8 +33,10 @@ not know this reader. It keeps `/etc/goodix5120/psk.bin` and the prints in `/var
   (Run 45). For more tries, change `max-tries` in `/usr/share/pam-configs/fprintd` and run `pam-auth-update` again.
   That file belongs to the package, so an fprintd update can overwrite it.
 - A match is reported as soon as the image has been scored, about 115 ms after finger-down, without waiting for the
-  finger to lift. Before this, the result came at the lift, 0.4–1.6 s after finger-down in Runs 46–47. A no-match
-  still waits for the lift.
+  finger to lift. Before this, the result came at the lift, 0.4–1.6 s after finger-down in Runs 46–47.
+- A touch that does not match is imaged again while the finger stays on, up to three images, as the Windows driver
+  does. So if a touch fails, leaving the finger on gives it two more chances. Only after the third image, or once the
+  finger has gone, is it a no-match.
 - A touch that did not match and left the sensor less than 180 ms after finger-down is a brush, not a scan: the image was taken
   while the finger landed or lifted. The driver reports it as "too short" (a retry) instead of a no-match. fprintd
   then waits for another touch, which should not use up `max-tries` (expected from fprintd's retry handling, not yet
@@ -48,5 +50,6 @@ journalctl -b -u fprintd --since -15min -o cat --no-pager | grep -E 'open:|score
 ```
 
 The default log has milestones only: `open: N ms`, TLS up, finger down, keypoints,
-`best SIGFM score N, threshold 24`, then `match N ms after finger-down` or `finger up after N ms`, warnings. For wire-level detail, add `Environment=GOODIX5120_TRACE=1` to the drop-in. Keys, OTP, images and
+`best SIGFM score N, threshold 24` per image, `finger still on … image N of 3` before another image, then
+`match on image N, N ms after finger-down` or `finger up after N ms`, warnings. For wire-level detail, add `Environment=GOODIX5120_TRACE=1` to the drop-in. Keys, OTP, images and
 templates are never logged at either level.

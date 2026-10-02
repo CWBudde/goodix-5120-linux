@@ -80,6 +80,8 @@ typedef enum {
   RESULT_FINGER_DOWN,
   RESULT_FINGER_UP,
   RESULT_IMAGE,
+  RESULT_FINGER_STILL,  /* re-check: the finger is still on */
+  RESULT_FINGER_GONE,   /* re-check: no answer; wait for the lift */
 } G5120Result;
 
 struct _FpiDeviceGoodix5120
@@ -129,6 +131,9 @@ struct _FpiDeviceGoodix5120
   guint8        fdt_mode;       /* G5120_CMD_FDT_DOWN or G5120_CMD_FDT_UP */
   guint8        down_thr[G5120_FDT_ZONES];
   guint8        up_thr[G5120_FDT_ZONES];
+  guint8        manual_thr[G5120_FDT_ZONES]; /* the next 0x36 re-check */
+  guint         touch_images;   /* images taken during this touch */
+  guint         recheck_reads;
   guint8        fdt_delta;
   guint         base_invalid;
   gint64        finger_down_at; /* monotonic time of this touch's finger-down */
@@ -1347,6 +1352,16 @@ zones_all_zero (const guint16 *zones)
 }
 
 static void
+finger_lifted (FpiDeviceGoodix5120 *self, const G5120FdtEvent *ev)
+{
+  /* The next down arm comes from the readings with the finger off. */
+  g5120_fdt_down_thresholds (ev->zones, self->down_thr);
+  self->contact_ms = (g_get_monotonic_time () - self->finger_down_at) / 1000;
+  fp_dbg ("finger up after %" G_GINT64_FORMAT " ms", self->contact_ms);
+  self->result = RESULT_FINGER_UP;
+}
+
+static void
 fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
 {
   const G5120FdtEvent *ev = &self->rx_fdt;
@@ -1365,6 +1380,8 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
       g5120_fdt_up_thresholds (ev->zones, ev->touchflags, self->fdt_delta, self->up_thr);
       fp_dbg ("finger down");
       self->finger_down_at = g_get_monotonic_time ();
+      self->touch_images = 0;
+      memcpy (self->manual_thr, self->down_thr, sizeof (self->manual_thr));
       self->base_invalid = 0;
       self->result = RESULT_FINGER_DOWN;
       fpi_ssm_mark_completed (ssm);
@@ -1392,11 +1409,7 @@ fdt_handle_event (FpiSsm *ssm, FpiDeviceGoodix5120 *self)
       return;
 
     case G5120_FDT_EVENT_UP:
-      /* The next down arm comes from the readings with the finger off. */
-      g5120_fdt_down_thresholds (ev->zones, self->down_thr);
-      self->contact_ms = (g_get_monotonic_time () - self->finger_down_at) / 1000;
-      fp_dbg ("finger up after %" G_GINT64_FORMAT " ms", self->contact_ms);
-      self->result = RESULT_FINGER_UP;
+      finger_lifted (self, ev);
       fpi_ssm_mark_completed (ssm);
       return;
 
@@ -1469,6 +1482,130 @@ fdt_run_state (FpiSsm *ssm, FpDevice *dev)
       g_clear_object (&self->fdt_cancel);
       self->fdt_cancel = g_cancellable_new ();
       submit_read (ssm, dev, 0, self->fdt_cancel, fdt_wait_cb);
+      break;
+
+    default:
+      g_assert_not_reached ();
+    }
+}
+
+/* ---- Re-check: is the finger still on? ----------------------------------
+ *
+ * After an image that did not match, the vendor takes another while the
+ * finger stays (its debug log, 2026-09-19 21:07:23, "set FDT MANUAL befor
+ * retry", up to three images a touch): arm finger-up (0x34), then a manual
+ * reading (0x36) with the down thresholds, whose event follows its ACK by
+ * about 10 ms. Touch flags set: the finger is still on, take another image.
+ * None: the finger has lifted, and this event stands for the up event. The
+ * 0x36 supersedes the 0x34 arm. Each manual event sets the thresholds of
+ * the next 0x36 from its readings, as the vendor's do; the down arm keeps its
+ * own, from the last lift.
+ */
+
+enum {
+  RECHECK_ARM_UP,
+  RECHECK_ARM_MANUAL,
+  RECHECK_WAIT,
+  RECHECK_NUM_STATES,
+};
+
+static void
+recheck_wait_cb (FpiUsbTransfer *transfer, FpDevice *dev, gpointer user_data, GError *error)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  FpiSsm *ssm = transfer->ssm;
+  const G5120FdtEvent *ev = &self->rx_fdt;
+
+  if (error)
+    {
+      if (self->cancelling && g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        {
+          g_error_free (error);
+          fpi_ssm_mark_completed (ssm);
+          return;
+        }
+      if (is_timeout (error))
+        {
+          g_error_free (error);
+          fp_warn ("no answer to the manual finger check (0x36); waiting for the lift");
+          self->result = RESULT_FINGER_GONE;
+          fpi_ssm_mark_completed (ssm);
+          return;
+        }
+      fpi_ssm_mark_failed (ssm, error);
+      return;
+    }
+
+  if (rx_classify (self, transfer->buffer, transfer->actual_length, G5120_CMD_FDT_MANUAL, FALSE) == RX_FDT)
+    {
+      if (self->rx_fdt_cmd == G5120_CMD_FDT_MANUAL && ev->kind == G5120_FDT_EVENT_MANUAL)
+        {
+          if (ev->touchflags == 0)
+            /* Its readings are the untouched ones, as an up event's: the
+             * vendor sets its down thresholds from either. */
+            finger_lifted (self, ev);
+          else
+            {
+              g5120_fdt_down_thresholds (ev->zones, self->manual_thr);
+              fp_dbg ("finger still on (touch flags 0x%02x); image %u of %u", ev->touchflags,
+                      self->touch_images + 1, G5120_MAX_IMAGES_PER_TOUCH);
+              self->result = RESULT_FINGER_STILL;
+            }
+          fpi_ssm_mark_completed (ssm);
+          return;
+        }
+      if (self->rx_fdt_cmd == G5120_CMD_FDT_UP && ev->kind == G5120_FDT_EVENT_UP)
+        {
+          /* The 0x34 arm fired before the 0x36 superseded it. */
+          finger_lifted (self, ev);
+          fpi_ssm_mark_completed (ssm);
+          return;
+        }
+      trace ("%s event 0x%02x during the manual check; ignored",
+             g5120_fdt_event_kind_name (ev->kind), self->rx_fdt_cmd);
+    }
+
+  if (++self->recheck_reads >= G5120_MAX_READS_PER_STEP)
+    {
+      fp_warn ("no manual finger-check event in %u transfers; waiting for the lift", self->recheck_reads);
+      self->result = RESULT_FINGER_GONE;
+      fpi_ssm_mark_completed (ssm);
+      return;
+    }
+  fpi_ssm_jump_to_state (ssm, RECHECK_WAIT);
+}
+
+static void
+recheck_run_state (FpiSsm *ssm, FpDevice *dev)
+{
+  FpiDeviceGoodix5120 *self = FPI_DEVICE_GOODIX5120 (dev);
+  guint8 payload[G5120_FDT_DOWN_ARM_LEN];
+  gsize len;
+
+  if (self->cancelling)
+    {
+      fpi_ssm_mark_completed (ssm);
+      return;
+    }
+
+  switch (fpi_ssm_get_cur_state (ssm))
+    {
+    case RECHECK_ARM_UP:
+      len = g5120_fdt_encode_arm (G5120_CMD_FDT_UP, self->up_thr, 0, payload);
+      start_exchange (ssm, self, G5120_CMD_FDT_UP, payload, len, G5120_REPLY_ACK, FALSE, "arm finger-up");
+      break;
+
+    case RECHECK_ARM_MANUAL:
+      self->recheck_reads = 0;
+      len = g5120_fdt_encode_arm (G5120_CMD_FDT_MANUAL, self->manual_thr, 0, payload);
+      start_exchange (ssm, self, G5120_CMD_FDT_MANUAL, payload, len, G5120_REPLY_ACK, FALSE,
+                      "manual finger check");
+      break;
+
+    case RECHECK_WAIT:
+      g_clear_object (&self->fdt_cancel);
+      self->fdt_cancel = g_cancellable_new ();
+      submit_read (ssm, dev, G5120_TIMEOUT_REPLY, self->fdt_cancel, recheck_wait_cb);
       break;
 
     default:
@@ -1615,7 +1752,9 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
  * SIGFM features are extracted between capture and lift. Verify and identify
  * also score them there, and a match is reported at once, with the finger
  * still on and nothing outstanding: no 0x34 is armed, as in Runs 20-22, whose
- * sessions ended after the image and reopened cleanly. Anything else is
+ * sessions ended after the image and reopened cleanly. A touch that did not
+ * match is imaged again while the finger stays, up to
+ * G5120_MAX_IMAGES_PER_TOUCH images (the re-check above). Anything else is
  * reported after the lift, which decides whether a no-match was a brush and
  * keeps the next touch from imaging the same placement. Enroll repeats the
  * touch until G5120_ENROLL_STAGES views are usable. Nothing new goes on the
@@ -1920,15 +2059,34 @@ session_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       break;
 
     case RESULT_IMAGE:
+      self->touch_images++;
       if (fpi_device_get_current_action (dev) != FPI_DEVICE_ACTION_CAPTURE)
         extract_probe (self);
-      if (self->probe != NULL && self->gallery != NULL && score_probe (self))
+      if (self->gallery != NULL)
         {
-          fp_info ("match %" G_GINT64_FORMAT " ms after finger-down; not waiting for the lift",
-                   (g_get_monotonic_time () - self->finger_down_at) / 1000);
-          touch_done (self);
-          break;
+          if (self->probe != NULL && score_probe (self))
+            {
+              fp_info ("match on image %u, %" G_GINT64_FORMAT " ms after finger-down; "
+                       "not waiting for the lift", self->touch_images,
+                       (g_get_monotonic_time () - self->finger_down_at) / 1000);
+              touch_done (self);
+              break;
+            }
+          if (self->touch_images < G5120_MAX_IMAGES_PER_TOUCH)
+            {
+              start_session (self, recheck_run_state, RECHECK_NUM_STATES);
+              break;
+            }
         }
+      self->fdt_mode = G5120_CMD_FDT_UP;
+      start_session (self, fdt_run_state, FDT_NUM_STATES);
+      break;
+
+    case RESULT_FINGER_STILL:
+      start_session (self, cap_run_state, CAP_NUM_STATES);
+      break;
+
+    case RESULT_FINGER_GONE:
       self->fdt_mode = G5120_CMD_FDT_UP;
       start_session (self, fdt_run_state, FDT_NUM_STATES);
       break;

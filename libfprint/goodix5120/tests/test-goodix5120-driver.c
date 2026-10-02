@@ -29,6 +29,9 @@ typedef struct {
   guint corpus_position;
   gboolean auto_events;
   guint short_touches; /* lifts that follow finger-down too soon: brushes */
+  guint finger_held; /* 0x36 checks that still find the finger on */
+  gboolean mute_manual; /* 0x36 is acknowledged, its event never comes */
+  guint later_pattern, later_from; /* from image number later_from on, send later_pattern */
   gboolean no_hello, corrupt_image;
   gboolean wrong_key;
   gboolean alert_after_hello; /* answer ServerHello alone with decode_error */
@@ -93,6 +96,15 @@ queue_event (Fixture *f, guint8 cmd)
       data[0] = 2;
       data[2] = 0x3f;
     }
+  else if (cmd == 0x36)
+    {
+      data[1] = 1;
+      if (f->finger_held > 0)
+        {
+          f->finger_held--;
+          data[2] = 0x3f;
+        }
+    }
   else
     {
       data[1] = 2;
@@ -107,7 +119,8 @@ queue_event (Fixture *f, guint8 cmd)
     }
   for (guint i = 0; i < 6; i++)
     {
-      data[4 + i * 2] = 0x90 + i * 2;
+      /* A manual reading with the finger on is lower than an untouched one. */
+      data[4 + i * 2] = (cmd == 0x36 ? 0x60 : 0x90) + i * 2;
       data[5 + i * 2] = 1;
     }
   queue_message (f, cmd, data, sizeof (data));
@@ -207,6 +220,8 @@ queue_image (Fixture *f)
     { 0x21, 0x43, 0x65, 0x87, 0xa9, 0xcb },
     { 0x55, 0x05, 0x50, 0x0a, 0xa0, 0xaa },
   };
+  if (f->later_from && f->frames + 1 >= f->later_from)
+    f->pattern = f->later_pattern;
   g_assert_cmpuint (f->pattern, <, G_N_ELEMENTS (patterns));
   for (gsize i = 8; i < 7688; i += 6)
     memcpy (frame + i, patterns[f->pattern], 6);
@@ -303,7 +318,13 @@ peer_frame (const guint8 *buf, gsize len, gpointer data)
     case 0x32:
     case 0x34:
       queue_ack (f, cmd, 1);
-      if (f->auto_events)
+      /* A held finger does not lift: the 0x36 that follows supersedes the arm. */
+      if (f->auto_events && !(cmd == 0x34 && f->finger_held > 0))
+        queue_event (f, cmd);
+      return;
+    case 0x36:
+      queue_ack (f, cmd, 1);
+      if (f->auto_events && !f->mute_manual)
         queue_event (f, cmd);
       return;
     case 0x20:
@@ -480,6 +501,26 @@ open_driver (Fixture *f)
       g_assert_cmphex (cmd, ==, want[command++]);
     }
   g_assert_cmpuint (command, ==, G_N_ELEMENTS (want));
+}
+
+/* The payload of the @nth (0-based) @cmd message sent from frame @from on. */
+static GBytes *
+nth_sent (Fixture *f, guint from, guint8 cmd, guint nth)
+{
+  for (guint i = from; i < f->sent_frames->len; i++)
+    {
+      gsize len, plen, mlen;
+      const guint8 *buf = g_bytes_get_data (g_ptr_array_index (f->sent_frames, i), &len);
+      const guint8 *payload, *mp;
+      guint8 flags, c;
+      g_assert_true (g5120_pack_decode (buf, len, &flags, &payload, &plen, NULL));
+      if (flags == 0xb0)
+        continue;
+      g_assert_true (g5120_message_decode (payload, plen, &c, &mp, &mlen, NULL));
+      if (c == cmd && nth-- == 0)
+        return g_bytes_new (mp, mlen);
+    }
+  g_assert_not_reached ();
 }
 
 /* How many @cmd messages the driver sent from frame @from on. */
@@ -2044,28 +2085,82 @@ test_enroll_cancel (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->handshakes, ==, 1);
 }
 
+/* Per verify/identify mode: what goes on the wire after the enrollment. A
+ * match ends the touch at once, with no finger-off; a touch that does not
+ * match is checked again (0x34, then 0x36) and imaged again while held. */
+static const struct {
+  const char *name;
+  guint images, up_arms, manual_checks;
+  gboolean lifted;
+} touch_modes[] = {
+  { "match",          1, 0, 0, FALSE },
+  { "no-match",       1, 1, 1, TRUE },  /* 0x36 finds the finger gone: that is the lift */
+  { "retry",          1, 1, 1, TRUE },
+  { "too-short",      1, 1, 1, TRUE },
+  { "second-image",   2, 1, 1, FALSE }, /* held: the second image matches */
+  { "three-images",   3, 3, 2, TRUE },  /* held throughout: three images, then the lift */
+  { "manual-timeout", 1, 2, 1, TRUE },  /* no 0x36 event: back to waiting for 0x34 */
+};
+
+/* Configures the fake EC for @mode; @miss is a pattern that matches nothing. */
+static void
+set_touch_mode (Fixture *f, guint mode, guint miss, guint hit)
+{
+  f->pattern = hit;
+  if (mode == 1 || mode == 5 || mode == 6)
+    f->pattern = miss;
+  else if (mode == 2)
+    fake_matcher.low_keypoints = 1;
+  else if (mode == 3)
+    {
+      f->pattern = miss; /* a brush of another finger; one that matches is reported as a match */
+      f->short_touches = 1;
+    }
+  else if (mode == 4)
+    {
+      f->pattern = miss;
+      f->later_pattern = hit;
+      f->later_from = f->frames + 2;
+    }
+  f->finger_held = mode == 4 ? 1 : mode == 5 ? 2 : 0;
+  f->mute_manual = mode == 6;
+}
+
+static void
+assert_touch_wire (Fixture *f, guint mode, guint sent)
+{
+  g_assert_cmpuint (count_sent (f, sent, 0x20), ==, touch_modes[mode].images);
+  g_assert_cmpuint (count_sent (f, sent, 0x34), ==, touch_modes[mode].up_arms);
+  g_assert_cmpuint (count_sent (f, sent, 0x36), ==, touch_modes[mode].manual_checks);
+  if (mode == 5)
+    {
+      /* As the vendor's: the first 0x36 carries the down thresholds (from the
+       * last lift's readings, 0x190 + 2i), the next the previous manual
+       * event's readings (0x160 + 2i), each >> 1. */
+      static const guint8 first[] = { 0x0d, 0x01, 0x80, 0xc8, 0x80, 0xc9, 0x80, 0xca,
+                                      0x80, 0xcb, 0x80, 0xcc, 0x80, 0xcd };
+      static const guint8 second[] = { 0x0d, 0x01, 0x80, 0xb0, 0x80, 0xb1, 0x80, 0xb2,
+                                       0x80, 0xb3, 0x80, 0xb4, 0x80, 0xb5 };
+      g_autoptr(GBytes) a = nth_sent (f, sent, 0x36, 0);
+      g_autoptr(GBytes) b = nth_sent (f, sent, 0x36, 1);
+      g_assert_cmpmem (g_bytes_get_data (a, NULL), g_bytes_get_size (a), first, sizeof (first));
+      g_assert_cmpmem (g_bytes_get_data (b, NULL), g_bytes_get_size (b), second, sizeof (second));
+    }
+}
+
 /* Verify is one touch against the stored views: the same synthetic image
- * matches, another does not, an unusable touch is a retry result. A match is
- * reported before the lift: no 0x34 arm, no finger-off. The rest wait for it. */
+ * matches, another does not, an unusable touch is a retry result. */
 static void
 test_verify (Fixture *f, gconstpointer data)
 {
-  guint mode = GPOINTER_TO_UINT (data); /* match, no match, retry, brush */
+  guint mode = GPOINTER_TO_UINT (data);
   g_autoptr(FpPrint) print = NULL;
   guint fingers, sent;
 
   open_driver (f);
   print = enroll_print (f);
   fingers = f->usb.notify.fingers_on;
-  if (mode == 1)
-    f->pattern = 1;
-  else if (mode == 2)
-    fake_matcher.low_keypoints = 1;
-  else if (mode == 3)
-    {
-      f->pattern = 1; /* a brush of another finger; one that matches is reported as a match */
-      f->short_touches = 1;
-    }
+  set_touch_mode (f, mode, 1, 0);
   sent = f->sent_frames->len;
   fake_verify (&f->usb, print);
   pump (f);
@@ -2073,25 +2168,25 @@ test_verify (Fixture *f, gconstpointer data)
   g_assert_cmpuint (f->usb.notify.completions, ==, 2);
   g_assert_true (f->usb.notify.reported);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, fingers + 1);
-  g_assert_cmpuint (f->usb.notify.fingers_off, ==, fingers + (mode == 0 ? 0 : 1));
-  g_assert_cmpuint (count_sent (f, sent, 0x34), ==, mode == 0 ? 0 : 1);
+  g_assert_cmpuint (f->usb.notify.fingers_off, ==, fingers + (touch_modes[mode].lifted ? 1 : 0));
+  assert_touch_wire (f, mode, sent);
   g_assert_cmpuint (f->handshakes, ==, 1);
   g_assert_null (f->usb.pending);
-  if (mode >= 2)
+  if (mode == 2 || mode == 3)
     {
       g_assert_cmpint (f->usb.notify.result, ==, FPI_MATCH_ERROR);
       g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY,
                       (mode == 2 ? FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_TOO_SHORT));
     }
   else
-    g_assert_cmpint (f->usb.notify.result, ==, mode == 0 ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL);
+    g_assert_cmpint (f->usb.notify.result, ==, touch_modes[mode].lifted ? FPI_MATCH_FAIL : FPI_MATCH_SUCCESS);
 }
 
 /* Identify reports the gallery print that matched, or none. */
 static void
 test_identify (Fixture *f, gconstpointer data)
 {
-  guint mode = GPOINTER_TO_UINT (data); /* match the second print, no match, retry, brush */
+  guint mode = GPOINTER_TO_UINT (data);
   g_autoptr(FpPrint) other = NULL;
   g_autoptr(FpPrint) mine = NULL;
   g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
@@ -2104,28 +2199,93 @@ test_identify (Fixture *f, gconstpointer data)
   mine = enroll_print (f);
   g_ptr_array_add (gallery, other);
   g_ptr_array_add (gallery, mine);
-  if (mode == 1)
-    f->pattern = 2;
-  else if (mode == 2)
-    fake_matcher.low_keypoints = 1;
-  else if (mode == 3)
-    {
-      f->pattern = 2;
-      f->short_touches = 1;
-    }
+  set_touch_mode (f, mode, 2, 0);
   sent = f->sent_frames->len;
   fake_identify (&f->usb, gallery);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.completions, ==, 3);
   g_assert_true (f->usb.notify.reported);
-  g_assert_true (f->usb.notify.match == (mode == 0 ? mine : NULL));
-  g_assert_cmpuint (count_sent (f, sent, 0x34), ==, mode == 0 ? 0 : 1);
-  if (mode >= 2)
+  g_assert_true (f->usb.notify.match == (touch_modes[mode].lifted || mode == 2 ? NULL : mine));
+  if (mode == 2 || mode == 3)
     g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY,
                     (mode == 2 ? FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_TOO_SHORT));
+  assert_touch_wire (f, mode, sent);
   g_assert_cmpuint (f->handshakes, ==, 1);
   g_assert_null (f->usb.pending);
+}
+
+/* A fault at each USB completion of a verify touch that is imaged twice
+ * (0x34, 0x36 and the second image included) ends the action with that error,
+ * writes nothing more, and leaves nothing pending. A cancelled one keeps the
+ * session for the next verify. */
+static void
+test_verify_recheck_sweep (gconstpointer data)
+{
+  guint mode = GPOINTER_TO_UINT (data); /* unplug, generic I/O, or cancellation */
+  guint count;
+
+  {
+    Fixture baseline = { 0 };
+    g_autoptr(FpPrint) print = NULL;
+    guint start;
+
+    setup (&baseline, NULL);
+    open_driver (&baseline);
+    print = enroll_print (&baseline);
+    set_touch_mode (&baseline, 4, 1, 0);
+    start = baseline.usb.completions;
+    fake_verify (&baseline.usb, print);
+    pump (&baseline);
+    g_assert_cmpint (baseline.usb.notify.result, ==, FPI_MATCH_SUCCESS);
+    count = baseline.usb.completions - start;
+    teardown (&baseline, NULL);
+  }
+  for (guint fault = 0; fault < count; fault++)
+    {
+      Fixture f = { 0 };
+      g_autoptr(FpPrint) print = NULL;
+      guint completions, errors, writes;
+
+      setup (&f, NULL);
+      open_driver (&f);
+      print = enroll_print (&f);
+      set_touch_mode (&f, 4, 1, 0);
+      completions = f.usb.notify.completions;
+      errors = f.usb.notify.action_errors;
+      fake_verify (&f.usb, print);
+      for (guint i = 0; i < fault; i++)
+        g_assert_true (fake_usb_step (&f.usb));
+      writes = f.usb.writes->len;
+      if (mode == 2)
+        {
+          fake_cancel (&f.usb);
+          pump (&f);
+          g_assert_error (f.usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+        }
+      else
+        {
+          fake_usb_complete (&f.usb, NULL, 0, g_error_new_literal (G_USB_DEVICE_ERROR,
+                             mode ? G_USB_DEVICE_ERROR_FAILED : G_USB_DEVICE_ERROR_NO_DEVICE, "I/O failure"));
+          g_assert_nonnull (f.usb.notify.error);
+          g_assert_false (g_error_matches (f.usb.notify.error, G_IO_ERROR, G_IO_ERROR_CANCELLED));
+        }
+      g_assert_cmpuint (f.usb.notify.completions, ==, completions + 1);
+      g_assert_cmpuint (f.usb.notify.action_errors, ==, errors + 1);
+      g_assert_null (f.usb.pending);
+      g_assert_cmpuint (f.usb.writes->len, ==, writes);
+      if (mode == 2)
+        {
+          g_clear_error (&f.usb.notify.error);
+          set_touch_mode (&f, 0, 1, 0);
+          fake_verify (&f.usb, print);
+          pump (&f);
+          g_assert_no_error (f.usb.notify.error);
+          g_assert_cmpint (f.usb.notify.result, ==, FPI_MATCH_SUCCESS);
+          g_assert_cmpuint (f.handshakes, ==, 1);
+        }
+      teardown (&f, NULL);
+    }
 }
 
 /* Stored data that is not a template for this driver fails the action before
@@ -2298,11 +2458,10 @@ main (int argc, char **argv)
   g_test_add ("/goodix5120/driver/enroll/retry-too-short", Fixture, GUINT_TO_POINTER (2), setup,
               test_enroll_retry, teardown);
   g_test_add ("/goodix5120/driver/enroll/cancel", Fixture, NULL, setup, test_enroll_cancel, teardown);
-  const char *verify_names[] = { "match", "no-match", "retry", "too-short" };
-  for (guint i = 0; i < G_N_ELEMENTS (verify_names); i++)
+  for (guint i = 0; i < G_N_ELEMENTS (touch_modes); i++)
     {
-      g_autofree gchar *vname = g_strdup_printf ("/goodix5120/driver/verify/%s", verify_names[i]);
-      g_autofree gchar *iname = g_strdup_printf ("/goodix5120/driver/identify/%s", verify_names[i]);
+      g_autofree gchar *vname = g_strdup_printf ("/goodix5120/driver/verify/%s", touch_modes[i].name);
+      g_autofree gchar *iname = g_strdup_printf ("/goodix5120/driver/identify/%s", touch_modes[i].name);
       g_test_add (vname, Fixture, GUINT_TO_POINTER (i), setup, test_verify, teardown);
       g_test_add (iname, Fixture, GUINT_TO_POINTER (i), setup, test_identify, teardown);
     }
@@ -2354,6 +2513,8 @@ main (int argc, char **argv)
     {
       g_autofree gchar *name = g_strdup_printf ("/goodix5120/driver/%s-sweep", sweep_names[i]);
       g_test_add_data_func (name, GUINT_TO_POINTER (i), test_operation_sweep);
+      g_autofree gchar *vname = g_strdup_printf ("/goodix5120/driver/verify/recheck-%s-sweep", sweep_names[i]);
+      g_test_add_data_func (vname, GUINT_TO_POINTER (i), test_verify_recheck_sweep);
     }
   const char *state_names[] = { "fdt-arm", "fdt-wait", "cap-request", "cap-read", "cap-decode",
                                "lift-arm", "lift-wait" };

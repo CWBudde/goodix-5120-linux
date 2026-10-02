@@ -57,6 +57,9 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5120, fpi_device_goodix5120, FPI,
  * taken while it landed or left. Ask for another touch rather than report a
  * no-match. Observed: a 144 ms brush scored 0; genuine touches from 203 ms. */
 #define G5120_MIN_CONTACT_MS     180
+/* Images per touch in verify/identify: after a no-match, another is taken
+ * while the finger stays on, as the vendor does (up to three, its log). */
+#define G5120_MAX_IMAGES_PER_TOUCH 3
 
 /* Where the 32-byte raw PSK is read from. The environment variable wins.
  * TODO(provisioning): see README.md, "PSK provisioning". */
