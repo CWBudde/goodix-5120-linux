@@ -55,7 +55,7 @@ Wrong frames have **wedged the EC and killed the internal keyboard** (Runs 1, 2,
 - `internal/`: framing and opcode registry (`proto`), the send gate (`transport`), TLS-PSK (`tlspsk`, `session`),
   image decode (`image`), offline parsers (`capture`, `evtx`, `dpapi`, `winreg`), shared Go/C fixtures (`testfixtures`).
 - `docs/protocol.md`: wire format and every run, each fact marked transcribed (from upstream) or observed.
-  `docs/fprintd.md`: install and PAM. `docs/acpi.md`: firmware tables. `docs/upstream-report.md`: unposted drafts.
+  `docs/fprintd.md`: what the fprintd installer changes. `docs/acpi.md`: firmware tables. `docs/upstream-report.md`: unposted drafts.
   `PLAN.md`: open work.
 
 ## Commands (offline)
@@ -65,7 +65,9 @@ test links fail in `/tmp`, set `GOTMPDIR` to a directory on another filesystem. 
 touches the device, on purpose (`just live-help`).
 
 ```sh
-just check                                    # build + vet + tests under both opcode tags + fmt listing
+just check                                    # fmt-check, lint, vet, Go tests (both tags), C tests, build, tidy
+just fmt                                      # treefmt: gofumpt, gci, prettier, shfmt, taplo, yamlfmt, just
+just lint                                     # golangci-lint (.golangci.toml) + shellcheck
 go test -race ./...
 go test ./internal/transport -run TestReplayHappyPath   # single test
 go test -tags goodix_destructive ./internal/proto ./internal/transport   # cmd/goodix-probe safety tests fail under this tag, on purpose
@@ -75,18 +77,23 @@ just bisect-offline                           # --bisect --replay
 just rehearse                                 # full TLS-PSK session against an in-process fake EC, synthetic keys
 
 # The C driver: the real goodix5120.c against a fake libfprint/USB adapter and a synthetic EC
-meson setup /tmp/g5120 libfprint/goodix5120 && meson test -C /tmp/g5120 --print-errorlogs
-meson setup /tmp/g5120-asan libfprint/goodix5120 -Db_sanitize=address,undefined && meson test -C /tmp/g5120-asan
+just test-c                                   # normal, then ASan/UBSan (builds in /tmp/g5120, /tmp/g5120-asan)
 /tmp/g5120/test-goodix5120-driver -p /goodix5120/driver/enroll/complete   # one scenario
 
 ./goodix-pcap -in dump.pcapng                 # counts only; refuses to print 0xe4/0xa6 payloads
 ./goodix-evtx -in log.evtx -grep "Send data::0xa0e4"   # record text needs -grep or -text
 ```
 
-The full libfprint build (pinned libfprint `6f9479c3`, `libfprint-register.patch`, OpenCV ≥ 4.4 for SIGFM) runs in
-the docker image `goodix-offline-build-opencv:26.04` with `--network none`. Its bundle goes to the gitignored
-`dist/goodix-owner-c-sigfm-driver/`, which the fprintd installer reads (re-run `install` after a rebuild). The build
-script is not in the repo yet (`PLAN.md`).
+`just bundle` is the full build: `libfprint/goodix5120/build/build-bundle.sh` runs in the Ubuntu 26.04 image from
+that directory's `Dockerfile`, with `--network none`, against pinned libfprint `6f9479c3` (cloned into `.cache/`).
+It runs the C tests, builds libfprint with `libfprint-register.patch` and the driver, refuses driver warnings, and
+writes `dist/goodix5120-<version>/` (library, examples, installer, `source/`, `SHA256SUMS`). The fprintd installer
+picks that bundle up; the owner re-runs `install` after a rebuild.
+
+**CI and releases.** `.github/workflows/tests.yaml` runs Go tests, lint, the format check and the bundle build on
+every push and PR. release-please keeps a release PR from the conventional commits; merging it tags `vX.Y.Z`, and
+`release.yaml` attaches the bundle tarball, `SHA256SUMS` and a provenance attestation. Formatter versions are pinned
+in `test-format.yaml`; keep them in step with the local tools.
 
 ## Architecture: safety is structural
 
@@ -164,9 +171,10 @@ Changes must preserve these; each is pinned by tests.
 
 ## Style, tests, commits
 
-- Go: idiomatic, `gofmt`, `go vet`; format only what you change. C: libfprint/GLib style, two-space indent,
+- Run `just fmt` and `just lint` before committing; CI fails on either. Go: idiomatic, gofumpt + gci. C: libfprint/GLib style, two-space indent,
   snake_case, `g5120_` helpers. Match the surrounding comment density.
 - Docs: distinguish observed from transcribed or inferred; short, plain sentences.
 - Add a synthetic regression test for each behaviour change; keep the safety tests. Report fixture-dependent skips.
-- Commits follow `feat(scope):`, `fix(scope):`, `test(scope):`, `perf(scope):`, `docs:`. Sanitize logs; keep private
+- Commits follow Conventional Commits (`feat(scope):`, `fix(scope):`, `perf:`, `build:`, `docs:`, `test:`, `ci:`,
+  `style:`, `chore:`); release-please turns them into the version bump and the changelog. Sanitize logs; keep private
   captures out of diffs.

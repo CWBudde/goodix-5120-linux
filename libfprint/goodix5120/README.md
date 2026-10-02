@@ -80,6 +80,9 @@ driver is built around that:
 
 ## Building
 
+`just bundle` (repository root) does all of the below in docker and produces the release bundle; see
+`build/build-bundle.sh`. By hand:
+
 ```sh
 cd libfprint                                  # a libfprint source checkout
 mkdir -p libfprint/drivers/goodix5120

@@ -25,6 +25,7 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 | 6, C capture — TLS pacing (no two host writes < 10 ms apart)                  | first C image                                       | 23–34 |
 | 6, matching — NBIS finds ≤ 5 minutiae; SIGFM in the driver                    | 14/15 genuine offline, no true impostor > 9         | 35–41 |
 | 6, integration — fprintd drop-in, PAM, 1 s open                               | `sudo` by finger                                    | 42–45 |
+| Tooling — bundle build in repo, CI, lint/format, release-please               | releases carry the built bundle                     | —     |
 
 ## Open
 
@@ -47,8 +48,6 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
       reverses this repo's no-destructive-opcodes rule, so it is a decision to make with upstream, after showing the
       device recovers.
 - [ ] OpenCV is a new libfprint dependency (SIGFM). Upstream may want a different matcher or build option.
-- [ ] Reproducible bundle build: the offline docker build that produces `dist/goodix-owner-c-sigfm-driver/` should
-      live in the repo, not only in an agent's scratch directory.
 - [ ] Optional: reuse the TLS session across fprintd's close/open, if 1 s per prompt is still too slow.
 
 ### Phase 2 — publish (owner decision)
@@ -72,7 +71,6 @@ bytes, the OTP-derived `0x98` DAC values, templates, or any capture.
       while I/O is in progress.
 - [ ] Make ordinary `--bisect` steps stop when their documented ACK or data reply is missing (keep `0x96`'s
       no-reply and the ACK-only commands).
-- [ ] Make `just fmt-check` fail on differences instead of listing them.
 - [ ] What the 8-byte header and 5-byte trailer around each frame hold.
 
 [dump]: https://github.com/goodix-fp-linux-dev/goodix-fp-dump
