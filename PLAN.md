@@ -40,6 +40,9 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 - [ ] **Brush retry.** A touch under 180 ms is now a "too short" retry, not a no-match. Check on the lock screen
       that a quick brush asks again instead of falling back to the password. A deliberate brush lasted 424 ms
       and matched (Run 47), so this needs a real graze, under 180 ms.
+- [ ] **Match before the lift.** Verify/identify report a match right after the image (~115 ms after finger-down)
+      instead of at finger-up. Check `match N ms after finger-down` in the journal, and that the next `sudo` right
+      after it opens and matches normally (the EC is left without a `0x34` arm, as in Runs 20–22).
 - [x] **Faster open:** 498–506 ms, from ~965 ms (Runs 46–47, three opens, no warnings).
 - [ ] Record the recovery behaviour of each in `docs/protocol.md`.
 

@@ -130,9 +130,10 @@ Changes must preserve these; each is pinned by tests.
   enlarged ×3 to 192 × 240 with pixman, then SIGFM. libfprint's heat model is off (`temp_hot_seconds = -1`).
 - Stored templates (`(yqqa(a(qq)ay))`, about 200 KB, biometric) are validated in full before SIGFM sees them.
 - Fail closed: a missing or early reply, an ACK status other than `0x01`, a stalled handshake stops the sequence.
-  After an image/TLS/transport failure the session is discarded until close/reopen. Every touch waits for finger-up
-  before the action reports. Close sends nothing; no USB reset.
-- Only the attach drain waits 200 ms; drains between open steps wait 20 ms.
+  After an image/TLS/transport failure the session is discarded until close/reopen. A verify/identify match is reported
+  right after the image, with no `0x34` arm. Everything else (enroll stages, no-match, retries, capture) waits for
+  finger-up first, and so does the brush check. Close sends nothing; no USB reset.
+- The attach drain waits 50 ms, the quiet after `0x96` 20 ms, drains between open steps 10 ms.
 - `0x98` DAC values and `fdt_delta` (27) are this unit's; deriving them from OTP is open.
 
 **Go reference**

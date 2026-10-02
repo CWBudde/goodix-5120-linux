@@ -482,6 +482,26 @@ open_driver (Fixture *f)
   g_assert_cmpuint (command, ==, G_N_ELEMENTS (want));
 }
 
+/* How many @cmd messages the driver sent from frame @from on. */
+static guint
+count_sent (Fixture *f, guint from, guint8 cmd)
+{
+  guint n = 0;
+  for (guint i = from; i < f->sent_frames->len; i++)
+    {
+      gsize len, plen, mlen;
+      const guint8 *buf = g_bytes_get_data (g_ptr_array_index (f->sent_frames, i), &len);
+      const guint8 *payload, *mp;
+      guint8 flags, c;
+      g_assert_true (g5120_pack_decode (buf, len, &flags, &payload, &plen, NULL));
+      if (flags == 0xb0)
+        continue;
+      g_assert_true (g5120_message_decode (payload, plen, &c, &mp, &mlen, NULL));
+      n += c == cmd;
+    }
+  return n;
+}
+
 static guint8
 pending_command (Fixture *f)
 {
@@ -2025,13 +2045,14 @@ test_enroll_cancel (Fixture *f, gconstpointer data)
 }
 
 /* Verify is one touch against the stored views: the same synthetic image
- * matches, another does not, an unusable touch is a retry result. */
+ * matches, another does not, an unusable touch is a retry result. A match is
+ * reported before the lift: no 0x34 arm, no finger-off. The rest wait for it. */
 static void
 test_verify (Fixture *f, gconstpointer data)
 {
   guint mode = GPOINTER_TO_UINT (data); /* match, no match, retry, brush */
   g_autoptr(FpPrint) print = NULL;
-  guint fingers;
+  guint fingers, sent;
 
   open_driver (f);
   print = enroll_print (f);
@@ -2041,14 +2062,19 @@ test_verify (Fixture *f, gconstpointer data)
   else if (mode == 2)
     fake_matcher.low_keypoints = 1;
   else if (mode == 3)
-    f->short_touches = 1; /* of the enrolled finger: it would have matched */
+    {
+      f->pattern = 1; /* a brush of another finger; one that matches is reported as a match */
+      f->short_touches = 1;
+    }
+  sent = f->sent_frames->len;
   fake_verify (&f->usb, print);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.completions, ==, 2);
   g_assert_true (f->usb.notify.reported);
   g_assert_cmpuint (f->usb.notify.fingers_on, ==, fingers + 1);
-  g_assert_cmpuint (f->usb.notify.fingers_off, ==, fingers + 1);
+  g_assert_cmpuint (f->usb.notify.fingers_off, ==, fingers + (mode == 0 ? 0 : 1));
+  g_assert_cmpuint (count_sent (f, sent, 0x34), ==, mode == 0 ? 0 : 1);
   g_assert_cmpuint (f->handshakes, ==, 1);
   g_assert_null (f->usb.pending);
   if (mode >= 2)
@@ -2069,6 +2095,7 @@ test_identify (Fixture *f, gconstpointer data)
   g_autoptr(FpPrint) other = NULL;
   g_autoptr(FpPrint) mine = NULL;
   g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
+  guint sent;
 
   open_driver (f);
   f->pattern = 1;
@@ -2082,13 +2109,18 @@ test_identify (Fixture *f, gconstpointer data)
   else if (mode == 2)
     fake_matcher.low_keypoints = 1;
   else if (mode == 3)
-    f->short_touches = 1;
+    {
+      f->pattern = 2;
+      f->short_touches = 1;
+    }
+  sent = f->sent_frames->len;
   fake_identify (&f->usb, gallery);
   pump (f);
   g_assert_no_error (f->usb.notify.error);
   g_assert_cmpuint (f->usb.notify.completions, ==, 3);
   g_assert_true (f->usb.notify.reported);
   g_assert_true (f->usb.notify.match == (mode == 0 ? mine : NULL));
+  g_assert_cmpuint (count_sent (f, sent, 0x34), ==, mode == 0 ? 0 : 1);
   if (mode >= 2)
     g_assert_error (f->usb.notify.retry, FP_DEVICE_RETRY,
                     (mode == 2 ? FP_DEVICE_RETRY_CENTER_FINGER : FP_DEVICE_RETRY_TOO_SHORT));

@@ -136,6 +136,7 @@ struct _FpiDeviceGoodix5120
 
   /* Matching (goodix5120_match.h). */
   G5120View    *probe;          /* this touch's features */
+  gint          match_idx;      /* verify/identify: the gallery print it matched, or -1 */
   GError       *probe_retry;    /* or why this touch cannot be used (FP_DEVICE_RETRY) */
   GPtrArray    *enroll_views;   /* enroll: G5120View * so far */
   GPtrArray    *gallery;        /* verify/identify: per print, a GPtrArray of its views */
@@ -1611,11 +1612,14 @@ cap_run_state (FpiSsm *ssm, FpDevice *dev)
  *
  *   FDT down (arm 0x32, wait) -> capture (0x20, image) -> FDT up (arm 0x34, wait)
  *
- * SIGFM features are extracted between capture and lift, and the result is
- * reported after the lift, so an action always ends with the finger off and
- * nothing outstanding, as the image-device class did. Enroll repeats the touch
- * until G5120_ENROLL_STAGES views are usable. Nothing new goes on the wire:
- * the frames are those of Runs 34-40.
+ * SIGFM features are extracted between capture and lift. Verify and identify
+ * also score them there, and a match is reported at once, with the finger
+ * still on and nothing outstanding: no 0x34 is armed, as in Runs 20-22, whose
+ * sessions ended after the image and reopened cleanly. Anything else is
+ * reported after the lift, which decides whether a no-match was a brush and
+ * keeps the next touch from imaging the same placement. Enroll repeats the
+ * touch until G5120_ENROLL_STAGES views are usable. Nothing new goes on the
+ * wire: the frames are those of Runs 34-40.
  */
 
 #define G5120_TEMPLATE_WIDTH  (G5120_IMG_WIDTH * G5120_ENLARGE_FACTOR)
@@ -1634,6 +1638,7 @@ matching_clear (FpiDeviceGoodix5120 *self)
 {
   g_clear_pointer (&self->probe, g5120_view_free);
   g_clear_error (&self->probe_retry);
+  self->match_idx = -1;
   g_clear_pointer (&self->enroll_views, g_ptr_array_unref);
   g_clear_pointer (&self->gallery, g_ptr_array_unref);
   clear_captured (self);
@@ -1701,7 +1706,8 @@ extract_probe (FpiDeviceGoodix5120 *self)
     }
 }
 
-/* A brush is a retry, whatever its image scored. */
+/* A brush that did not match is a retry, not a no-match. A match never
+ * reaches this: it is reported before the lift. */
 static void
 check_contact (FpiDeviceGoodix5120 *self)
 {
@@ -1759,6 +1765,28 @@ gallery_score (FpiDeviceGoodix5120 *self, guint print)
   return score;
 }
 
+/* Scores the probe against every print of the gallery and keeps the best
+ * match in match_idx. Returns TRUE on a match. */
+static gboolean
+score_probe (FpiDeviceGoodix5120 *self)
+{
+  gint best = -1;
+
+  self->match_idx = -1;
+  for (guint i = 0; i < self->gallery->len; i++)
+    {
+      gint score = gallery_score (self, i);
+
+      if (score >= G5120_MATCH_THRESHOLD && score > best)
+        {
+          best = score;
+          self->match_idx = i;
+        }
+    }
+  g_clear_pointer (&self->probe, g5120_view_free);
+  return self->match_idx >= 0;
+}
+
 static void
 verify_touch_done (FpiDeviceGoodix5120 *self)
 {
@@ -1773,7 +1801,7 @@ verify_touch_done (FpiDeviceGoodix5120 *self)
       return;
     }
 
-  result = gallery_score (self, 0) >= G5120_MATCH_THRESHOLD ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL;
+  result = self->match_idx >= 0 ? FPI_MATCH_SUCCESS : FPI_MATCH_FAIL;
   matching_clear (self);
   /* No scanned print: a raw print is compared by its data, which a one-view
    * probe never equals, so libfprint would discard it with a warning. */
@@ -1787,7 +1815,6 @@ identify_touch_done (FpiDeviceGoodix5120 *self)
   FpDevice *dev = FP_DEVICE (self);
   GPtrArray *prints = NULL;
   FpPrint *match = NULL;
-  gint best = -1;
 
   if (self->probe_retry)
     {
@@ -1798,16 +1825,8 @@ identify_touch_done (FpiDeviceGoodix5120 *self)
     }
 
   fpi_device_get_identify_data (dev, &prints);
-  for (guint i = 0; i < self->gallery->len; i++)
-    {
-      gint score = gallery_score (self, i);
-
-      if (score >= G5120_MATCH_THRESHOLD && score > best)
-        {
-          best = score;
-          match = g_ptr_array_index (prints, i);
-        }
-    }
+  if (self->match_idx >= 0)
+    match = g_ptr_array_index (prints, self->match_idx);
   matching_clear (self);
   fpi_device_identify_report (dev, match, NULL, NULL);
   fpi_device_identify_complete (dev, NULL);
@@ -1903,6 +1922,13 @@ session_done (FpiSsm *ssm, FpDevice *dev, GError *error)
     case RESULT_IMAGE:
       if (fpi_device_get_current_action (dev) != FPI_DEVICE_ACTION_CAPTURE)
         extract_probe (self);
+      if (self->probe != NULL && self->gallery != NULL && score_probe (self))
+        {
+          fp_info ("match %" G_GINT64_FORMAT " ms after finger-down; not waiting for the lift",
+                   (g_get_monotonic_time () - self->finger_down_at) / 1000);
+          touch_done (self);
+          break;
+        }
       self->fdt_mode = G5120_CMD_FDT_UP;
       start_session (self, fdt_run_state, FDT_NUM_STATES);
       break;
@@ -1936,6 +1962,7 @@ action_begin (FpiDeviceGoodix5120 *self)
   /* The TLS session was set up at open; there is nothing to send here. */
   self->base_invalid = 0; /* a fresh operation, including after cancellation */
   self->cancelling = FALSE;
+  self->match_idx = -1;
   return TRUE;
 }
 
