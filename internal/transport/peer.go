@@ -13,7 +13,7 @@ import (
 // stand-in that really completes a TLS handshake, say — cannot be expressed as a
 // fixed list of Exchanges, but it must not therefore get a private write path:
 // the whole safety model rests on every outbound byte passing through sender's
-// gate (CLAUDE.md, "internal/transport is the single chokepoint"). NewPeer wraps
+// gate (AGENTS.md, "One send gate"). NewPeer wraps
 // a Peer in exactly that gate, so a rehearsal refuses the same frames the live
 // USB path refuses, and an offline run proves something about the live one.
 //

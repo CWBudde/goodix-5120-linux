@@ -72,7 +72,7 @@ just rehearse                                 # Go: full TLS-PSK session against
 
 Requirements: Go (see `go.mod`), `libusb-1.0-0-dev`, OpenSSL ≥ 3 headers and `pkg-config`. The C tests need
 GLib/GIO and OpenSSL headers; with OpenCV 4 the real SIGFM test runs too. Agents never run anything against the
-device. Live tests are the owner's (see `CLAUDE.md`).
+device. Live tests are the owner's (see `AGENTS.md`).
 
 ## Credit
 
