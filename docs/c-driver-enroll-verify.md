@@ -160,3 +160,7 @@ Report the `keypoints:` lines and everything from `=== SIGFM scores` onward.
 calibration frame from every frame before its min–max scaling. It takes that frame before each scan with
 FDT-up, nav `0x50` and `0x20`, a sequence never sent to this EC. This driver has no such subtraction. It is
 a candidate for improving both matchers, but it needs its own live step first.
+
+**Run 38** (`docs/protocol.md`) ran this tool. Every frame had 82–147 keypoints, but SIGFM did not separate the
+two fingers: at threshold 24 it accepted 3 of 6 impostors, and the best impostor score was higher than the best
+genuine one. The suspected cause is the sensor's fixed pattern, which background subtraction would remove.

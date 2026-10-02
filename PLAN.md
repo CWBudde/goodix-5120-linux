@@ -190,6 +190,10 @@ do not establish keyboard health or continued EC responsiveness. The runbook has
    every Bozorth score was 0, NBIS's value for fewer than 10 minutiae. Matching is the open problem.
    Run 37 measured it: at most 5 minutiae per frame (mean 1.7) at every scale ×1–×5. NBIS cannot
    match on this sensor; a non-minutiae matcher (SIGFM-style) is required.
+   Run 38 scored SIGFM offline-built, owner-run (6 + 6 touches, two fingers): plenty of keypoints
+   (82–147), but no separation. At the fork's threshold of 24, 3 of 6 impostors were accepted, and the best impostor
+   outscored the best genuine score. Suspected cause: the sensor's fixed pattern, which the fork removes by
+   subtracting a no-finger frame. Next: check that offline with software background estimates.
    It reads the PSK from a file and does not provision one.
    Its README lists what is stubbed and the open questions for the first live run.
    **Review gate (2026-09-30):** finish the offline hardening and lifecycle checks below before

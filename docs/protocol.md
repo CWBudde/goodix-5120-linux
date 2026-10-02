@@ -1465,6 +1465,43 @@ frame — what this run measured. Bozorth3 needs at least 10 on each print, so *
 this sensor at any enlargement**. That matches the community `goodixtls` fork's move to SIGFM for similar small
 Goodix parts. The pinned libfprint contains no non-minutiae matcher.
 
+### Run 38 — 2026-10-02 02:36, SIGFM scores: no separation between fingers (observed)
+
+The owner ran `examples/g5120-sigfm 6` from `dist/goodix-owner-c-sigfm/` (same driver and library as Runs 34–37;
+SIGFM from the `goodixtls` fork at `07306bb`, host OpenCV 4.10). It ran without an EC reset after Run 37. Open, all
+captures and close completed without error. The pasted log starts at finger A's fourth frame. In that part, six touches
+were discarded for having no NBIS minutiae and repeated (A once twice; B four times). Two base-invalid events were
+re-armed correctly. Stretch bounds ranged from 931..2300 to 1199..2499 (one at 1040..2899). Three finger-up arms
+carried the untouched-zone threshold `0x19` for zone 0.
+
+Every kept frame had plenty of SIFT keypoints (×1: 82–137, median 114; ×3: 94–147, median 123), far above the
+fork's 25. The scores do not separate the fingers:
+
+| | genuine verify (best of the other 5 A frames) | impostor verify (best over 6 A frames) | accepted at 24 |
+|---|---|---|---|
+| ×1 (64 × 80) | 58, 2870, 7794, 8648, 269307, 295515 | 0, 0, 0, 1884, 2131, **316748** | genuine 6/6, impostor 3/6 |
+| ×3 (driver image) | 121, 15224, 33652, 62337, 676396, 947510 | 0, 0, 10, 2263, 8195, **2599516** | genuine 6/6, impostor 3/6 |
+
+Of the 30 genuine pairs, 4 (×1) and 5 (×3) scored 0. Of the 36 impostor pairs, 26 scored 0 at both scales, and
+the rest are spread up to the largest score of the whole run. **No threshold works:** at both scales the best
+impostor score is higher than the best genuine one.
+
+**Reading the magnitude.** SIGFM's score is not a match count. It counts *pairs of pairs*: point pairs whose
+lengths agree within 5 %, then pairs of those whose angles agree within 5 % (`sigfm.cpp`, `sigfm_match_score`).
+When M matches all follow one rigid motion, the score is about P(P−1)/2 with P ≈ M(M−1)/2, so it grows roughly as
+M⁴/8. The fork's threshold of 24 then corresponds to about 4–5 consistent matches. The impostor 2 599 516 at ×3 corresponds to about
+68 matches agreeing on one motion, and 316 748 at ×1 to about 40. Those are 40–60 % of a frame's keypoints, matched
+consistently between two different fingers.
+
+**Hypothesis (not yet tested): the sensor's fixed pattern.** The likeliest feature common to two fingers'
+frames is the sensor's own fixed-pattern structure (column/row offsets, per-pixel gain), at the same pixel position
+in every frame, so it fits an identity motion. The fork's `goodix511` subtracts a no-finger calibration frame
+before scaling for this reason; this driver does not (`docs/c-driver-enroll-verify.md`). A second, smaller
+factor is that SIGFM's `match::operator<` compares only `y`, so its de-duplication keeps one match per row.
+The next check is offline-buildable and needs no new command: report each pair's dominant translation (near
+zero would confirm a fixed pattern), and score again after subtracting a background estimated from the frames
+themselves.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
