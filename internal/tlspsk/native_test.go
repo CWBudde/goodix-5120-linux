@@ -71,7 +71,9 @@ func TestDeviceWriteDoesNotWaitForOutputReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	client.Device().SetReadDeadline(time.Now().Add(time.Second))
+	if err := client.Device().SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	hello := make([]byte, 4096)
 	n, err := client.Device().Read(hello)
 	if err != nil {
@@ -111,11 +113,15 @@ func TestDeviceDeadlineChangesWakeBlockedRead(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocked read ignored new deadline")
 	}
-	s.Device().SetWriteDeadline(time.Now().Add(-time.Second))
+	if err := s.Device().SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Device().Write([]byte{1}); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("Write deadline: %v", err)
 	}
-	s.Device().SetDeadline(time.Time{})
+	if err := s.Device().SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCancellationAndConcurrentCloseWakeReadersAndPlaintextWriter(t *testing.T) {
@@ -232,7 +238,9 @@ func quietPair(t *testing.T) (*Session, *Session) {
 	for turn := 0; turn < 8; turn++ {
 		for _, pair := range [][2]*Session{{client, server}, {server, client}} {
 			source, dest := pair[0], pair[1]
-			source.Device().SetReadDeadline(time.Now().Add(time.Millisecond))
+			if err := source.Device().SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+				t.Fatal(err)
+			}
 			for {
 				buf := make([]byte, 65536)
 				n, err := source.Device().Read(buf)
@@ -246,7 +254,9 @@ func quietPair(t *testing.T) (*Session, *Session) {
 					t.Fatal(err)
 				}
 			}
-			source.Device().SetReadDeadline(time.Time{})
+			if err := source.Device().SetReadDeadline(time.Time{}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if server.ready && client.ready {
 			return server, client
@@ -389,7 +399,9 @@ func TestNativeServerSelectsOnlyDeviceSuiteWithoutIdentityHint(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	server.Device().SetReadDeadline(time.Now().Add(time.Second))
+	if err := server.Device().SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	out := make([]byte, 1024)
 	n, err := server.Device().Read(out)
 	if err != nil {

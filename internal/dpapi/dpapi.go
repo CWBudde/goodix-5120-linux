@@ -215,6 +215,8 @@ func LSAKey(bootKey, polEKList []byte) ([]byte, error) {
 }
 
 // DPAPISystem holds the machine and user 20-byte DPAPI keys.
+//
+//nolint:revive // named after the DPAPI_SYSTEM LSA secret it is decrypted from
 type DPAPISystem struct {
 	Machine []byte
 	User    []byte

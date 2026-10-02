@@ -314,7 +314,7 @@ func TestAlertClassification(t *testing.T) {
 			}
 			// A non-mismatch alert must not be reported as one: Phase 5b turns
 			// on telling "wrong key" apart from "something else went wrong".
-			if tc.want == ErrAlert && errors.Is(err, ErrPSKMismatch) {
+			if tc.want == ErrAlert && errors.Is(err, ErrPSKMismatch) { //nolint:errorlint // the case wants plain ErrAlert, not one that wraps it
 				t.Errorf("alertError = %v, wrongly classified as a PSK mismatch", err)
 			}
 		})

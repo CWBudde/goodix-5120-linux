@@ -316,9 +316,7 @@ func (b *Bridge) PumpHost() error {
 			// and description; once the session is encrypted it does not, and
 			// the body is reported as opaque. Either way the handshake is over,
 			// so nothing gathered ahead of it is worth sending.
-			if err := b.alertError("the host", rec[proto.TLSRecordHeaderLen:]); err != nil {
-				return err
-			}
+			return b.alertError("the host", rec[proto.TLSRecordHeaderLen:])
 		}
 
 		flight = append(flight, rec)
@@ -398,13 +396,13 @@ func (b *Bridge) readHostRecord() ([]byte, error) {
 // It reads until quiet rather than to a fixed length on purpose. The plaintext
 // length of an image is not known: the record is 7744 bytes, which bounds the
 // plaintext at 7680..7695 depending on CBC padding (docs/protocol.md, "How big
-// is an image, really"), and measuring it is the point of Phase 5c. max is a
+// is an image, really"), and measuring it is the point of Phase 5c. limit is a
 // ceiling, not an expectation; ctx bounds the whole call.
-func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, max int) ([]byte, error) {
+func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, limit int) ([]byte, error) {
 	if idle <= 0 {
 		idle = DefaultPlaintextIdle
 	}
-	if max <= 0 {
+	if limit <= 0 {
 		return nil, errors.New("session: ReadApplicationData needs a positive maximum")
 	}
 	b.startPlaintextReader()
@@ -421,7 +419,7 @@ func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, ma
 				// Whatever arrived is still the measurement, and saying so beats
 				// discarding it because the deadline was tight.
 				b.opts.Logger.Printf("  TLS: %v with %d plaintext byte(s) in hand; returning those", err, got)
-				return b.plain.take(max)
+				return b.plain.take(limit)
 			}
 			return nil, fmt.Errorf("session: reading application data: %w", err)
 		}
@@ -445,10 +443,10 @@ func (b *Bridge) ReadApplicationData(ctx context.Context, idle time.Duration, ma
 		// Has the plaintext settled?
 		got, quiet, rerr := b.plain.status()
 		switch {
-		case got >= max:
-			return b.plain.take(max)
+		case got >= limit:
+			return b.plain.take(limit)
 		case got > 0 && (quiet >= idle || rerr != nil):
-			return b.plain.take(max)
+			return b.plain.take(limit)
 		case got == 0 && rerr != nil:
 			return nil, fmt.Errorf("session: the local endpoint stopped producing plaintext: %w", rerr)
 		}
@@ -508,11 +506,11 @@ func (p *plainBuf) status() (n int, quiet time.Duration, err error) {
 	return len(p.buf), time.Since(p.last), p.err
 }
 
-// take removes and returns up to max buffered bytes.
-func (p *plainBuf) take(max int) ([]byte, error) {
+// take removes and returns up to limit buffered bytes.
+func (p *plainBuf) take(limit int) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	n := min(len(p.buf), max)
+	n := min(len(p.buf), limit)
 	out := p.buf[:n:n]
 	p.buf = p.buf[n:]
 	return out, nil

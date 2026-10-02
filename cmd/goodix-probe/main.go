@@ -264,16 +264,14 @@ func mainBisectWithDeps(replay, replayWrongPSK, readState bool, allow []proto.Op
 			logger.Printf("tearing down the rehearsal stand-in: %v", cerr)
 		}
 	}
-	switch {
-	case err == nil:
+	if err == nil {
 		return 0
-	default:
-		logger.Printf("\nbisect failed: %v", err)
-		if errors.Is(err, transport.ErrPermission) || errors.Is(err, transport.ErrNotFound) {
-			explainOpenError(logger, err)
-		}
-		return 1
 	}
+	logger.Printf("\nbisect failed: %v", err)
+	if errors.Is(err, transport.ErrPermission) || errors.Is(err, transport.ErrNotFound) {
+		explainOpenError(logger, err)
+	}
+	return 1
 }
 
 // collect reads the responses to one command. The device answers with an ACK
@@ -549,11 +547,11 @@ func rawdump(b []byte) string {
 }
 
 func hexdump(b []byte) string {
-	const max = 64
+	const maxBytes = 64
 	var sb strings.Builder
 	for i, c := range b {
-		if i == max {
-			fmt.Fprintf(&sb, "... (%d more)", len(b)-max)
+		if i == maxBytes {
+			fmt.Fprintf(&sb, "... (%d more)", len(b)-maxBytes)
 			break
 		}
 		if i > 0 {

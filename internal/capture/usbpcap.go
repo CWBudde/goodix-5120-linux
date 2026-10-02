@@ -2,6 +2,7 @@ package capture
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -86,7 +87,7 @@ func Transfers(r io.Reader) ([]Transfer, error) {
 	var out []Transfer
 	for {
 		blk, err := rd.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

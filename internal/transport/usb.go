@@ -103,11 +103,11 @@ func openDevice(usbCtx *gousb.Context) (*gousb.Device, error) {
 	switch {
 	case matched == 0 || errors.Is(err, gousb.ErrorNoDevice):
 		if err != nil {
-			return nil, fmt.Errorf("%w (while enumerating: %v)", ErrNotFound, err)
+			return nil, fmt.Errorf("%w (while enumerating: %w)", ErrNotFound, err)
 		}
 		return nil, ErrNotFound
 	case errors.Is(err, gousb.ErrorAccess):
-		return nil, fmt.Errorf("%w (libusb: %v)", ErrPermission, err)
+		return nil, fmt.Errorf("%w (libusb: %w)", ErrPermission, err)
 	case err != nil:
 		return nil, fmt.Errorf("opening goodix %04x:%04x: %w", uint16(VendorID), uint16(ProductID), err)
 	default:

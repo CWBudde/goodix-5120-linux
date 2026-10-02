@@ -99,7 +99,7 @@ func (h *Hive) readNK(off uint32) (*nk, error) {
 		classLen:    binary.LittleEndian.Uint16(c[0x4a:0x4c]),
 	}
 	flags := binary.LittleEndian.Uint16(c[0x02:0x04])
-	if int(0x4c+int(nameLen)) <= len(c) {
+	if 0x4c+int(nameLen) <= len(c) {
 		raw := c[0x4c : 0x4c+int(nameLen)]
 		if flags&0x20 != 0 { // ASCII (compressed) name
 			n.name = string(raw)
@@ -282,7 +282,7 @@ func (h *Hive) readVK(off uint32) (name string, data []byte, typ uint32, err err
 	dataOff := binary.LittleEndian.Uint32(c[0x08:0x0c])
 	typ = binary.LittleEndian.Uint32(c[0x0c:0x10])
 	flags := binary.LittleEndian.Uint16(c[0x10:0x12])
-	if int(0x14+int(nameLen)) <= len(c) {
+	if 0x14+int(nameLen) <= len(c) {
 		raw := c[0x14 : 0x14+int(nameLen)]
 		if flags&0x01 != 0 {
 			name = string(raw)

@@ -67,11 +67,12 @@ func TestSharedInitFixtures(t *testing.T) {
 				}
 			}
 			mode := "none"
-			if len(modes) == 1 {
+			switch {
+			case len(modes) == 1:
 				mode = modes[0]
-			} else if len(modes) == 2 {
+			case len(modes) == 2:
 				mode = modes[0] + "-" + modes[1]
-			} else if len(modes) > 2 {
+			case len(modes) > 2:
 				t.Fatal("extra reply")
 			}
 			if mode != s.String(t, "reply") || !bytes.Equal(data, s.Hex(t, "data")) {

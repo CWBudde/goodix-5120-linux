@@ -182,7 +182,7 @@ func TestWriteReportsCleanupFailure(t *testing.T) {
 	cleanup := errors.New("synthetic cleanup failure")
 	ops := operations{
 		createTemp: func(dir, pattern string) (temporaryFile, error) { return os.CreateTemp(dir, pattern) },
-		rename:     func(from, to string) error { return failure },
+		rename:     func(_, _ string) error { return failure },
 		remove:     func(path string) error { _ = os.Remove(path); return cleanup },
 	}
 	err := writeWithOperations(filepath.Join(dir, "secret"), []byte("private"), nil, ops)
@@ -237,10 +237,10 @@ func TestWriteUsesRequestedSudoOwnership(t *testing.T) {
 }
 
 func TestWriteRejectsUnspecifiedOwnership(t *testing.T) {
-	max := ^uint32(0)
-	invalid := []*Ownership{{UID: -1, GID: 0}, {UID: 0, GID: -1}, {UID: int(max), GID: os.Getgid()}, {UID: os.Getuid(), GID: int(max)}}
-	if uint64(int(max)) == uint64(max) {
-		invalid = append(invalid, &Ownership{UID: int(max) + 1, GID: 0})
+	maxID := ^uint32(0)
+	invalid := []*Ownership{{UID: -1, GID: 0}, {UID: 0, GID: -1}, {UID: int(maxID), GID: os.Getgid()}, {UID: os.Getuid(), GID: int(maxID)}}
+	if uint64(int(maxID)) == uint64(maxID) {
+		invalid = append(invalid, &Ownership{UID: int(maxID) + 1, GID: 0})
 	}
 	for _, ownership := range invalid {
 		dir := t.TempDir()
