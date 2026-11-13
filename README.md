@@ -54,24 +54,28 @@ fprintd-verify -f right-index-finger
 ```
 
 No package is replaced. The installer copies the library to `/opt/goodix5120/lib` and the key to
-`/etc/goodix5120/psk.bin` (root, `0600`), and adds a systemd drop-in that makes fprintd load this library
-([`docs/fprintd.md`](docs/fprintd.md)). To update, run `install` again from the new bundle; the key is kept.
+`/etc/goodix5120/psk.bin` (root, `0600`), and adds a systemd drop-in that makes fprintd load this library and keeps
+fprintd running between prompts ([`docs/fprintd.md`](docs/fprintd.md)). To update, run `install` again from the new
+bundle; the key is kept.
 
 ### 4. Use it for sudo and login
 
 ```sh
-sudo pam-auth-update --enable fprintd
+sudo pam-auth-update --enable goodix5120-fprintd
 ```
 
-Finger first, password as the fallback. Ubuntu's profile gives the finger one try (`max-tries=1`); one miss goes
-straight to the password prompt. Each prompt starts with the reader's TLS handshake, about 1 s.
+Finger first, password as the fallback. `install` added this profile: Ubuntu's `fprintd` profile with three tries
+instead of one, and without `pam_fprintd` in GDM's password prompt, which would race GDM's fingerprint prompt for the
+reader. If you enabled Ubuntu's `fprintd` profile already, `install` swapped it for this one. Each prompt starts with
+the reader's TLS handshake, about 0.5 s. A finger login does not unlock the GNOME keyring; it asks for the password
+on first use.
 
 ### Uninstall
 
 ```sh
 fprintd-delete "$USER"                      # optional: remove your enrolled prints
-sudo pam-auth-update --disable fprintd
 sudo ./goodix5120-fprintd.sh uninstall      # fprintd falls back to the distribution's libfprint
+sudo pam-auth-update --disable fprintd      # uninstall re-enables Ubuntu's profile if fingerprint login was on
 ```
 
 `uninstall` keeps `/etc/goodix5120/psk.bin`; delete it by hand if you no longer need it.

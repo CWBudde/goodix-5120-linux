@@ -30,4 +30,10 @@ jobs:
           args: --timeout=5m
 
       - name: shellcheck
-        run: shellcheck libfprint/goodix5120/build/build-bundle.sh libfprint/goodix5120/fprintd/goodix5120-fprintd.sh
+        run: |
+          shellcheck libfprint/goodix5120/build/build-bundle.sh libfprint/goodix5120/fprintd/goodix5120-fprintd.sh \
+            libfprint/goodix5120/fprintd/test-goodix5120-fprintd.sh
+
+      # The installer's bundle pick and drop-in, offline: no root, no system change.
+      - name: fprintd installer tests
+        run: sh libfprint/goodix5120/fprintd/test-goodix5120-fprintd.sh

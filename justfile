@@ -41,8 +41,8 @@ clean:
 
 # ---------------------------------------------------------------------------- checks
 
-# Everything a change has to pass: format, lint, vet, Go tests (both tags), C tests, build, tidy.
-check: fmt-check lint vet test test-destructive test-c build check-tidy
+# Everything a change has to pass: format, lint, vet, Go tests (both tags), C tests, installer tests, build, tidy.
+check: fmt-check lint vet test test-destructive test-c test-fprintd build check-tidy
 
 # Run the whole test suite.
 test:
@@ -74,7 +74,8 @@ fmt-check:
 # golangci-lint, plus shellcheck on the shell scripts.
 lint:
     golangci-lint run --timeout 5m
-    shellcheck libfprint/goodix5120/build/build-bundle.sh libfprint/goodix5120/fprintd/goodix5120-fprintd.sh
+    shellcheck libfprint/goodix5120/build/build-bundle.sh libfprint/goodix5120/fprintd/goodix5120-fprintd.sh \
+        libfprint/goodix5120/fprintd/test-goodix5120-fprintd.sh
 
 # golangci-lint with fixes applied.
 lint-fix:
@@ -107,6 +108,10 @@ test-c:
         docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src:ro" -w /src \
             {{ build_image }} bash -c "$(declare -f run); run"
     fi
+
+# The fprintd installer's bundle pick and drop-in, against fake trees in a temp dir. No root, no system change.
+test-fprintd:
+    sh libfprint/goodix5120/fprintd/test-goodix5120-fprintd.sh
 
 # Check the payload rules against real vendor traffic. Needs the (gitignored) capture.
 test-capture:
