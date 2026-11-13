@@ -3,9 +3,10 @@
 A libfprint driver in C for the fingerprint reader in the Huawei MateBook `HVY-WXX9`. It follows the command sequence
 of the Go reference in `cmd/goodix-probe` byte for byte, runs the TLS-PSK session itself, and matches with SIGFM.
 
-**Status (2026-10-02):** enroll, verify and identify work on this machine through fprintd and PAM (Runs 41–45 in
-[`docs/protocol.md`](../../docs/protocol.md)). Genuine scores so far 36–258594, other fingers 0–9, threshold 24.
-An open takes about 500 ms (498 ms in Run 46; 965 ms in Runs 44–45). Cancellation during open, suspend/resume and autosuspend are untested live. Install for
+**Status (2026-11-13):** enroll, verify and identify work on this machine through fprintd and PAM (Runs 41–51 in
+[`docs/protocol.md`](../../docs/protocol.md)). Genuine scores so far 33–258594, other fingers 0–9, threshold 24.
+An open takes about 500 ms (498 ms in Run 46; 965 ms in Runs 44–45; 494–512 ms in the journal since). Suspend/resume
+works (Run 50). Cancellation during open and USB autosuspend are untested live. Install for
 fprintd with [`docs/fprintd.md`](../../docs/fprintd.md).
 
 ## Read this first: the hardware can be wedged
@@ -299,9 +300,9 @@ tests cover:
   upstreaming as well as a correctness issue.
 - **The vendor's post-init calibration is not sent:** step 15 of its init (`36`, `50`, `36`, `82 …`, `20`, `36`).
   Neither is the `0x50` "nav mode" it sends after each finger-up, which appears only in the driver log.
-- No suspend/resume handling, and no command that ends a session on close. The EC keeps its TLS session and last FDT
+- No suspend/resume handling (Run 50: none was needed), and no command that ends a session on close. The EC keeps its TLS session and last FDT
   arm, as Windows leaves it. Each open repeats the full init and handshake; fprintd opens per operation, and many
-  opens in a row have worked (Runs 43–45).
+  opens in a row have worked (Runs 43–51).
 - PSK provisioning (see above).
 - No umockdev recording under `tests/` in libfprint style, because making one needs the device. Captures also must
   not enter this repository.
@@ -316,8 +317,8 @@ tests cover:
    to unstick it is untested ("Recovering the EC", item 4) and deliberately not done. After an image, TLS or
    transport failure during an operation, the driver discards its TLS session and refuses every action until
    close/reopen, sending nothing. Reopening after a failed operation has only been tested with a synthetic EC.
-3. **Suspend and autosuspend.** The hwdb gives this device `ID_AUTOSUSPEND=1`. Whether a suspend or USB autosuspend
-   between sessions upsets the EC is unknown.
+3. **Autosuspend.** Suspend/resume is tested (Run 50: the reader opened in 501 ms after resume and matched). The hwdb
+   gives this device `ID_AUTOSUSPEND=1`. Whether USB autosuspend between sessions upsets the EC is unknown.
 4. **ACK status.** Only `0x01` has ever been seen, and anything else stops the driver. That may be too strict.
 5. **Base invalid.** Run 35 saw one base-invalid event and the driver re-armed from its readings. If an event ever
    carries zeroes instead, the driver keeps its previous thresholds and gives up after 8 in a row per action.

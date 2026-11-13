@@ -6,11 +6,12 @@ the first incident included (Run 1). The step-by-step history of this file is in
 Standing rules: the owner runs everything live, never Claude. Never run upstream `driver_51x0.main()` or any IAP /
 firmware-write path. `write_firmware` (`0xf0`) and `preset_psk_write` (`0xe0`) stay out of every default build.
 
-## Where we stand (2026-10-02)
+## Where we stand (2026-11-13)
 
-**The reader works on Linux, end to end, through fprintd and PAM** (Run 45). The C driver in
-[`libfprint/goodix5120/`](libfprint/goodix5120/README.md) opens in about 1 s, enrolls 15 touches, and matches with
-SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9.
+**The reader works on Linux, end to end, through fprintd and PAM** (Runs 45–52). The C driver in
+[`libfprint/goodix5120/`](libfprint/goodix5120/README.md) opens in about 500 ms (498–512 ms since Run 46), enrolls 15 touches, and matches
+with SIGFM (threshold 24). Genuine scores so far are 33–258594 (the 33 was a live unlock on 2026-11-07, from the
+fprintd journal), other fingers 0–9.
 
 ## Done
 
@@ -24,7 +25,7 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 | 6a/6b — offline hardening; fake-USB lifecycle tests of the real driver        | 280 C subtests, ASan/UBSan clean                    | —     |
 | 6, C capture — TLS pacing (no two host writes < 10 ms apart)                  | first C image                                       | 23–34 |
 | 6, matching — NBIS finds ≤ 5 minutiae; SIGFM in the driver                    | 14/15 genuine offline, no true impostor > 9         | 35–41 |
-| 6, integration — fprintd drop-in, PAM, 1 s open                               | `sudo` by finger                                    | 42–45 |
+| 6, integration — fprintd drop-in, PAM, 1 s open (500 ms from Run 46)          | `sudo` by finger                                    | 42–45 |
 | Tooling — bundle build in repo, CI, lint/format, release-please               | releases carry the built bundle                     | —     |
 
 ## Open
@@ -50,6 +51,34 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
 - [x] **Faster open:** 498–506 ms, from ~965 ms (Runs 46–47, three opens, no warnings).
 - [ ] Record the recovery behaviour of each in `docs/protocol.md`.
 
+### Phase 6c — unlock-prompt latency and daily use
+
+Observed in the fprintd journal, 2026-11-07 to 2026-11-12 (read 2026-11-12), unlock prompts with the finger already on
+the sensor: D-Bus activation to "Started fprintd" about 190 ms (170–240 ms); "Started" to the driver's first open line
+140–735 ms (owned by fprintd and GDM, cause not identified); open 494–512 ms; finger-down to match 108–124 ms. So the
+sensor is armed 0.9–1.4 s after the prompt appears.
+
+- [x] **Keep fprintd running.** The installer's drop-in adds `--no-timeout`; fprintd stayed up 65 s and served a
+      second prompt without a restart (Run 52). Still to check: a long-lived fprintd across suspend/resume, and the
+      time from prompt to open on the unlock screen with fprintd already running.
+- [ ] **Reuse the TLS session (open, undecided).** It is the largest remaining lever: most of the ~500 ms open is
+      init and handshake. Sketch: keep the TLS state on close; on reopen send the `0xa8` health check and the `0xae`
+      state check, then arm; fall back to the full init and handshake on any doubt. The vendor driver short-circuits
+      on `isTlsConnected` on resume (`docs/protocol.md`). Unknown: whether the EC keeps the session keys across a USB
+      interface release or autosuspend. Needs owner-run live tests, and only pays when fprintd stays running. Do not
+      trim the TLS pacing instead (Runs 24–33).
+- [ ] **Prompts with no finger-down (owner question).** In 6 of 17 unlock prompts in that period the reader opened,
+      no finger-down was logged, and the password was typed a few seconds later (for example 2026-11-08 14:49,
+      2026-11-10 22:54, 2026-11-12 11:15). Was a finger on the sensor? If yes, this is a missed finger-down to
+      investigate; if the owner simply typed, it is nothing.
+- [ ] **PAM `max-tries=3`.** One genuine match scored 33 against the threshold of 24 (2026-11-07 19:39), the lowest
+      genuine score seen. The profile with three tries is installed (Run 52). Still to see: a second or third try
+      after a no-match in `sudo` or polkit, and whether a "too short" brush uses up a try.
+- [x] **Installer bundle choice.** The installer took its bundle from `dist/` in glob (hash) order, which could
+      select an older build. It now takes the newest by date and prints it (Run 52: `6bfc625`, not `c8e7570`).
+- Browser passkeys are not a driver item: Linux browsers have no platform authenticator that talks to fprintd. See
+  [`docs/fprintd.md`](docs/fprintd.md).
+
 ### Phase 6c — portability and upstreaming
 
 - [ ] Derive the `0x98` DAC values and the FDT delta from the `0xa6` OTP reply, or restrict the driver to a
@@ -59,7 +88,6 @@ SIGFM (threshold 24). Genuine scores so far are 36–258594, other fingers 0–9
       reverses this repo's no-destructive-opcodes rule, so it is a decision to make with upstream, after showing the
       device recovers.
 - [ ] OpenCV is a new libfprint dependency (SIGFM). Upstream may want a different matcher or build option.
-- [ ] Optional: reuse the TLS session across fprintd's close/open, if 1 s per prompt is still too slow.
 
 ### Phase 2 — publish (owner decision)
 

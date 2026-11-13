@@ -8,10 +8,10 @@ A driver for the Goodix `27c6:5120` fingerprint reader in a Huawei MateBook (`HV
 `GF_ITE_EC_20063`: an ITE embedded controller that bridges to the sensor over USB _and_ drives the internal keyboard
 over i8042, and it talks to the host over TLS-PSK.
 
-**State (2026-10-02):** the C libfprint driver in `libfprint/goodix5120/` works on this machine through the system
-fprintd and `pam_fprintd` (Runs 43–46 in `docs/protocol.md`). It opens in about 500 ms (Run 46; 965 ms before), enrolls 15 touches and matches
-with SIGFM (threshold 24; genuine scores so far 36–258594, other fingers 0–9). Not yet tested live: cancellation during
-open, suspend/resume, autosuspend, cold-boot login. The Go code is the offline reference the driver follows byte for
+**State (2026-11-13):** the C libfprint driver in `libfprint/goodix5120/` works on this machine through the system
+fprintd and `pam_fprintd` (Runs 43–51 in `docs/protocol.md`). It opens in about 500 ms (Run 46; 965 ms before), enrolls 15 touches and matches
+with SIGFM (threshold 24; genuine scores so far 33–258594, other fingers 0–9). Suspend/resume works (Run 50). Not yet tested live: cancellation
+during open, USB autosuspend between sessions, cold-boot login. The Go code is the offline reference the driver follows byte for
 byte. `PLAN.md` lists what is open.
 
 ## Hardware safety — read first

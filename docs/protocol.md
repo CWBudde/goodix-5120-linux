@@ -1838,6 +1838,28 @@ profile) and ran `sudo -k; sudo true`.
   `pam_fprintd` (`success=3`). The installer's own `sudo` matched by finger at 22:22:11 (score 1522, 104 ms after
   finger-down). The next `sudo`, on the restarted fprintd, matched at 22:22:13 (score 64005, 100 ms).
 
+### Run 52 — 2026-11-13 15:55, fprintd stays running; `max-tries=3` installed (observed)
+
+`6bfc625` library, unchanged. The owner granted the agent this one live run: the installer from the working tree
+(newest bundle by date, `--no-timeout` in the drop-in, `max-tries=3`) and `sudo -k; sudo true` twice, 50 s apart.
+`sudo` ran with `-A` and `ssh-askpass`, so no terminal showed `pam_fprintd`'s prompt.
+
+- **Bundle pick:** `which-bundle` printed `dist/goodix5120-6bfc625`, and `install` printed
+  `bundle: … (VERSION 6bfc625)`. Glob order would have picked `c8e7570`.
+- **Drop-in:** `systemctl cat fprintd` shows the stock `ExecStart=/usr/libexec/fprintd`, then `ExecStart=` and
+  `ExecStart=/usr/libexec/fprintd --no-timeout`. `common-auth` has `pam_fprintd.so max-tries=3 timeout=10` after the
+  `gdm-password` skip.
+- **fprintd stayed up:** started at 15:56:45.97 for the first `sudo` (199 ms to "Started", 115 ms more to the
+  driver's first line, open 495 ms). It was still active 65 s later, same process, `--no-timeout` in its arguments,
+  and served the second `sudo` (open 494 ms, 15:57:50.84–51.33) with no new "Starting fprintd". The installer's own
+  `sudo`, on the old process, opened in 494 ms. No warnings in any of the three opens.
+- **No finger-down in any of the three prompts.** Each `sudo` succeeded 14–17 s after its open, after
+  `pam_fprintd`'s 10 s timeout, by the password typed into the askpass dialog. Whether a finger was on the sensor
+  is not known. So the three tries, and the time from prompt to open on a running fprintd, were not exercised.
+
+**Limits:** two prompts in one long-lived process, 65 s apart. Not tried: a match on this setup, a second or third
+try after a no-match, a long-lived fprintd across suspend/resume, the unlock screen.
+
 ### Recovering the EC (researched offline, 2026-09-30)
 
 The question after Run 14: how do you reset an EC the power-button procedure does not reset? **Answered by
