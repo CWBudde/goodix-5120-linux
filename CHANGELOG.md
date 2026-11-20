@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/CWBudde/goodix-5120-linux/compare/v0.1.0...v0.1.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **fprintd:** install the newest bundle, keep fprintd running, three tries ([59528d5](https://github.com/CWBudde/goodix-5120-linux/commit/59528d5967d7bb339b520bf6ec1a1f01d0fb2f3e))
+
+
+### Documentation
+
+* Run 52, fprintd stays running; journal timings and open items ([468ef75](https://github.com/CWBudde/goodix-5120-linux/commit/468ef757f4dcc4a1a3e04f3e964948e3be299fdb))
+
 ## 0.1.0 (2026-10-04)
 
 
